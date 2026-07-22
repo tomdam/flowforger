@@ -8,34 +8,34 @@ class SharePoint_Folder_Management_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.ListRootFolder("List Root Folder Contents", {
+    await ctx.connectors.sharepoint.ListRootFolder("ListRootFolderContents", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       folderPath: "/sites/yoursite/Shared Documents"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GetFolderMetadataByPath("Get Folder Metadata By Path", {
+    await ctx.connectors.sharepoint.GetFolderMetadataByPath("GetFolderMetadataByPath", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       path: "/sites/yoursite/Shared Documents/Projects"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.ListFolder("List Projects Folder", {
+    await ctx.connectors.sharepoint.ListFolder("ListProjectsFolder", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      folderId: ctx.outputs('Get Folder Metadata By Path')?.['UniqueId']
+      folderId: ctx.outputs('GetFolderMetadataByPath')?.['UniqueId']
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CopyFolder("Copy Folder to Archive", {
+    await ctx.connectors.sharepoint.CopyFolder("CopyFolderToArchive", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      folderId: ctx.outputs('Get Folder Metadata By Path')?.['UniqueId'],
+      folderId: ctx.outputs('GetFolderMetadataByPath')?.['UniqueId'],
       destSiteUrl: "https://yourtenant.sharepoint.com/sites/yoursite",
       destFolderPath: "/sites/yoursite/Shared Documents/Archive/Projects"
     });
     /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Folder management completed",
-      rootFileCount: ctx.outputs('List Root Folder Contents')?.['files'].length,
-      rootFolderCount: ctx.outputs('List Root Folder Contents')?.['folders'].length,
-      projectsFileCount: ctx.outputs('List Projects Folder')?.['files'].length,
-      projectsFolderCount: ctx.outputs('List Projects Folder')?.['folders'].length,
+      rootFileCount: ctx.outputs('ListRootFolderContents')?.['files'].length,
+      rootFolderCount: ctx.outputs('ListRootFolderContents')?.['folders'].length,
+      projectsFileCount: ctx.outputs('ListProjectsFolder')?.['files'].length,
+      projectsFolderCount: ctx.outputs('ListProjectsFolder')?.['folders'].length,
       archived: true
     });
   }

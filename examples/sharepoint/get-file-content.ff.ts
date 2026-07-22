@@ -17,14 +17,14 @@ class SharePoint_Get_File_Content_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFileContent("Get File Content", {
+    await ctx.connectors.sharepoint.GetFileContent("GetFileContent", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       id: ctx.triggerBody()?.['fileId']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Content Info", {
-      contentType: ctx.outputs('Get File Content')?.['$contentType'],
-      contentSize: ctx.outputs('Get File Content')?.['$content'].length
+    await ctx.compose("ShowContentInfo", {
+      contentType: ctx.outputs('GetFileContent')?.['$contentType'],
+      contentSize: ctx.outputs('GetFileContent')?.['$content'].length
     });
   }
 

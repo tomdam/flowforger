@@ -20,7 +20,7 @@ class SharePoint_Add_Attachment_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.AddAttachment("Add Attachment", {
+    await ctx.connectors.sharepoint.AddAttachment("AddAttachment", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId'],
@@ -28,10 +28,10 @@ class SharePoint_Add_Attachment_Example {
       content: ctx.triggerBody()?.['fileContent']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Result", {
+    await ctx.compose("ShowResult", {
       message: "Attachment added successfully",
-      fileName: ctx.outputs('Add Attachment')?.['FileName'],
-      serverRelativeUrl: ctx.outputs('Add Attachment')?.['ServerRelativeUrl']
+      fileName: ctx.outputs('AddAttachment')?.['FileName'],
+      serverRelativeUrl: ctx.outputs('AddAttachment')?.['ServerRelativeUrl']
     });
   }
 

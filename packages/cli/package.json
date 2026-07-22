@@ -1,6 +1,6 @@
 {
   "name": "flowforger",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "CLI for FlowForger — compile TypeScript DSL to Power Automate / Logic Apps workflows, validate, run locally, and deploy",
   "keywords": [
     "power-automate",

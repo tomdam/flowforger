@@ -8,20 +8,20 @@ class SharePoint_Get_Approval_Status {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetContentApprovalStatus("Get item approval status", {
+    await ctx.connectors.sharepoint.GetContentApprovalStatus("GetItemApprovalStatus", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
       itemId: "5"
     });
     /** @runAfter trigger */
-    await ctx.compose("Display approval info", {
-      itemId: ctx.body('Get item approval status').Id,
-      title: ctx.body('Get item approval status').Title,
-      approvalStatus: ctx.body('Get item approval status').approvalStatusText,
-      statusCode: ctx.body('Get item approval status')._ModerationStatus,
-      comments: ctx.body('Get item approval status')._ModerationComments,
-      lastModified: ctx.body('Get item approval status').Modified,
-      modifiedBy: ctx.body('Get item approval status').Editor.Title
+    await ctx.compose("DisplayApprovalInfo", {
+      itemId: ctx.body('GetItemApprovalStatus').Id,
+      title: ctx.body('GetItemApprovalStatus').Title,
+      approvalStatus: ctx.body('GetItemApprovalStatus').approvalStatusText,
+      statusCode: ctx.body('GetItemApprovalStatus')._ModerationStatus,
+      comments: ctx.body('GetItemApprovalStatus')._ModerationComments,
+      lastModified: ctx.body('GetItemApprovalStatus').Modified,
+      modifiedBy: ctx.body('GetItemApprovalStatus').Editor.Title
     });
   }
 

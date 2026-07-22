@@ -15,19 +15,19 @@ class SharePoint_Get_Attachments_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetAttachments("Get Attachments", {
+    await ctx.connectors.sharepoint.GetAttachments("GetAttachments", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Attachment List", {
-      attachmentCount: ctx.outputs('Get Attachments')?.['value'].length,
-      attachments: ctx.outputs('Get Attachments')?.['value']
+    await ctx.compose("ShowAttachmentList", {
+      attachmentCount: ctx.outputs('GetAttachments')?.['value'].length,
+      attachments: ctx.outputs('GetAttachments')?.['value']
     });
     /** @action Check if Has Attachments @type if @runAfter trigger */
-    if ((ctx.outputs('Get Attachments')?.['value'].length > 0)) {
-      await ctx.compose("First Attachment", ctx.first(ctx.outputs('Get Attachments')?.['value']));
+    if ((ctx.outputs('GetAttachments')?.['value'].length > 0)) {
+      await ctx.compose("FirstAttachment", ctx.first(ctx.outputs('GetAttachments')?.['value']));
     }
   }
 

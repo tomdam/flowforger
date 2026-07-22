@@ -16,20 +16,20 @@ class SharePoint_Get_Item_Changes_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetItemChanges("Get Item Changes", {
+    await ctx.connectors.sharepoint.GetItemChanges("GetItemChanges", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: ctx.triggerBody()?.['libraryId'],
       itemId: ctx.triggerBody()?.['itemId'],
       since: ctx.triggerBody()?.['since']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Version History", {
-      versionCount: ctx.outputs('Get Item Changes')?.['value'].length,
-      versions: ctx.outputs('Get Item Changes')?.['value']
+    await ctx.compose("ShowVersionHistory", {
+      versionCount: ctx.outputs('GetItemChanges')?.['value'].length,
+      versions: ctx.outputs('GetItemChanges')?.['value']
     });
     /** @action Check if Changes Exist @type if @runAfter trigger */
-    if ((ctx.outputs('Get Item Changes')?.['value'].length > 0)) {
-      await ctx.compose("Latest Change", ctx.first(ctx.outputs('Get Item Changes')?.['value']));
+    if ((ctx.outputs('GetItemChanges')?.['value'].length > 0)) {
+      await ctx.compose("LatestChange", ctx.first(ctx.outputs('GetItemChanges')?.['value']));
     }
   }
 

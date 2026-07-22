@@ -8,14 +8,14 @@ class SharePoint_Get_Files_Properties_Only_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("Get All Files in Folder", {
+    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetAllFilesInFolder", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: "{LIBRARY-GUID}",
       folderPath: "/sites/yoursite/Shared Documents",
       top: 100
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("Get Files with Filter", {
+    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetFilesWithFilter", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: "{LIBRARY-GUID}",
       filter: "FileLeafRef eq 'report.docx'",
@@ -23,9 +23,9 @@ class SharePoint_Get_Files_Properties_Only_Example {
       top: 10
     });
     /** @runAfter trigger */
-    await ctx.compose("Show File Count", {
-      allFilesCount: ctx.outputs('Get All Files in Folder')?.['value'].length,
-      filteredCount: ctx.outputs('Get Files with Filter')?.['value'].length
+    await ctx.compose("ShowFileCount", {
+      allFilesCount: ctx.outputs('GetAllFilesInFolder')?.['value'].length,
+      filteredCount: ctx.outputs('GetFilesWithFilter')?.['value'].length
     });
   }
 

@@ -18,16 +18,16 @@ class SharePoint_Copy_File_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.CopyFile("Copy File", {
+    await ctx.connectors.sharepoint.CopyFile("CopyFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       id: ctx.triggerBody()?.['fileId'],
       destSiteUrl: "https://yourtenant.sharepoint.com/sites/yoursite",
       destFolderPath: ctx.triggerBody()?.['destFolder']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Result", {
-      success: ctx.outputs('Copy File')?.['ok'],
-      destination: ctx.outputs('Copy File')?.['destUrl']
+    await ctx.compose("ShowResult", {
+      success: ctx.outputs('CopyFile')?.['ok'],
+      destination: ctx.outputs('CopyFile')?.['destUrl']
     });
   }
 

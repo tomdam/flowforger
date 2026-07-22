@@ -8,7 +8,7 @@ class SharePoint_File_Operations_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.CreateFile("Create File", {
+    await ctx.connectors.sharepoint.CreateFile("CreateFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       parameters: {
         folderPath: "/sites/yoursite/Shared Documents",
@@ -17,32 +17,32 @@ class SharePoint_File_Operations_Example {
       body: "Initial content"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GetFileMetadataByPath("Get File Metadata", {
+    await ctx.connectors.sharepoint.GetFileMetadataByPath("GetFileMetadata", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       path: "/sites/yoursite/Shared Documents/test-file.txt"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.UpdateFile("Update File Content", {
+    await ctx.connectors.sharepoint.UpdateFile("UpdateFileContent", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      id: ctx.outputs('Get File Metadata')?.['UniqueId'],
+      id: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       body: "Updated content - modified by FlowForger"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GetFileContent("Get Updated Content", {
+    await ctx.connectors.sharepoint.GetFileContent("GetUpdatedContent", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      id: ctx.outputs('Get File Metadata')?.['UniqueId']
+      id: ctx.outputs('GetFileMetadata')?.['UniqueId']
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CopyFile("Copy to Archive", {
+    await ctx.connectors.sharepoint.CopyFile("CopyToArchive", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      id: ctx.outputs('Get File Metadata')?.['UniqueId'],
+      id: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       destSiteUrl: "https://yourtenant.sharepoint.com/sites/yoursite",
       destFolderPath: "/sites/yoursite/Shared Documents/Archive"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.DeleteFile("Delete Original", {
+    await ctx.connectors.sharepoint.DeleteFile("DeleteOriginal", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      id: ctx.outputs('Get File Metadata')?.['UniqueId']
+      id: ctx.outputs('GetFileMetadata')?.['UniqueId']
     });
     /** @runAfter trigger */
     await ctx.compose("Summary", {

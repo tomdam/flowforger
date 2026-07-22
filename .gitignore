@@ -36,3 +36,4 @@ token.txt
 flowforger.config.json
 
 # MSAL token cache (created by --auth, stored at ~/.flowforger/token-cache.json)
+packages/cli/publish.ps1

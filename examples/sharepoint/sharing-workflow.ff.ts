@@ -21,21 +21,21 @@ class SharePoint_Sharing_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize site URL */
+    /** @action InitializeSiteUrl */
     let siteUrl: string = ctx.triggerBody().siteUrl;
-    /** @action Initialize library ID @runAfter first */
+    /** @action InitializeLibraryId @runAfter first */
     let libraryId: string = ctx.triggerBody().libraryId;
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CreateFile("Create document", {
+    await ctx.connectors.sharepoint.CreateFile("CreateDocument", {
       dataset: ctx.variables('siteUrl'),
       folderPath: "/Shared Documents",
       fileName: ctx.triggerBody().fileName,
       body: "This is a confidential document that needs to be shared securely."
     });
     /** @action Store file ID @runAfter first */
-    let fileId: string = ctx.body('Create document').UniqueId;
+    let fileId: string = ctx.body('CreateDocument').UniqueId;
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CreateSharingLink("Create secure sharing link", {
+    await ctx.connectors.sharepoint.CreateSharingLink("CreateSecureSharingLink", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId'),
       linkType: "view",
@@ -43,7 +43,7 @@ class SharePoint_Sharing_Workflow {
       expirationDateTime: ctx.addDays(ctx.utcNow(), 7)
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GrantAccess("Grant edit access to recipients", {
+    await ctx.connectors.sharepoint.GrantAccess("GrantEditAccessToRecipients", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId'),
       recipients: ctx.triggerBody().recipients,
@@ -54,9 +54,9 @@ class SharePoint_Sharing_Workflow {
       requireSignIn: true
     });
     /** @runAfter trigger */
-    await ctx.delay("Wait for document review", 7, "Day");
+    await ctx.delay("WaitForDocumentReview", 7, "Day");
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.StopSharing("Remove sharing after expiration", {
+    await ctx.connectors.sharepoint.StopSharing("RemoveSharingAfterExpiration", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId')
     });
@@ -65,7 +65,7 @@ class SharePoint_Sharing_Workflow {
       message: "Document sharing workflow completed",
       fileId: ctx.variables('fileId'),
       fileName: ctx.triggerBody().fileName,
-      sharingLink: ctx.body('Create secure sharing link').sharingLinkInfo,
+      sharingLink: ctx.body('CreateSecureSharingLink').sharingLinkInfo,
       sharedWith: ctx.triggerBody().recipients,
       sharingRemoved: ctx.utcNow()
     });

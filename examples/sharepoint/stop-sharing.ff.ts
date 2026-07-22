@@ -8,7 +8,7 @@ class SharePoint_Stop_Sharing {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.StopSharing("Stop sharing a file", {
+    await ctx.connectors.sharepoint.StopSharing("StopSharingAFile", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b"
     });

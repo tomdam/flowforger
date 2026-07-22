@@ -1,6 +1,6 @@
 {
   "name": "flowforger-vscode",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Power Automate & Logic Apps flows as TypeScript — IntelliSense, local debugging, and compilation to Logic Apps JSON",
   "keywords": [

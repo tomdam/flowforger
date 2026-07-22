@@ -15,18 +15,18 @@ class SharePoint_Get_File_Properties_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFileProperties("Get File Properties", {
+    await ctx.connectors.sharepoint.GetFileProperties("GetFileProperties", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: ctx.triggerBody()?.['libraryId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Properties", {
-      title: ctx.outputs('Get File Properties')?.['Title'],
-      fileName: ctx.outputs('Get File Properties')?.['FileLeafRef'],
-      created: ctx.outputs('Get File Properties')?.['Created'],
-      modified: ctx.outputs('Get File Properties')?.['Modified'],
-      author: ctx.outputs('Get File Properties')?.['Author']?.['Title']
+    await ctx.compose("ShowProperties", {
+      title: ctx.outputs('GetFileProperties')?.['Title'],
+      fileName: ctx.outputs('GetFileProperties')?.['FileLeafRef'],
+      created: ctx.outputs('GetFileProperties')?.['Created'],
+      modified: ctx.outputs('GetFileProperties')?.['Modified'],
+      author: ctx.outputs('GetFileProperties')?.['Author']?.['Title']
     });
   }
 

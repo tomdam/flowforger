@@ -8,20 +8,20 @@ class SharePoint_Update_File_Properties_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFileMetadataByPath("Get File Metadata", {
+    await ctx.connectors.sharepoint.GetFileMetadataByPath("GetFileMetadata", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       path: "/sites/yoursite/Shared Documents/report.docx"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.UpdateFileProperties("Update File Properties", {
+    await ctx.connectors.sharepoint.UpdateFileProperties("UpdateFileProperties", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      listId: ctx.outputs('Get File Metadata')?.['ListId'],
-      itemId: ctx.outputs('Get File Metadata')?.['ListItemAllFields']?.['Id'],
+      listId: ctx.outputs('GetFileMetadata')?.['ListId'],
+      itemId: ctx.outputs('GetFileMetadata')?.['ListItemAllFields']?.['Id'],
       fields: { Title: "Updated Report Title", CustomColumn: "New Value" }
     });
     /** @runAfter trigger */
-    await ctx.compose("Show Result", {
-      success: ctx.outputs('Update File Properties')?.['ok'],
+    await ctx.compose("ShowResult", {
+      success: ctx.outputs('UpdateFileProperties')?.['ok'],
       message: "File properties updated successfully"
     });
   }

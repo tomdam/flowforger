@@ -8,14 +8,14 @@ class SharePoint_Create_Sharing_Link {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.CreateSharingLink("Create view-only sharing link", {
+    await ctx.connectors.sharepoint.CreateSharingLink("CreateViewOnlySharingLink", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       linkType: "view",
       scope: "anonymous"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CreateSharingLink("Create edit link for organization", {
+    await ctx.connectors.sharepoint.CreateSharingLink("CreateEditLinkForOrganization", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       linkType: "edit",
@@ -23,7 +23,7 @@ class SharePoint_Create_Sharing_Link {
       expirationDateTime: "2025-12-31T23:59:59Z"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CreateSharingLink("Create password-protected link", {
+    await ctx.connectors.sharepoint.CreateSharingLink("CreatePasswordProtectedLink", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       linkType: "view",

@@ -8,17 +8,17 @@ class SharePoint_Get_All_Lists_and_Libraries {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetLists("Get all lists and libraries", { dataset: "https://contoso.sharepoint.com/sites/MySite" });
+    await ctx.connectors.sharepoint.GetLists("GetAllListsAndLibraries", { dataset: "https://contoso.sharepoint.com/sites/MySite" });
     /** @runAfter trigger */
-    await ctx.filterArray("Filter to document libraries only", ctx.body('Get all lists and libraries').value, "@equals(item().BaseType, 1)");
+    await ctx.filterArray("Filter to document libraries only", ctx.body('GetAllListsAndLibraries').value, "@equals(item().BaseType, 1)");
     /** @runAfter trigger */
-    await ctx.filterArray("Filter to visible lists only", ctx.body('Get all lists and libraries').value, "@equals(item().Hidden, false)");
+    await ctx.filterArray("Filter to visible lists only", ctx.body('GetAllListsAndLibraries').value, "@equals(item().Hidden, false)");
     /** @runAfter trigger */
     await ctx.compose("Summary", {
-      totalLists: ctx.body('Get all lists and libraries').value.length,
+      totalLists: ctx.body('GetAllListsAndLibraries').value.length,
       documentLibraries: ctx.body('Filter to document libraries only').length,
       visibleLists: ctx.body('Filter to visible lists only').length,
-      lists: ctx.body('Get all lists and libraries').value
+      lists: ctx.body('GetAllListsAndLibraries').value
     });
   }
 

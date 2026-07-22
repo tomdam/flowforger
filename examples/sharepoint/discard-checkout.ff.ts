@@ -14,28 +14,28 @@ class SharePoint_Discard_Check_Out_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFileMetadata("Get File Metadata", {
+    await ctx.connectors.sharepoint.GetFileMetadata("GetFileMetadata", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       fileId: ctx.triggerBody()?.['fileId']
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CheckOutFile("Check Out File", {
+    await ctx.connectors.sharepoint.CheckOutFile("CheckOutFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       fileId: ctx.triggerBody()?.['fileId']
     });
     /** @runAfter trigger */
-    await ctx.compose("Simulate Work", {
+    await ctx.compose("SimulateWork", {
       message: "File is checked out, but we decide not to make changes"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.DiscardCheckOut("Discard Check Out", {
+    await ctx.connectors.sharepoint.DiscardCheckOut("DiscardCheckOut", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       fileId: ctx.triggerBody()?.['fileId']
     });
     /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Check out discarded, file unlocked without changes",
-      fileName: ctx.outputs('Get File Metadata')?.['Name']
+      fileName: ctx.outputs('GetFileMetadata')?.['Name']
     });
   }
 

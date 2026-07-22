@@ -16,51 +16,51 @@ class SharePoint_Advanced_Discovery_Workflow {
     /** @action Initialize site URL */
     let siteUrl: string = ctx.triggerBody().siteUrl;
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.SendHttpRequest("Get site metadata", {
+    await ctx.connectors.sharepoint.SendHttpRequest("GetSiteMetadata", {
       dataset: ctx.variables('siteUrl'),
       uri: "/_api/web?$select=Title,Description,Created,ServerRelativeUrl",
       method: "GET"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GetLists("Get all lists", { dataset: ctx.variables('siteUrl') });
+    await ctx.connectors.sharepoint.GetLists("GetAllLists", { dataset: ctx.variables('siteUrl') });
     /** @runAfter trigger */
-    await ctx.filterArray("Get document libraries", ctx.body('Get all lists').value, "@and(equals(item().BaseType, 1), equals(item().Hidden, false))");
+    await ctx.filterArray("Get document libraries", ctx.body('GetAllLists').value, "@and(equals(item().BaseType, 1), equals(item().Hidden, false))");
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.ResolvePerson("Resolve user", {
+    await ctx.connectors.sharepoint.ResolvePerson("ResolveUser", {
       dataset: ctx.variables('siteUrl'),
       email: ctx.triggerBody().userEmail
     });
     /** @action Process each library @type foreach @runAfter trigger */
     for (const item of ctx.body('Get document libraries')) {
-      await ctx.connectors.sharepoint.GetListViews("Get library views", {
+      await ctx.connectors.sharepoint.GetListViews("GetLibraryViews", {
         dataset: ctx.variables('siteUrl'),
         table: ctx.items('Process each library').Id
       });
       /** @runAfter first */
-      await ctx.compose("Library info", {
+      await ctx.compose("LibraryInfo", {
         libraryName: ctx.items('Process each library').Title,
         libraryId: ctx.items('Process each library').Id,
         itemCount: ctx.items('Process each library').ItemCount,
-        viewCount: ctx.body('Get library views').value.length,
+        viewCount: ctx.body('GetLibraryViews').value.length,
         created: ctx.items('Process each library').Created
       });
     }
     /** @runAfter trigger */
-    await ctx.compose("Discovery summary", {
+    await ctx.compose("DiscoverySummary", {
       site: {
-        title: ctx.body('Get site metadata').body.Title,
-        description: ctx.body('Get site metadata').body.Description,
-        created: ctx.body('Get site metadata').body.Created,
-        url: ctx.body('Get site metadata').body.ServerRelativeUrl
+        title: ctx.body('GetSiteMetadata').body.Title,
+        description: ctx.body('GetSiteMetadata').body.Description,
+        created: ctx.body('GetSiteMetadata').body.Created,
+        url: ctx.body('GetSiteMetadata').body.ServerRelativeUrl
       },
       statistics: {
-        totalLists: ctx.body('Get all lists').value.length,
+        totalLists: ctx.body('GetAllLists').value.length,
         documentLibraries: ctx.body('Get document libraries').length
       },
       user: {
-        id: ctx.body('Resolve user').Id,
-        displayName: ctx.body('Resolve user').Title,
-        email: ctx.body('Resolve user').Email
+        id: ctx.body('ResolveUser').Id,
+        displayName: ctx.body('ResolveUser').Title,
+        email: ctx.body('ResolveUser').Email
       },
       libraries: ctx.body('Get document libraries')
     });

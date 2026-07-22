@@ -12,6 +12,9 @@ class ControlFlowDemo {
 
   @Action()
   async run(ctx: FlowContext) {
+    let x: number = 1;
+    let items: any[] = [];
+
     await ctx.http('First', { method: 'GET', url: 'https://example.com' });
 
     /** @action ScopeOne @type scope */

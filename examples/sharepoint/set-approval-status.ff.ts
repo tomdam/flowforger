@@ -8,7 +8,7 @@ class SharePoint_Set_Approval_Status {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.SetContentApprovalStatus("Approve document", {
+    await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveDocument", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
       itemId: "5",
@@ -16,7 +16,7 @@ class SharePoint_Set_Approval_Status {
       comments: "Document meets all quality standards and is approved for publication"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.SetContentApprovalStatus("Reject document with comments", {
+    await ctx.connectors.sharepoint.SetContentApprovalStatus("RejectDocumentWithComments", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
       itemId: "6",
@@ -24,7 +24,7 @@ class SharePoint_Set_Approval_Status {
       comments: "Document requires additional review. Please address formatting issues and resubmit."
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.SetContentApprovalStatus("Set to pending approval", {
+    await ctx.connectors.sharepoint.SetContentApprovalStatus("SetToPendingApproval", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
       itemId: "7",

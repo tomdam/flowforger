@@ -15,17 +15,17 @@ class SharePoint_Resolve_Person {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.ResolvePerson("Look up user by email", {
+    await ctx.connectors.sharepoint.ResolvePerson("LookUpUserByEmail", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       email: ctx.triggerBody().email
     });
     /** @runAfter trigger */
-    await ctx.compose("User information", {
-      userId: ctx.body('Look up user by email').Id,
-      displayName: ctx.body('Look up user by email').Title,
-      email: ctx.body('Look up user by email').Email,
-      loginName: ctx.body('Look up user by email').LoginName,
-      principalType: ctx.body('Look up user by email').PrincipalType
+    await ctx.compose("UserInformation", {
+      userId: ctx.body('LookUpUserByEmail').Id,
+      displayName: ctx.body('LookUpUserByEmail').Title,
+      email: ctx.body('LookUpUserByEmail').Email,
+      loginName: ctx.body('LookUpUserByEmail').LoginName,
+      principalType: ctx.body('LookUpUserByEmail').PrincipalType
     });
   }
 

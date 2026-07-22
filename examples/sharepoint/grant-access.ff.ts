@@ -8,7 +8,7 @@ class SharePoint_Grant_Access {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GrantAccess("Grant view access to user", {
+    await ctx.connectors.sharepoint.GrantAccess("GrantViewAccessToUser", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       recipients: "user@contoso.com",
@@ -18,7 +18,7 @@ class SharePoint_Grant_Access {
       emailBody: "I've shared this document with you. Please review at your earliest convenience."
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GrantAccess("Grant edit access to multiple users", {
+    await ctx.connectors.sharepoint.GrantAccess("GrantEditAccessToMultipleUsers", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       recipients: "user1@contoso.com;user2@contoso.com;user3@contoso.com",
@@ -27,7 +27,7 @@ class SharePoint_Grant_Access {
       requireSignIn: true
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.GrantAccess("Grant owner access", {
+    await ctx.connectors.sharepoint.GrantAccess("GrantOwnerAccess", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
       recipients: "admin@contoso.com",

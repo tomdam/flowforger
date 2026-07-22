@@ -8,7 +8,7 @@ class SharePoint_File_Properties_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("Get Files in Reports Folder", {
+    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetFilesInReportsFolder", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       listId: "{LIBRARY-GUID}",
       folderPath: "/sites/yoursite/Shared Documents/Reports",
@@ -17,15 +17,15 @@ class SharePoint_File_Properties_Workflow {
       top: 50
     });
     /** @action For Each File @type foreach @runAfter trigger */
-    for (const item of ctx.outputs('Get Files in Reports Folder')?.['value']) {
-      await ctx.connectors.sharepoint.GetFileProperties("Get File Properties", {
+    for (const item of ctx.outputs('GetFilesInReportsFolder')?.['value']) {
+      await ctx.connectors.sharepoint.GetFileProperties("GetFileProperties", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         listId: "{LIBRARY-GUID}",
         itemId: ctx.items('For Each File')?.['Id']
       });
       /** @action Check if Missing Title @type if @runAfter first */
-      if ((ctx.empty(ctx.outputs('Get File Properties')?.['Title']) || (ctx.outputs('Get File Properties')?.['Title'] === ''))) {
-        await ctx.connectors.sharepoint.UpdateFileProperties("Update Title", {
+      if ((ctx.empty(ctx.outputs('GetFileProperties')?.['Title']) || (ctx.outputs('GetFileProperties')?.['Title'] === ''))) {
+        await ctx.connectors.sharepoint.UpdateFileProperties("UpdateTitle", {
           dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
           listId: "{LIBRARY-GUID}",
           itemId: ctx.items('For Each File')?.['Id'],
@@ -33,7 +33,7 @@ class SharePoint_File_Properties_Workflow {
         });
       }
       /** @runAfter first */
-      await ctx.connectors.sharepoint.GetItemChanges("Get Change History", {
+      await ctx.connectors.sharepoint.GetItemChanges("GetChangeHistory", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         listId: "{LIBRARY-GUID}",
         itemId: ctx.items('For Each File')?.['Id'],
@@ -43,7 +43,7 @@ class SharePoint_File_Properties_Workflow {
     /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "File properties workflow completed",
-      filesProcessed: ctx.outputs('Get Files in Reports Folder')?.['value'].length
+      filesProcessed: ctx.outputs('GetFilesInReportsFolder')?.['value'].length
     });
   }
 

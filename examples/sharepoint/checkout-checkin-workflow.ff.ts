@@ -14,38 +14,38 @@ class SharePoint_Check_Out_Check_In_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetFileMetadataByPath("Get File Metadata", {
+    await ctx.connectors.sharepoint.GetFileMetadataByPath("GetFileMetadata", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       path: ctx.triggerBody()?.['filePath']
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CheckOutFile("Check Out File", {
+    await ctx.connectors.sharepoint.CheckOutFile("CheckOutFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      fileId: ctx.outputs('Get File Metadata')?.['UniqueId']
+      fileId: ctx.outputs('GetFileMetadata')?.['UniqueId']
     });
     /** @runAfter trigger */
-    await ctx.compose("File Checked Out", {
+    await ctx.compose("FileCheckedOut", {
       message: "File is now locked for editing",
-      fileId: ctx.outputs('Get File Metadata')?.['UniqueId'],
-      fileName: ctx.outputs('Get File Metadata')?.['Name']
+      fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
+      fileName: ctx.outputs('GetFileMetadata')?.['Name']
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.UpdateFile("Update File Content", {
+    await ctx.connectors.sharepoint.UpdateFile("UpdateFileContent", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      fileId: ctx.outputs('Get File Metadata')?.['UniqueId'],
+      fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       content: "Updated content while file is checked out"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.CheckInFile("Check In File", {
+    await ctx.connectors.sharepoint.CheckInFile("CheckInFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      fileId: ctx.outputs('Get File Metadata')?.['UniqueId'],
+      fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       comment: "Updated via FlowForger automation",
       checkInType: 1
     });
     /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "File successfully updated and checked in",
-      fileName: ctx.outputs('Get File Metadata')?.['Name'],
+      fileName: ctx.outputs('GetFileMetadata')?.['Name'],
       checkInComment: "Updated via FlowForger automation"
     });
   }

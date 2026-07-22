@@ -8,7 +8,7 @@ class SharePoint_Create_File_Example {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.CreateFile("Create Text File", {
+    await ctx.connectors.sharepoint.CreateFile("CreateTextFile", {
       dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
       parameters: {
         folderPath: "/sites/yoursite/Shared Documents",
@@ -17,7 +17,7 @@ class SharePoint_Create_File_Example {
       body: "Hello, this is a test file created by FlowForger!"
     });
     /** @runAfter trigger */
-    await ctx.compose("Show File Info", ctx.outputs('Create Text File'));
+    await ctx.compose("ShowFileInfo", ctx.outputs('CreateTextFile'));
   }
 
   constructor(ctx: FlowContext) {

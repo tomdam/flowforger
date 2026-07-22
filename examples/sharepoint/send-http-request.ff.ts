@@ -8,19 +8,19 @@ class SharePoint_Send_HTTP_Request {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.SendHttpRequest("Get site information", {
+    await ctx.connectors.sharepoint.SendHttpRequest("GetSiteInformation", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       uri: "/_api/web?$select=Title,Url,Created,Language",
       method: "GET"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.SendHttpRequest("Get current user", {
+    await ctx.connectors.sharepoint.SendHttpRequest("GetCurrentUser", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       uri: "/_api/web/currentuser",
       method: "GET"
     });
     /** @runAfter trigger */
-    await ctx.connectors.sharepoint.SendHttpRequest("Create custom list item", {
+    await ctx.connectors.sharepoint.SendHttpRequest("CreateCustomListItem", {
       dataset: "https://contoso.sharepoint.com/sites/MySite",
       uri: "/_api/web/lists/getbytitle('Custom List')/items",
       method: "POST",
@@ -33,9 +33,9 @@ class SharePoint_Send_HTTP_Request {
     });
     /** @runAfter trigger */
     await ctx.compose("Summary", {
-      siteInfo: ctx.body('Get site information').body,
-      currentUser: ctx.body('Get current user').body,
-      createdItem: ctx.body('Create custom list item').body
+      siteInfo: ctx.body('GetSiteInformation').body,
+      currentUser: ctx.body('GetCurrentUser').body,
+      createdItem: ctx.body('CreateCustomListItem').body
     });
   }
 

@@ -1,0 +1,204 @@
+{
+  "FlowForger Flow Class": {
+    "prefix": ["flow-class", "ff-flow"],
+    "body": [
+      "import { Flow, HttpTrigger, Action, FlowContext } from '@flowforger/dsl-native';",
+      "",
+      "@Flow('${1:MyFlow}')",
+      "export class ${1:MyFlow} {",
+      "  @HttpTrigger({ method: '${2|GET,POST,PUT,DELETE|}' })",
+      "  trigger(ctx: FlowContext) {",
+      "    return ctx.triggerBody();",
+      "  }",
+      "",
+      "  @Action()",
+      "  async actions(ctx: FlowContext) {",
+      "    $0",
+      "  }",
+      "}"
+    ],
+    "description": "Create a new FlowForger flow class with HTTP trigger"
+  },
+  "FlowForger Recurrence Flow": {
+    "prefix": ["flow-recurrence", "ff-recurrence"],
+    "body": [
+      "import { Flow, RecurrenceTrigger, Action, FlowContext } from '@flowforger/dsl-native';",
+      "",
+      "@Flow('${1:ScheduledFlow}')",
+      "export class ${1:ScheduledFlow} {",
+      "  @RecurrenceTrigger({ frequency: '${2|Day,Hour,Minute,Week,Month|}', interval: ${3:1} })",
+      "  trigger(ctx: FlowContext) {",
+      "    return ctx.triggerBody();",
+      "  }",
+      "",
+      "  @Action()",
+      "  async actions(ctx: FlowContext) {",
+      "    $0",
+      "  }",
+      "}"
+    ],
+    "description": "Create a new FlowForger flow with recurrence trigger"
+  },
+  "HTTP Action": {
+    "prefix": ["http", "ff-http"],
+    "body": [
+      "ctx.http('${1:actionName}', {",
+      "  method: '${2|GET,POST,PUT,DELETE,PATCH|}',",
+      "  url: '${3:https://api.example.com}',",
+      "  ${4:headers: { 'Content-Type': 'application/json' \\},}",
+      "  ${5:body: \\{ \\}}",
+      "});"
+    ],
+    "description": "Add an HTTP action"
+  },
+  "Compose Action": {
+    "prefix": ["compose", "ff-compose"],
+    "body": ["ctx.compose('${1:actionName}', ${2:value});"],
+    "description": "Add a compose action"
+  },
+  "Initialize Variable": {
+    "prefix": ["init-var", "ff-var"],
+    "body": [
+      "let ${1:variableName}: ${2|string,number,boolean,object,array|} = ${3:initialValue};"
+    ],
+    "description": "Initialize a variable"
+  },
+  "Set Variable": {
+    "prefix": ["set-var", "ff-setvar"],
+    "body": ["${1:variableName} = ${2:newValue};"],
+    "description": "Set a variable value"
+  },
+  "Condition (If)": {
+    "prefix": ["if", "ff-if"],
+    "body": [
+      "ctx.if('${1:conditionName}', {",
+      "  condition: ctx.equals(${2:leftOperand}, ${3:rightOperand}),",
+      "  ifTrue: async () => {",
+      "    $4",
+      "  },",
+      "  ifFalse: async () => {",
+      "    $5",
+      "  }",
+      "});"
+    ],
+    "description": "Add a condition (if/else)"
+  },
+  "For Each Loop": {
+    "prefix": ["foreach", "ff-foreach"],
+    "body": [
+      "for (const ${1:item} of ctx.outputs('${2:arraySource}')) {",
+      "  $0",
+      "}"
+    ],
+    "description": "Add a for-each loop"
+  },
+  "Scope": {
+    "prefix": ["scope", "ff-scope"],
+    "body": [
+      "ctx.scope('${1:scopeName}', async () => {",
+      "  $0",
+      "});"
+    ],
+    "description": "Add a scope for grouping actions"
+  },
+  "SharePoint Get Items": {
+    "prefix": ["sp-getitems", "ff-sp-get"],
+    "body": [
+      "ctx.connectors.sharepoint.GetItems('${1:actionName}', {",
+      "  dataset: '${2:https://tenant.sharepoint.com/sites/sitename}',",
+      "  table: '${3:listGuid}',",
+      "  $filter: '${4:Title eq \\\"value\\\"}'",
+      "});"
+    ],
+    "description": "SharePoint: Get items from a list"
+  },
+  "SharePoint Create Item": {
+    "prefix": ["sp-createitem", "ff-sp-create"],
+    "body": [
+      "ctx.connectors.sharepoint.PostItem('${1:actionName}', {",
+      "  dataset: '${2:https://tenant.sharepoint.com/sites/sitename}',",
+      "  table: '${3:listGuid}',",
+      "  item: {",
+      "    Title: '${4:Item Title}'",
+      "  }",
+      "});"
+    ],
+    "description": "SharePoint: Create a new list item"
+  },
+  "Dataverse List Rows": {
+    "prefix": ["dv-listrows", "ff-dv-list"],
+    "body": [
+      "ctx.connectors.dataverse.ListRows('${1:actionName}', {",
+      "  entityName: '${2:accounts}',",
+      "  $filter: '${3:name eq \\\"value\\\"}'",
+      "});"
+    ],
+    "description": "Dataverse: List rows from a table"
+  },
+  "Dataverse Create Row": {
+    "prefix": ["dv-createrow", "ff-dv-create"],
+    "body": [
+      "ctx.connectors.dataverse.CreateRow('${1:actionName}', {",
+      "  entityName: '${2:accounts}',",
+      "  item: {",
+      "    name: '${3:Account Name}'",
+      "  }",
+      "});"
+    ],
+    "description": "Dataverse: Create a new row"
+  },
+  "Get Action Body": {
+    "prefix": ["body", "ff-body"],
+    "body": ["ctx.body('${1:actionName}')"],
+    "description": "Get the body of a previous action"
+  },
+  "Get Action Outputs": {
+    "prefix": ["outputs", "ff-outputs"],
+    "body": ["ctx.outputs('${1:actionName}')"],
+    "description": "Get the outputs of a previous action"
+  },
+  "Get Trigger Body": {
+    "prefix": ["triggerbody", "ff-triggerbody"],
+    "body": ["ctx.triggerBody()"],
+    "description": "Get the trigger body"
+  },
+  "Get Variable": {
+    "prefix": ["variables", "ff-variables"],
+    "body": ["ctx.variables('${1:variableName}')"],
+    "description": "Get a variable value"
+  },
+  "Send HTTP Response": {
+    "prefix": ["respond", "ff-respond"],
+    "body": [
+      "ctx.respond('${1:Response}', {",
+      "  statusCode: ${2:200},",
+      "  body: ${3:{\\}}",
+      "});"
+    ],
+    "description": "Send an HTTP response"
+  },
+  "Terminate Flow": {
+    "prefix": ["terminate", "ff-terminate"],
+    "body": [
+      "ctx.terminate('${1:Terminate}', {",
+      "  status: '${2|Succeeded,Failed,Cancelled|}'",
+      "});"
+    ],
+    "description": "Terminate the flow"
+  },
+  "Parse JSON": {
+    "prefix": ["parsejson", "ff-parse"],
+    "body": [
+      "ctx.parseJson('${1:ParseJSON}', {",
+      "  content: ctx.body('${2:previousAction}'),",
+      "  schema: {",
+      "    type: 'object',",
+      "    properties: {",
+      "      $0",
+      "    }",
+      "  }",
+      "});"
+    ],
+    "description": "Parse JSON content"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "departments": [
+    {
+      "name": "Engineering",
+      "employees": [
+        { "name": "Alice", "role": "Backend Developer" },
+        { "name": "Bob", "role": "Frontend Developer" },
+        { "name": "Charlie", "role": "DevOps Engineer" }
+      ]
+    },
+    {
+      "name": "Marketing",
+      "employees": [
+        { "name": "Diana", "role": "Content Manager" },
+        { "name": "Eve", "role": "SEO Specialist" }
+      ]
+    },
+    {
+      "name": "Sales",
+      "employees": [
+        { "name": "Frank", "role": "Account Executive" },
+        { "name": "Grace", "role": "Sales Engineer" },
+        { "name": "Hank", "role": "BDR" },
+        { "name": "Ivy", "role": "Solutions Architect" }
+      ]
+    }
+  ]
+}

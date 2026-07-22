@@ -1,0 +1,54 @@
+{
+  "name": "@flowforger/lsp-server",
+  "version": "0.1.0",
+  "description": "Language Server Protocol server for FlowForger DSL",
+  "keywords": [
+    "power-automate",
+    "logic-apps",
+    "workflow",
+    "flowforger",
+    "typescript",
+    "automation",
+    "lsp",
+    "language-server"
+  ],
+  "license": "Apache-2.0",
+  "author": "Damjan Tomic",
+  "homepage": "https://flowforger.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomdam/flowforger.git",
+    "directory": "packages/lsp-server"
+  },
+  "bugs": {
+    "url": "https://github.com/tomdam/flowforger/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "flowforger-lsp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "regenerate-lib-files": "node scripts/generate-lib-files.mjs"
+  },
+  "dependencies": {
+    "@flowforger/dsl-language-service": "^0.1.0",
+    "@flowforger/dsl-native": "^0.1.0",
+    "typescript": "^5.3.0",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.11"
+  }
+}

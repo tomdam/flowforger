@@ -1,0 +1,79 @@
+{
+  "auth": {
+    "clientId": "",
+    "tenantId": "",
+    "resources": {
+      "dataverse": "",
+      "sharepoint": ""
+    }
+  },
+  "global": {
+    "parser": {
+      "skipMetadataFields": ["operationMetadataId"],
+      "skipActionNamesForKinds": ["initializevariable", "setvariable"]
+    },
+    "generator": {
+      "argumentWhitespace": "spaced",
+      "multilineExpressions": "preserve"
+    },
+    "emitter": {
+      "includeMetadata": false,
+      "keyOrdering": "logical",
+      "emptyRunAfter": "preserve"
+    },
+    "parity": {
+      "ignoreMetadata": true,
+      "normalizeFunctionCase": true,
+      "normalizeNumbers": true,
+      "normalizeSpaces": true
+    },
+    "connections": {
+      "sharepoint": {
+        "referenceName": "shared_sharepointonline",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "dataverse": {
+        "referenceName": "shared_commondataserviceforapps",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "office365": {
+        "referenceName": "shared_office365",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "approvals": {
+        "referenceName": "shared_approvals",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_approvals",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "excelonline": {
+        "referenceName": "shared_excelonlinebusiness",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_excelonlinebusiness",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "wordonline": {
+        "referenceName": "shared_wordonlinebusiness",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_wordonlinebusiness",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "teams": {
+        "referenceName": "shared_teams",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_teams",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      }
+    }
+  },
+  "environments": {
+    "dev": {},
+    "prod": {}
+  }
+}

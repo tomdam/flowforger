@@ -1,0 +1,59 @@
+{
+  "name": "@flowforger/dsl-language-service",
+  "version": "0.1.0",
+  "description": "Language service for the FlowForger TypeScript DSL — diagnostics, completions, and hovers for .ff.ts flows",
+  "keywords": [
+    "power-automate",
+    "logic-apps",
+    "workflow",
+    "flowforger",
+    "typescript",
+    "automation",
+    "dsl",
+    "language-service"
+  ],
+  "license": "Apache-2.0",
+  "author": "Damjan Tomic",
+  "homepage": "https://flowforger.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomdam/flowforger.git",
+    "directory": "packages/dsl-language-service"
+  },
+  "bugs": {
+    "url": "https://github.com/tomdam/flowforger/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npx tsx --test test/reference-detection.test.ts"
+  },
+  "dependencies": {
+    "typescript": "^5.3.0",
+    "@flowforger/connectors-shared": "^0.1.0"
+  },
+  "peerDependencies": {
+    "@flowforger/ir": "^0.1.0"
+  },
+  "optionalDependencies": {
+    "@flowforger/connectors-sharepoint": "*",
+    "@flowforger/connectors-dataverse": "*",
+    "@flowforger/connectors-office365": "*",
+    "@flowforger/connectors-wordonline": "*",
+    "@flowforger/connectors-excelonline": "*"
+  }
+}

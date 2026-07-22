@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true,
+    "declarationMap": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../ir" },
+    { "path": "../engine" },
+    { "path": "../emitter-logicapps" },
+    { "path": "../validator" },
+    { "path": "../connectors-http" },
+    { "path": "../connectors-sharepoint" },
+    { "path": "../connectors-dataverse" },
+    { "path": "../connectors-office365" },
+    { "path": "../connectors-office365users" },
+    { "path": "../connectors-office365groups" },
+    { "path": "../connectors-wordonline" },
+    { "path": "../connectors-excelonline" },
+    { "path": "../connectors-teams" },
+    { "path": "../connectors-onedrive" },
+    { "path": "../dataverse-sdk" },
+    { "path": "../dsl-native" },
+    { "path": "../dsl-language-service" }
+  ]
+}

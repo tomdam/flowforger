@@ -1,0 +1,15 @@
+{
+  "tasks": [
+    { "id": "T001", "title": "Fix login bug", "priority": "high" },
+    { "id": "T002", "title": "Update docs", "priority": "low" },
+    { "id": "T003", "title": "Database migration", "priority": "high" },
+    { "id": "T004", "title": "Add tooltips", "priority": "low" },
+    { "id": "T005", "title": "Security audit", "priority": "high" },
+    { "id": "T006", "title": "Refactor CSS", "priority": "low" }
+  ],
+  "urgentTasks": [
+    { "id": "T001", "title": "Fix login bug", "priority": "high" },
+    { "id": "T007", "title": "Hotfix payment gateway", "priority": "high" },
+    { "id": "T003", "title": "Database migration", "priority": "high" }
+  ]
+}

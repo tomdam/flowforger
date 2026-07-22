@@ -1,0 +1,26 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/ir" },
+    { "path": "packages/dsl-language-service" },
+    { "path": "packages/engine" },
+    { "path": "packages/emitter-logicapps" },
+    { "path": "packages/validator" },
+    { "path": "packages/connectors-shared" },
+    { "path": "packages/connectors-http" },
+    { "path": "packages/connectors-sharepoint" },
+    { "path": "packages/connectors-dataverse" },
+    { "path": "packages/connectors-office365" },
+    { "path": "packages/connectors-office365users" },
+    { "path": "packages/connectors-office365groups" },
+    { "path": "packages/connectors-wordonline" },
+    { "path": "packages/connectors-excelonline" },
+    { "path": "packages/connectors-teams" },
+    { "path": "packages/connectors-onedrive" },
+    { "path": "packages/dataverse-sdk" },
+    { "path": "packages/generator-dsl" },
+    { "path": "packages/dsl-native" },
+    { "path": "packages/cli" },
+    { "path": "packages/lsp-server" }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "name": "@flowforger/connectors-teams",
+  "version": "0.1.0",
+  "description": "Microsoft Teams connector for FlowForger (Teams, Channels, Chat, Messaging via Microsoft Graph)",
+  "keywords": [
+    "power-automate",
+    "logic-apps",
+    "workflow",
+    "flowforger",
+    "typescript",
+    "automation",
+    "teams",
+    "connector"
+  ],
+  "license": "Apache-2.0",
+  "author": "Damjan Tomic",
+  "homepage": "https://flowforger.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomdam/flowforger.git",
+    "directory": "packages/connectors-teams"
+  },
+  "bugs": {
+    "url": "https://github.com/tomdam/flowforger/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@flowforger/connectors-shared": "^0.1.0",
+    "@flowforger/engine": "^0.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}

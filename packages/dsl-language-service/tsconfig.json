@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true,
+    "declarationMap": true
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../ir" },
+    { "path": "../connectors-shared" },
+    { "path": "../connectors-sharepoint" },
+    { "path": "../connectors-dataverse" },
+    { "path": "../connectors-office365" },
+    { "path": "../connectors-wordonline" },
+    { "path": "../connectors-excelonline" }
+  ]
+}

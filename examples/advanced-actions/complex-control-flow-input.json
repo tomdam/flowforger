@@ -1,0 +1,74 @@
+{
+  "batches": [
+    {
+      "batchId": "B001",
+      "region": "US",
+      "orders": [
+        {
+          "orderId": "ORD-101",
+          "productId": "PROD-A",
+          "quantity": 5,
+          "unitPrice": 50,
+          "lineItems": [
+            { "productId": "PROD-A", "restricted": false }
+          ]
+        },
+        {
+          "orderId": "ORD-102",
+          "productId": "PROD-B",
+          "quantity": 25,
+          "unitPrice": 80,
+          "lineItems": [
+            { "productId": "PROD-B", "restricted": true, "reason": "Export controlled" },
+            { "productId": "PROD-C", "restricted": false }
+          ]
+        },
+        {
+          "orderId": "ORD-103",
+          "productId": "",
+          "quantity": 0,
+          "unitPrice": 100,
+          "lineItems": []
+        }
+      ]
+    },
+    {
+      "batchId": "B002",
+      "region": "EU",
+      "orders": [
+        {
+          "orderId": "ORD-201",
+          "productId": "PROD-D",
+          "quantity": 2,
+          "unitPrice": 700,
+          "lineItems": [
+            { "productId": "PROD-D", "restricted": false }
+          ]
+        },
+        {
+          "orderId": "ORD-202",
+          "productId": "PROD-E",
+          "quantity": 10,
+          "unitPrice": 200,
+          "lineItems": [
+            { "productId": "PROD-E", "restricted": true, "reason": "Requires license" },
+            { "productId": "PROD-F", "restricted": true, "reason": "Hazardous material" }
+          ]
+        }
+      ]
+    },
+    {
+      "batchId": "B003",
+      "region": "APAC",
+      "orders": [
+        {
+          "orderId": "ORD-301",
+          "productId": "PROD-G",
+          "quantity": 1,
+          "unitPrice": 150,
+          "lineItems": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "payloads": [
+    {
+      "source": "form-submission",
+      "jsonString": "{\"name\": \"Alice Johnson\", \"age\": 30, \"contact\": {\"email\": \"alice@example.com\", \"phone\": \"555-0101\"}}"
+    },
+    {
+      "source": "api-import",
+      "jsonString": "{\"name\": \"Bob Smith\", \"age\": 16, \"contact\": {\"email\": \"bob@example.com\"}}"
+    },
+    {
+      "source": "csv-upload",
+      "jsonString": "{\"age\": 25, \"contact\": {\"email\": \"unknown@example.com\"}}"
+    },
+    {
+      "source": "manual-entry",
+      "jsonString": "{\"name\": \"Diana Prince\", \"age\": 28, \"contact\": {\"email\": \"diana@example.com\", \"phone\": \"555-0404\"}}"
+    }
+  ]
+}

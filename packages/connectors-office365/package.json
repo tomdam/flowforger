@@ -1,0 +1,50 @@
+{
+  "name": "@flowforger/connectors-office365",
+  "version": "0.1.0",
+  "description": "Office 365 connector for FlowForger (Email, Calendar, Contacts via Microsoft Graph)",
+  "keywords": [
+    "power-automate",
+    "logic-apps",
+    "workflow",
+    "flowforger",
+    "typescript",
+    "automation",
+    "office365",
+    "outlook",
+    "connector"
+  ],
+  "license": "Apache-2.0",
+  "author": "Damjan Tomic",
+  "homepage": "https://flowforger.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomdam/flowforger.git",
+    "directory": "packages/connectors-office365"
+  },
+  "bugs": {
+    "url": "https://github.com/tomdam/flowforger/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --eval \"console.log('ok')\""
+  },
+  "dependencies": {
+    "@flowforger/connectors-shared": "^0.1.0",
+    "@flowforger/engine": "^0.1.0"
+  }
+}

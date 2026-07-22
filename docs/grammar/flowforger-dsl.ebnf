@@ -1,0 +1,302 @@
+(* ============================================================================
+   FlowForger DSL — Recognized Subset Grammar (DESCRIPTIVE / NON-AUTHORITATIVE)
+   ============================================================================
+
+   A .ff.ts file is syntactically TypeScript; this grammar does NOT redefine
+   TypeScript syntax. It describes the SUBSET of TypeScript constructs that the
+   FlowForger transformer (packages/dsl-native/src/transformer + analyzers)
+   recognizes and lowers into FlowIR. Anything legal in TypeScript but not
+   covered here is either ignored or passed through verbatim by the transformer.
+
+   The transformer — not this file — is the source of truth.
+
+   For a complete, runnable-shaped flow that exercises every production below with
+   each block tagged by its production and conformance rule, see
+   ./canonical-example.ff.ts.
+
+   Notation (ISO/EBNF flavored):
+     =            definition
+     ,            concatenation (sequence)
+     |            alternation
+     [ x ]        optional
+     { x }        zero or more
+     ( x )        grouping
+     "lit"        literal terminal text
+     <TS:Foo>     a TypeScript production borrowed verbatim (Expression,
+                  StringLiteral, ObjectLiteral, etc.) — see the TS grammar
+     <JSDOC>      a JSDoc comment whose tag contents are defined in
+                  jsdoc-tags.ebnf
+     (* ... *)    comment
+   ============================================================================ *)
+
+
+(* ---------------------------------------------------------------------------
+   1. File / flow shape
+   --------------------------------------------------------------------------- *)
+
+flow_file        = { <TS:ImportDeclaration> },        (* imports are ignored / dead weight *)
+                   [ file_jsdoc ],
+                   flow_class ;
+                   (* Exactly one class carrying @Flow is located via findFlowClass.
+                      Additional top-level statements are NOT recognized — see
+                      conformance.md rule "no constants outside the flow class". *)
+
+file_jsdoc       = <JSDOC> ;                           (* may supply the flow description *)
+
+flow_class       = [ class_jsdoc ],
+                   "@Flow", "(", string_literal, [ ",", <TS:ObjectLiteral> ], ")",
+                   "class", identifier, "{",
+                       trigger_member,
+                       action_member,
+                       [ constructor_member ],
+                   "}" ;
+                   (* Members may appear in any order in source, but by convention
+                      the constructor is LAST. Exactly one trigger_member and
+                      exactly one action_member are required. *)
+
+class_jsdoc      = <JSDOC> ;                           (* class-level flow description *)
+
+
+(* ---------------------------------------------------------------------------
+   2. Trigger member  (exactly one)
+   --------------------------------------------------------------------------- *)
+
+trigger_member   = trigger_decorator, method_name, "(", ")", "{", "}" ;
+
+trigger_decorator =
+      "@HttpTrigger",       [ "(", [ <TS:ObjectLiteral> ], ")" ]
+    | "@ManualTrigger",     [ "(", [ <TS:ObjectLiteral> ], ")" ]
+    | "@RecurrenceTrigger", "(", <TS:ObjectLiteral>, ")"
+    | "@ConnectorTrigger",  "(", <TS:ObjectLiteral>, ")" ;
+
+
+(* ---------------------------------------------------------------------------
+   3. Action member  (exactly one) — conventionally named `run`
+   --------------------------------------------------------------------------- *)
+
+action_member    = "@Action", [ "(", ")" ],
+                   [ "async" ], method_name, "(", ctx_param, ")",
+                   "{", { flow_statement }, "}" ;
+
+ctx_param        = identifier, [ ":", "FlowContext" ] ;   (* the name `ctx` by convention *)
+
+
+(* ---------------------------------------------------------------------------
+   4. Constructor member  (optional) — flow metadata / parameters / refs
+   --------------------------------------------------------------------------- *)
+
+constructor_member =
+      "constructor", "(", ctx_param, ")", "{",
+          { ctx_flow_assignment },
+      "}" ;
+
+ctx_flow_assignment =
+      "ctx", ".", "flow", ".", flow_config_key, "=", <TS:Expression>, ";" ;
+
+flow_config_key  =
+      "metadata" | "parameters" | "connectionReferences"
+    | "childFlows" | "outputs" | "staticResults" | "workflowMetadata" ;
+
+
+(* ---------------------------------------------------------------------------
+   5. Flow statements — the recognized body of run()
+   --------------------------------------------------------------------------- *)
+
+flow_statement   =
+      [ <JSDOC> ],
+      ( action_call_stmt
+      | variable_decl_stmt
+      | variable_mutation_stmt
+      | control_flow_stmt
+      | scope_stmt ) ;
+      (* Any other TypeScript statement is not lowered to IR. A leading plain
+         (non-JSDoc) comment above a statement is captured as the action's
+         `description` — see conformance.md "256-char limit". *)
+
+
+(* ----- 5a. Action calls (ctx.* and typed connectors) ----------------------- *)
+
+action_call_stmt = [ "await" ], action_call, ";" ;
+
+action_call      = builtin_action | connector_action | generic_connector_action ;
+
+(* Built-in actions. First string arg is ALWAYS the (unique) action name.
+   Recognized method set is fixed in analyzers/action-collector.ts (isActionCall). *)
+builtin_action   = "ctx", ".", builtin_method, "(", string_literal,
+                   [ ",", arg_list ], ")" ;
+
+builtin_method   =
+      "http" | "compose" | "saveFile" | "expression" | "response"
+    | "terminate" | "delay" | "delayUntil" | "callWorkflow" | "parseJson"
+    | "join" | "select" | "filter" | "filterArray"
+    | "createCsvTable" | "createHtmlTable"
+    | "appendToStringVariable" | "connector" | "connectorWebhook" ;
+
+(* Typed connector: ctx.connectors.<connector>.<operation>(name, params, connRef?, auth?)
+   Both connector and operation may use dot OR bracket notation. *)
+connector_action =
+      "ctx", ".", "connectors", connector_ref, operation_ref,
+      "(", string_literal, [ ",", arg_list ], ")" ;
+
+connector_ref    = ( ".", identifier ) | ( "[", string_literal, "]" ) ;
+operation_ref    = ( ".", identifier ) | ( "[", string_literal, "]" ) ;
+
+(* Generic connector escape hatch:
+   ctx.connector(name, connectorName, operation, params, connRef?, auth?) *)
+generic_connector_action = "ctx", ".", "connector", "(", arg_list, ")" ;
+
+arg_list         = <TS:Expression>, { ",", <TS:Expression> } ;
+
+
+(* ----- 5b. Variable declarations -> InitializeVariable --------------------- *)
+
+(* `let`/`const`/`var` with a non-await initializer becomes InitializeVariable.
+   A declaration whose initializer is an `await <action_call>` is NOT a variable
+   (it is an action-result binding). Only simple identifiers (no destructuring). *)
+variable_decl_stmt =
+      [ <JSDOC> ],                              (* @action is OPTIONAL — auto-named
+                                                   Initialize_<name> if absent; see rule R4 *)
+      ( "let" | "const" | "var" ), identifier, [ ":", <TS:Type> ],
+      "=", <TS:Expression>, ";" ;
+
+
+(* ----- 5c. Variable mutations -> Set/Increment/Decrement/Append ------------ *)
+
+variable_mutation_stmt =
+      [ <JSDOC> ],
+      ( set_variable
+      | increment_variable
+      | decrement_variable
+      | append_array_variable ), ";" ;
+
+set_variable        = identifier, "=", <TS:Expression> ;
+                      (* SetVariable, unless it matches an increment/decrement
+                         self-reference pattern below *)
+
+increment_variable  = identifier, "+=", <TS:Expression>      (* numeric var *)
+                    | identifier, "=", identifier, "+", <TS:Expression>  (* x = x + n *)
+                    | identifier, "++"
+                    | "++", identifier ;
+
+decrement_variable  = identifier, "-=", <TS:Expression>      (* numeric var *)
+                    | identifier, "=", identifier, "-", <TS:Expression>  (* x = x - n *)
+                    | identifier, "--"
+                    | "--", identifier ;
+
+append_array_variable = identifier, ".", "push", "(", <TS:Expression>, ")" ;
+                      (* maps to AppendToArrayVariable. Spread/concat/reassignment
+                         are NOT recognized — see conformance.md rule 8. *)
+
+(* NOTE: `x += value` on a STRING-typed variable lowers to AppendToStringVariable. *)
+
+
+(* ----- 5d. Control flow --------------------------------------------------- *)
+
+control_flow_stmt =
+      if_stmt | switch_stmt | foreach_stmt | dountil_stmt ;
+
+(* IMPORTANT: if / switch / for-of / while / do are recognized STRUCTURALLY, by
+   their TypeScript statement kind — the transformer lowers them to control-flow IR
+   whether or not a JSDoc is present (transformer/index.ts dispatches on SyntaxKind).
+   The leading JSDoc is therefore OPTIONAL for these constructs:
+     - @action names the node; if absent an auto-name is derived (Condition /
+       ForEach_<loopVar> / Switch / DoUntil / Case_<value>). Recommended anyway,
+       since auto-names are generic and collide (rule R1 / R4).
+     - @type is advisory here — it documents intent and aids round-trip parity, but
+       it is NOT what triggers lowering.
+   The ONE exception is scope_stmt (5e): a bare block is lowered to a Scope ONLY when
+   it carries `@type scope`. *)
+
+if_stmt          = [ control_jsdoc ],
+                   "if", "(", condition_expr, ")", block,
+                   [ "else", ( block | if_stmt ) ] ;
+
+switch_stmt      = [ control_jsdoc ],
+                   "switch", "(", <TS:Expression>, ")", "{",
+                       { case_clause }, [ default_clause ],
+                   "}" ;
+
+case_clause      = [ control_jsdoc ],
+                   "case", <TS:Expression>, ":",
+                       { flow_statement }, [ "break", ";" ] ;
+
+default_clause   = "default", ":", { flow_statement }, [ "break", ";" ] ;
+
+foreach_stmt     = [ control_jsdoc ],
+                   "for", "(", ( "const" | "let" ), identifier, "of",
+                              <TS:Expression>, ")", block ;
+
+(* do/while and while both lower to a Do-Until node (while is negated). *)
+dountil_stmt     = [ control_jsdoc ],
+                   ( "do", block, "while", "(", condition_expr, ")", ";"
+                   | "while", "(", condition_expr, ")", block ) ;
+
+control_jsdoc    = (* an OPTIONAL <JSDOC> that may carry @action <name> and/or
+                      @type <kw>; neither is required for these constructs *)
+                   <JSDOC> ;
+
+jsdoc_with_type  = (* a <JSDOC> containing `@type <kw>`; REQUIRED only where it is
+                      referenced (scope_stmt) — see the note above *)
+                   <JSDOC> ;
+
+
+(* ----- 5e. Bare block scope -> Scope node --------------------------------- *)
+
+scope_stmt       = jsdoc_with_type("scope"), block ;
+                   (* @type scope is REQUIRED: without it a bare block is flattened
+                      (its statements inline), not lowered to a Scope. @action is
+                      optional (auto-named "Scope"). *)
+
+block            = "{", { flow_statement }, "}" ;
+
+
+(* ---------------------------------------------------------------------------
+   6. Conditions and expressions
+   --------------------------------------------------------------------------- *)
+
+(* Condition expressions accept JS operators (&&, ||, ===, ==, >, <, ...), which
+   are lowered to Power Automate and()/or()/equals()/greater()/... Top-level
+   ctx.and()/ctx.or() do NOT lower correctly — see conformance.md rule 7. *)
+condition_expr   = <TS:Expression> ;
+
+(* Values inside action arguments are TypeScript expressions. Recognized special
+   forms that change lowering:
+     - template literals          -> inline @{...} string interpolation
+     - ctx.eval("@...")           -> raw Power Automate expression (pass-through)
+     - ctx.braced(x)              -> @{...} string-coercing wrapper
+     - ctx.odata`...` / ctx.odata.*  -> OData query builder
+     - reference functions        -> lowered to the same-named PA reference function:
+         ctx.body(name)        -> body('name')        (HTTP/connector/child-flow result)
+         ctx.outputs(name)     -> outputs('name')     (Compose result)
+         ctx.actions(name)     -> actions('name')
+         ctx.result(name)      -> result('name')      (scope result)
+         ctx.triggerBody()     -> triggerBody()
+         ctx.triggerOutputs()  -> triggerOutputs()
+         ctx.trigger()         -> trigger()
+         ctx.variables(name)   -> variables('name')
+         ctx.parameters(name)  -> parameters('name')  (name must match key exactly, rule R3)
+         ctx.item()            -> item()
+         ctx.items(loopName)   -> items('loopName')   (current foreach element)
+         ctx.workflow()        -> workflow()
+       (body vs outputs choice is conformance rule R12; the full set lives in
+        expression-transformer.ts.)
+   All other call/binary/identifier expressions (ctx.utcNow(), ctx.union(),
+   ctx.concat(), a === b, x && y, ...) are converted to "@<expr>" Power Automate
+   expression syntax by the expression-transformer. *)
+
+string_literal   = <TS:StringLiteral> ;
+identifier       = <TS:Identifier> ;
+method_name      = <TS:Identifier> ;
+
+
+(* ============================================================================
+   NOT RECOGNIZED (passed through verbatim or ignored — never assume these work):
+     - top-level constants / functions outside the flow class
+     - `return` statements (use ctx.terminate)               [conformance rule 4]
+     - try / catch / finally as language constructs
+       (try-emulation is done with scopes + @runAfter)       [conformance rule 6]
+     - array rebuild via spread/concat for append             [conformance rule 8]
+     - ctx.and()/ctx.or() as the outermost if-condition       [conformance rule 7]
+     - destructuring declarations
+     - arbitrary helper method calls on the flow class
+   ============================================================================ *)

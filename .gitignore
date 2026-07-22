@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+**/dist/
+build/
+**/build/
+*.tsbuildinfo
+*.tgz
+*.vsix
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Local env / secrets
+.env
+.env.local
+*.token
+token.txt
+
+# User connection config (created by `flowforger init` — contains tenant/client IDs).
+# The flowforger.config.default.json template stays tracked.
+flowforger.config.json
+
+# MSAL token cache (created by --auth, stored at ~/.flowforger/token-cache.json)

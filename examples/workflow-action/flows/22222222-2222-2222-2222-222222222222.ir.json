@@ -1,0 +1,54 @@
+{
+  "name": "ProcessDocument",
+  "nodes": [
+    {
+      "id": "trg_manual",
+      "type": "trigger",
+      "name": "manual",
+      "kind": "manual",
+      "inputs": {},
+      "outputs": {}
+    },
+    {
+      "id": "act_extract",
+      "type": "action",
+      "name": "ExtractParameters",
+      "kind": "compose",
+      "inputs": {
+        "documentName": "@triggerBody()?['text']",
+        "userId": "@triggerBody()?['text_2']",
+        "timestamp": "@utcNow()"
+      },
+      "runAfter": {
+        "manual": ["Succeeded"]
+      }
+    },
+    {
+      "id": "act_process",
+      "type": "action",
+      "name": "ProcessData",
+      "kind": "compose",
+      "inputs": {
+        "processedDocument": "@concat('Processed_', outputs('ExtractParameters')['documentName'])",
+        "processedBy": "@outputs('ExtractParameters')['userId']",
+        "processedAt": "@outputs('ExtractParameters')['timestamp']",
+        "status": "completed"
+      },
+      "runAfter": {
+        "ExtractParameters": ["Succeeded"]
+      }
+    },
+    {
+      "id": "act_result",
+      "type": "action",
+      "name": "ReturnResult",
+      "kind": "compose",
+      "inputs": {
+        "result": "@outputs('ProcessData')"
+      },
+      "runAfter": {
+        "ProcessData": ["Succeeded"]
+      }
+    }
+  ]
+}

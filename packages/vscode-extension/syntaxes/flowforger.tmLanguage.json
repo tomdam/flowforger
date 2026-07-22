@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "FlowForger DSL",
+  "scopeName": "source.flowforger",
+  "patterns": [
+    { "include": "#flowforger-decorators" },
+    { "include": "#flowforger-context" },
+    { "include": "#flowforger-expression-functions" },
+    { "include": "source.ts" }
+  ],
+  "repository": {
+    "flowforger-decorators": {
+      "patterns": [
+        {
+          "name": "meta.decorator.flowforger",
+          "match": "@(Flow|HttpTrigger|ManualTrigger|RecurrenceTrigger|ConnectorTrigger|Action|WorkflowTrigger)\\b",
+          "captures": {
+            "0": { "name": "entity.name.function.decorator.flowforger" }
+          }
+        }
+      ]
+    },
+    "flowforger-context": {
+      "patterns": [
+        {
+          "name": "variable.language.flowforger.context",
+          "match": "\\bctx\\b"
+        },
+        {
+          "name": "support.function.flowforger.action",
+          "match": "\\bctx\\.(http|compose|terminate|wait|respond|parseJson|initializeVariable|setVariable|incrementVariable|decrementVariable|appendToArrayVariable|appendToStringVariable)\\b"
+        },
+        {
+          "name": "support.function.flowforger.reference",
+          "match": "\\bctx\\.(body|outputs|actions|triggerBody|triggerOutputs|variables|items|item|workflow|parameters)\\b"
+        },
+        {
+          "name": "support.function.flowforger.control",
+          "match": "\\bctx\\.(scope|if|foreach|until|switch|parallel)\\b"
+        },
+        {
+          "name": "support.function.flowforger.connector",
+          "match": "\\bctx\\.connectors\\.(dataverse|sharepoint|office365|wordOnline|excelOnline|approvals)\\b"
+        }
+      ]
+    },
+    "flowforger-expression-functions": {
+      "patterns": [
+        {
+          "name": "support.function.flowforger.expression",
+          "match": "\\b(concat|substring|replace|toLower|toUpper|trim|split|join|indexOf|lastIndexOf|length|empty|first|last|contains|startsWith|endsWith|equals|greater|less|greaterOrEquals|lessOrEquals|and|or|not|if|coalesce|json|string|int|float|bool|array|createArray|range|union|intersection|skip|take|utcNow|addDays|addHours|addMinutes|addSeconds|formatDateTime|ticks|dayOfWeek|dayOfMonth|dayOfYear)\\s*\\("
+        }
+      ]
+    }
+  }
+}

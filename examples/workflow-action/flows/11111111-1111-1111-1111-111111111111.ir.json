@@ -1,0 +1,37 @@
+{
+  "name": "GetAbsoluteUrl",
+  "nodes": [
+    {
+      "id": "trg_manual",
+      "type": "trigger",
+      "name": "manual",
+      "kind": "manual",
+      "inputs": {},
+      "outputs": {}
+    },
+    {
+      "id": "act_compose",
+      "type": "action",
+      "name": "ComposeAbsoluteUrl",
+      "kind": "compose",
+      "inputs": {
+        "value": "@concat('https://sharepoint.com/', triggerBody()?['text'])"
+      },
+      "runAfter": {
+        "manual": ["Succeeded"]
+      }
+    },
+    {
+      "id": "act_result",
+      "type": "action",
+      "name": "ReturnResult",
+      "kind": "compose",
+      "inputs": {
+        "absoluteurl": "@outputs('ComposeAbsoluteUrl')"
+      },
+      "runAfter": {
+        "ComposeAbsoluteUrl": ["Succeeded"]
+      }
+    }
+  ]
+}

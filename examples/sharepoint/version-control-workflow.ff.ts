@@ -1,0 +1,78 @@
+@Flow("SharePoint Version Control Workflow")
+class SharePoint_Version_Control_Workflow {
+  @ManualTrigger()
+  trigger(ctx: FlowContext) {
+    return {
+    };
+  }
+
+  @Action()
+  async run(ctx: FlowContext) {
+    await ctx.connectors.sharepoint.GetFilesPropertiesOnly("Get Files Needing Update", {
+      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      listId: "{LIBRARY-GUID}",
+      filter: "FSObjType eq 0 and FileLeafRef eq 'report.docx'",
+      top: 1
+    });
+    /** @action Check if File Found @type if @runAfter trigger */
+    if ((ctx.outputs('Get Files Needing Update')?.['value'].length > 0)) {
+      /** @action Initialize File ID */
+      let fileId: string = ctx.first(ctx.outputs('Get Files Needing Update')?.['value'])?.['File']?.['UniqueId'];
+      /** @runAfter first */
+      await ctx.connectors.sharepoint.CheckOutFile("Check Out for Editing", {
+        dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+        fileId: ctx.variables('fileId')
+      });
+      /** @action Try Update File @type scope @runAfter first */
+      {
+        await ctx.connectors.sharepoint.UpdateFile("Update File Content", {
+          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          fileId: ctx.variables('fileId'),
+          content: "Updated report content with new data"
+        });
+        /** @runAfter first */
+        await ctx.connectors.sharepoint.CheckInFile("Check In with Major Version", {
+          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          fileId: ctx.variables('fileId'),
+          comment: "Automated update - major version",
+          checkInType: 1
+        });
+      }
+      /** @action Handle Failure @type scope @runAfter Try Update File: Failed */
+      {
+        await ctx.connectors.sharepoint.DiscardCheckOut("Discard Changes on Error", {
+          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          fileId: ctx.variables('fileId')
+        });
+      }
+      /** @runAfter first */
+      await ctx.connectors.sharepoint.GetItemChanges("Get Version History", {
+        dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+        listId: "{LIBRARY-GUID}",
+        itemId: ctx.first(ctx.outputs('Get Files Needing Update')?.['value'])?.['Id']
+      });
+    }
+    /** @runAfter trigger */
+    await ctx.compose("Summary", {
+      message: "Version control workflow completed",
+      versionCount: ctx.outputs('Get Version History')?.['value'].length
+    });
+  }
+
+  constructor(ctx: FlowContext) {
+    ctx.flow.metadata = {
+      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+      contentVersion: "1.0.0.0",
+      schemaVersion: "1.0.0.0",
+    };
+    ctx.flow.connectionReferences = {
+      shared_sharepointonline: {
+        runtimeUrl: '',
+      },
+    };
+    ctx.flow.parameters = {
+      "$connections": { defaultValue: {}, type: "Object" },
+      "$authentication": { defaultValue: {}, type: "SecureObject" },
+    };
+  }
+}

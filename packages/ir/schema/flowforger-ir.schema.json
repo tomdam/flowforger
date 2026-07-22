@@ -1,0 +1,1424 @@
+{
+  "$ref": "#/definitions/FlowIR",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActionLimit": {
+      "description": "Action-level execution limit configuration. Used to set timeouts on actions (e.g., connector actions).",
+      "properties": {
+        "timeout": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "ActionNode": {
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HttpActionInputs"
+            },
+            {
+              "$ref": "#/definitions/ComposeActionInputs"
+            },
+            {
+              "$ref": "#/definitions/ExpressionActionInputs"
+            },
+            {
+              "$ref": "#/definitions/VariableActionInputs"
+            },
+            {
+              "$ref": "#/definitions/DataOperationInputs"
+            },
+            {
+              "$ref": "#/definitions/ResponseInputs"
+            },
+            {
+              "$ref": "#/definitions/TerminateInputs"
+            },
+            {
+              "$ref": "#/definitions/DelayInputs"
+            },
+            {
+              "$ref": "#/definitions/WorkflowActionInputs"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "http",
+            "compose",
+            "expression",
+            "initializevariable",
+            "setvariable",
+            "incrementvariable",
+            "decrementvariable",
+            "appendtoarrayvariable",
+            "appendtostringvariable",
+            "join",
+            "select",
+            "filterarray",
+            "parsejson",
+            "createcsvtable",
+            "createhtmltable",
+            "response",
+            "terminate",
+            "delay",
+            "delayuntil",
+            "workflow"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/definitions/ActionLimit"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/RetryPolicy"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "action",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "inputs",
+        "kind",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ChildFlowDefinition": {
+      "description": "Definition of a child flow referenced by name.",
+      "properties": {
+        "description": {
+          "description": "Human-readable description",
+          "type": "string"
+        },
+        "dslPath": {
+          "description": "Path to the child flow's .ff.ts DSL file (relative to parent flow file)",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ChildFlowParameter"
+          },
+          "description": "Parameter schema for the child flow's trigger",
+          "type": "object"
+        },
+        "workflowId": {
+          "description": "The workflow GUID in Dataverse",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflowId"
+      ],
+      "type": "object"
+    },
+    "ChildFlowParameter": {
+      "description": "Parameter definition for a child flow.",
+      "properties": {
+        "required": {
+          "description": "Whether this parameter is required",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "Human-readable parameter label",
+          "type": "string"
+        },
+        "type": {
+          "description": "Parameter type: 'string' | 'number' | 'boolean' | 'object' | 'array'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "type",
+        "required"
+      ],
+      "type": "object"
+    },
+    "ComposeActionInputs": {
+      "properties": {
+        "value": {}
+      },
+      "required": [
+        "value"
+      ],
+      "type": "object"
+    },
+    "ConnectionReference": {
+      "description": "Connection reference metadata for Logic Apps deployment. Maps connection reference names to their Dataverse logical names and API info.",
+      "properties": {
+        "apiId": {
+          "description": "The API identifier (e.g., '/providers/Microsoft.PowerApps/apis/shared_sharepointonline')",
+          "type": "string"
+        },
+        "connectionName": {
+          "description": "The direct connection ID (for embedded connections, e.g., 'b41731b4a9fe4561bc46c535ac774076')",
+          "type": "string"
+        },
+        "connectionReferenceLogicalName": {
+          "description": "The Dataverse logical name for this connection reference (for solution-aware flows)",
+          "type": "string"
+        },
+        "impersonation": {
+          "additionalProperties": {},
+          "description": "Impersonation settings (optional, used with some connectors like Dataverse)",
+          "type": "object"
+        },
+        "runtimeSource": {
+          "description": "Runtime source, typically 'embedded' or 'invoker'",
+          "type": "string"
+        }
+      },
+      "required": [
+        "apiId"
+      ],
+      "type": "object"
+    },
+    "ConnectorActionNode": {
+      "properties": {
+        "connectionReferenceName": {
+          "type": "string"
+        },
+        "connector": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/definitions/ActionLimit"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "paramsOmitted": {
+          "description": "True if the source JSON had no `parameters` key on inputs (parameterless operation). Used to preserve parity (don't emit `parameters: {}`).",
+          "type": "boolean"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/RetryPolicy"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "connector",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector",
+        "id",
+        "name",
+        "operation",
+        "params",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ConnectorTriggerInputs": {
+      "properties": {
+        "authentication": {
+          "type": "string"
+        },
+        "connectionReferenceName": {
+          "type": "string"
+        },
+        "connector": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "recurrence": {
+          "properties": {
+            "frequency": {
+              "type": "string"
+            },
+            "interval": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "interval",
+            "frequency"
+          ],
+          "type": "object"
+        },
+        "retryPolicy": {
+          "type": "object"
+        },
+        "splitOn": {
+          "type": "string"
+        },
+        "triggerType": {
+          "enum": [
+            "OpenApiConnection",
+            "OpenApiConnectionWebhook",
+            "OpenApiConnectionNotification"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector",
+        "operation",
+        "params"
+      ],
+      "type": "object"
+    },
+    "ConnectorWebhookActionNode": {
+      "properties": {
+        "connectionReferenceName": {
+          "type": "string"
+        },
+        "connector": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "limit": {
+          "$ref": "#/definitions/ActionLimit"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "retryPolicy": {
+          "$ref": "#/definitions/RetryPolicy"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "connectorwebhook",
+          "type": "string"
+        }
+      },
+      "required": [
+        "connector",
+        "id",
+        "name",
+        "operation",
+        "params",
+        "type"
+      ],
+      "type": "object"
+    },
+    "DataOperationInputs": {
+      "properties": {
+        "columns": {
+          "items": {
+            "properties": {
+              "header": {
+                "type": "string"
+              },
+              "value": {}
+            },
+            "required": [
+              "header",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "from": {},
+        "joinWith": {
+          "type": "string"
+        },
+        "schema": {},
+        "select": {},
+        "where": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DelayInputs": {
+      "properties": {
+        "interval": {
+          "properties": {
+            "count": {
+              "type": [
+                "number",
+                "string"
+              ]
+            },
+            "unit": {
+              "enum": [
+                "Second",
+                "Minute",
+                "Hour",
+                "Day",
+                "Week",
+                "Month"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "count",
+            "unit"
+          ],
+          "type": "object"
+        },
+        "until": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "DoUntilNode": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "number"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "timeout": {
+          "type": "string"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "dountil",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "condition",
+        "id",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ExpressionActionInputs": {
+      "properties": {
+        "expressionKind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expressionKind"
+      ],
+      "type": "object"
+    },
+    "FlowIR": {
+      "properties": {
+        "childFlows": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ChildFlowDefinition"
+          },
+          "description": "Child flow definitions for name-based workflow references. Keys are friendly names.",
+          "type": "object"
+        },
+        "connectionReferences": {
+          "additionalProperties": {
+            "$ref": "#/definitions/ConnectionReference"
+          },
+          "description": "Connection references for Logic Apps deployment. Keys are reference names (e.g., 'shared_sharepointonline').",
+          "type": "object"
+        },
+        "description": {
+          "description": "Flow-level description (shown in Power Automate UI)",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/FlowMetadata",
+          "description": "Schema metadata (schemaVersion, contentVersion, $schema)"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "outputs": {
+          "description": "Logic Apps outputs definition",
+          "type": "object"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/definitions/FlowParameter"
+          },
+          "description": "Flow parameters (e.g., environment variables). Keys are parameter names.",
+          "type": "object"
+        },
+        "staticResults": {
+          "description": "Static results for testing (mock responses for actions)",
+          "type": "object"
+        },
+        "workflowId": {
+          "description": "Dataverse workflow GUID (DSL-layer only; not part of Logic Apps JSON)",
+          "type": "string"
+        },
+        "workflowMetadata": {
+          "description": "Workflow-level metadata at definition.metadata (creator, flowclientsuspensionreason, etc.) — preserved verbatim.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "FlowMetadata": {
+      "description": "Flow metadata for Logic Apps schema versioning.",
+      "properties": {
+        "$schema": {
+          "description": "Schema URL (e.g., \"https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#\")",
+          "type": "string"
+        },
+        "contentVersion": {
+          "description": "Content version (e.g., \"1.0.0.0\")",
+          "type": "string"
+        },
+        "schemaVersion": {
+          "description": "Schema version (e.g., \"1.0.0.0\")",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "FlowParameter": {
+      "description": "Flow parameter definition for Logic Apps. Maps parameter names to their type and default value.",
+      "properties": {
+        "allowedValues": {
+          "description": "Allowed values (for enum-like parameters)",
+          "items": {},
+          "type": "array"
+        },
+        "defaultValue": {
+          "description": "The default value for this parameter"
+        },
+        "metadata": {
+          "description": "Metadata about the parameter",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "schemaName": {
+              "description": "Schema name for environment variable binding",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "type": {
+          "description": "The parameter type (String, Int, Float, Bool, Array, Object, SecureString, SecureObject)",
+          "enum": [
+            "String",
+            "Int",
+            "Float",
+            "Bool",
+            "Array",
+            "Object",
+            "SecureString",
+            "SecureObject"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ForeachNode": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "itemsExpression": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parallel": {
+          "type": "boolean"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "foreach",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "id",
+        "itemsExpression",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "HttpActionInputs": {
+      "properties": {
+        "body": {},
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "method": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "type": "object"
+    },
+    "HttpTriggerInputs": {
+      "properties": {
+        "headersSchema": {
+          "type": "object"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "schema": {
+          "properties": {
+            "properties": {
+              "type": "object"
+            },
+            "required": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "triggerAuthenticationType": {
+          "type": "string"
+        },
+        "triggerKind": {
+          "enum": [
+            "Http",
+            "VirtualAgent"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "IfNode": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "conditionFormat": {
+          "description": "Original condition format: 'string' for \"@equals(...)\", 'object' for {\"equals\":[...]}",
+          "enum": [
+            "string",
+            "object"
+          ],
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "elseActions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "if",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "condition",
+        "id",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ManualTriggerInputs": {
+      "properties": {
+        "headersSchema": {
+          "type": "object"
+        },
+        "schema": {
+          "properties": {
+            "properties": {
+              "type": "object"
+            },
+            "required": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        "triggerAuthenticationType": {
+          "type": "string"
+        },
+        "triggerKind": {
+          "enum": [
+            "Button",
+            "PowerAppV2"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Node": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TriggerNode"
+        },
+        {
+          "$ref": "#/definitions/RecurrenceTriggerNode"
+        },
+        {
+          "$ref": "#/definitions/ActionNode"
+        },
+        {
+          "$ref": "#/definitions/ScopeNode"
+        },
+        {
+          "$ref": "#/definitions/IfNode"
+        },
+        {
+          "$ref": "#/definitions/ForeachNode"
+        },
+        {
+          "$ref": "#/definitions/SwitchNode"
+        },
+        {
+          "$ref": "#/definitions/DoUntilNode"
+        },
+        {
+          "$ref": "#/definitions/ConnectorActionNode"
+        },
+        {
+          "$ref": "#/definitions/ConnectorWebhookActionNode"
+        }
+      ]
+    },
+    "RecurrenceSchedule": {
+      "properties": {
+        "hours": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "minutes": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "monthDays": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "monthlyOccurrences": {
+          "items": {
+            "properties": {
+              "dayOfWeek": {
+                "enum": [
+                  "Monday",
+                  "Tuesday",
+                  "Wednesday",
+                  "Thursday",
+                  "Friday",
+                  "Saturday",
+                  "Sunday"
+                ],
+                "type": "string"
+              },
+              "occurrence": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "dayOfWeek",
+              "occurrence"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "weekDays": {
+          "items": {
+            "enum": [
+              "Monday",
+              "Tuesday",
+              "Wednesday",
+              "Thursday",
+              "Friday",
+              "Saturday",
+              "Sunday"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RecurrenceTriggerInputs": {
+      "properties": {
+        "count": {
+          "type": "number"
+        },
+        "endTime": {
+          "type": "string"
+        },
+        "frequency": {
+          "enum": [
+            "Second",
+            "Minute",
+            "Hour",
+            "Day",
+            "Week",
+            "Month",
+            "Year"
+          ],
+          "type": "string"
+        },
+        "interval": {
+          "type": "number"
+        },
+        "schedule": {
+          "$ref": "#/definitions/RecurrenceSchedule"
+        },
+        "startTime": {
+          "type": "string"
+        },
+        "timeZone": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "frequency",
+        "interval"
+      ],
+      "type": "object"
+    },
+    "RecurrenceTriggerNode": {
+      "properties": {
+        "conditions": {
+          "items": {
+            "$ref": "#/definitions/TriggerCondition"
+          },
+          "type": "array"
+        },
+        "correlation": {
+          "type": "object"
+        },
+        "description": {
+          "type": "string"
+        },
+        "evaluatedRecurrence": {
+          "$ref": "#/definitions/RecurrenceTriggerInputs",
+          "description": "Evaluated recurrence (actual effective schedule after Power Automate processes settings)"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "$ref": "#/definitions/RecurrenceTriggerInputs"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "type": {
+          "const": "recurrence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "inputs",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ResponseInputs": {
+      "properties": {
+        "body": {},
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "VirtualAgent",
+            "PowerApp",
+            "Http"
+          ],
+          "type": "string"
+        },
+        "schema": {},
+        "statusCode": {
+          "type": [
+            "number",
+            "string"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RetryPolicy": {
+      "properties": {
+        "count": {
+          "type": "number"
+        },
+        "interval": {
+          "type": "number"
+        },
+        "type": {
+          "enum": [
+            "none",
+            "fixed",
+            "exponential"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "ScopeNode": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "id",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "StepResultStatus": {
+      "enum": [
+        "Succeeded",
+        "Failed",
+        "Skipped",
+        "TimedOut"
+      ],
+      "type": "string"
+    },
+    "SwitchCase": {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "value",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "SwitchNode": {
+      "properties": {
+        "cases": {
+          "items": {
+            "$ref": "#/definitions/SwitchCase"
+          },
+          "type": "array"
+        },
+        "defaultActions": {
+          "items": {
+            "$ref": "#/definitions/Node"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runAfter": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/StepResultStatus"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "trackedProperties": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tracked properties for telemetry and monitoring",
+          "type": "object"
+        },
+        "type": {
+          "const": "switch",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cases",
+        "expression",
+        "id",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "TerminateInputs": {
+      "properties": {
+        "runError": {
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "runStatus": {
+          "enum": [
+            "Succeeded",
+            "Cancelled",
+            "Failed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "runStatus"
+      ],
+      "type": "object"
+    },
+    "TriggerCondition": {
+      "description": "Trigger condition for filtering when a trigger should fire. Logic Apps supports conditions on triggers to prevent flow execution unless the condition evaluates to true.",
+      "properties": {
+        "expression": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expression"
+      ],
+      "type": "object"
+    },
+    "TriggerNode": {
+      "properties": {
+        "conditions": {
+          "items": {
+            "$ref": "#/definitions/TriggerCondition"
+          },
+          "type": "array"
+        },
+        "correlation": {
+          "type": "object"
+        },
+        "description": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "inputs": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HttpTriggerInputs"
+            },
+            {
+              "$ref": "#/definitions/ConnectorTriggerInputs"
+            },
+            {
+              "$ref": "#/definitions/ManualTriggerInputs"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "http",
+            "connector",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtimeConfiguration": {
+          "type": "object"
+        },
+        "type": {
+          "const": "trigger",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "inputs",
+        "kind",
+        "name",
+        "type"
+      ],
+      "type": "object"
+    },
+    "VariableActionInputs": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {},
+        "variableName": {
+          "type": "string"
+        },
+        "variableType": {
+          "enum": [
+            "String",
+            "Integer",
+            "Float",
+            "Boolean",
+            "Array",
+            "Object"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "WorkflowActionInputs": {
+      "properties": {
+        "body": {},
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "workflowId": {
+          "type": "string"
+        },
+        "workflowReferenceName": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  }
+}

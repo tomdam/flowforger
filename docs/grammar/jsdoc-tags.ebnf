@@ -1,0 +1,182 @@
+(* ============================================================================
+   FlowForger DSL — JSDoc Annotation Language Grammar
+   ============================================================================
+
+   FlowForger carries IR metadata that has no natural home in TypeScript syntax
+   inside JSDoc block comments placed immediately ABOVE a statement. This is a
+   small, closed mini-language. This grammar mirrors the tag parsers in
+   packages/dsl-native/src/analyzers/action-collector.ts (and the @typeCase tag
+   in control-flow-analyzer.ts). It is near-authoritative: update it whenever a
+   tag is added or its accepted form changes.
+
+   Parsing notes that the grammar abstracts over (but are real):
+     - Tags are extracted by regex from the raw comment text, not by a JSDoc AST.
+     - Tag ORDER is free; tags are matched independently anywhere in the comment.
+     - Only a /** ... */ block comment counts as a JSDoc annotation block.
+       A `//` or `/* */` comment is NOT scanned for tags (it becomes a plain
+       description instead — see @description / conformance.md rule 9).
+     - Unknown @tags are ignored.
+
+   Notation: see flowforger-dsl.ebnf header (same EBNF flavor).
+   ============================================================================ *)
+
+
+jsdoc_block      = "/**", { ws | tag | free_text }, "*/" ;
+                   (* tags may be interleaved with prose and `*` line prefixes *)
+
+
+(* ---------------------------------------------------------------------------
+   Tags
+   --------------------------------------------------------------------------- *)
+
+tag =
+      action_tag
+    | type_tag
+    | type_case_tag
+    | run_after_tag
+    | description_tag
+    | metadata_tag
+    | runtime_config_tag
+    | retry_policy_tag
+    | tracked_properties_tag
+    | limit_tag
+    | var_type_tag
+    | condition_format_tag
+    | original_name_tag
+    | var_name_case_tag
+    | value_array_form_tag
+    | operation_options_tag
+    | params_omitted_tag ;
+
+
+(* ----- Naming & structure ------------------------------------------------- *)
+
+(* @action <Name>  — names the action/control node. The name may contain spaces
+   (e.g. "Case 2"); parsing stops at the next "@<word>" tag or the comment end. *)
+action_tag       = "@action", ws, action_name ;
+action_name      = free_text_until_tag ;          (* trimmed; spaces allowed *)
+
+(* @type <kw>  — REQUIRED only for `scope` (a bare block becomes a Scope node only
+   with @type scope). For if/switch/foreach/until the node kind is determined
+   STRUCTURALLY by the TypeScript statement, so @type there is advisory (documents
+   intent / aids round-trip parity). Token is [^\s@*]+; the meaningful values are: *)
+type_tag         = "@type", ws, type_kw ;
+type_kw          = "if" | "switch" | "case" | "foreach" | "until" | "scope" ;
+
+(* @typeCase "<text>"  — preserves the source casing of a foreach's `type` field
+   (e.g. "foreach" vs "Foreach") for byte-for-byte parity. (foreach only) *)
+type_case_tag    = "@typeCase", ws, quoted_string ;
+
+
+(* ----- Dependencies ------------------------------------------------------- *)
+
+(* @runAfter ...  — sets the action's runAfter map. Three forms:
+     1. @runAfter trigger            -> runAfter {} (parallel at top level)
+     2. @runAfter first              -> runAfter {} (first action in container)
+     3. @runAfter <Name>: <statuses> -> { "<Name>": [statuses] }  (repeatable)
+   The dependency name may be bare or quoted (quote it if it contains ':'). *)
+run_after_tag    =
+      "@runAfter", ws, "trigger"
+    | "@runAfter", ws, "first"
+    | "@runAfter", ws, dep_name, ":", ws, status_list ;
+
+dep_name         = quoted_string | bare_name ;     (* bare_name excludes ':' '@' ws *)
+status_list      = status, { ",", ws, status } ;
+status           = "Succeeded" | "Failed" | "Skipped" | "TimedOut" ;
+
+
+(* ----- Descriptions ------------------------------------------------------- *)
+
+(* @description <text>  — free prose, may itself contain '@' and '*'
+   (e.g. "@{variables('x')}"); parsing stops at the NEXT known structural tag
+   or the comment end. If absent, a plain comment ABOVE the JSDoc (or above the
+   statement when there is no JSDoc) is used instead. MUST be <= 256 chars after
+   trimming — see conformance.md rule 9. *)
+description_tag  = "@description", ws, free_text_until_known_tag ;
+
+
+(* ----- JSON-valued tags  (balanced-brace { ... } parsed as JSON) ---------- *)
+
+metadata_tag            = "@metadata",           ws, json_object ;
+runtime_config_tag      = "@runtimeConfig",      ws, json_object ;
+retry_policy_tag        = "@retryPolicy",        ws, json_object ;
+tracked_properties_tag  = "@trackedProperties",  ws, json_object ;
+
+(* @limit  — a bare integer (do-until iteration cap) OR a JSON object timeout. *)
+limit_tag        = "@limit", ws, ( integer | json_object ) ;
+                   (* object form e.g. {"timeout":"PT2M"} or {"count":60,"timeout":"PT1H"} *)
+
+
+(* ----- Scalar-valued tags ------------------------------------------------- *)
+
+(* @varType <word>  — overrides inferred PA variable type; lower-cased. *)
+var_type_tag     = "@varType", ws, word ;          (* e.g. float, integer, string *)
+
+(* @conditionFormat  — preserves PA condition serialization for parity. *)
+condition_format_tag = "@conditionFormat", ws, ( "string" | "object" ) ;
+
+(* @originalName "<text>"  — original (spaced) name when sanitized differs. *)
+original_name_tag = "@originalName", ws, quoted_string ;
+
+(* @varNameCase "<text>"  — source casing of a variable name (PA is case-
+   insensitive at runtime; this preserves export parity). JSON-string escaping. *)
+var_name_case_tag = "@varNameCase", ws, json_string ;
+
+(* @valueArrayForm  — overrides the array<->createArray round-trip heuristic. *)
+value_array_form_tag = "@valueArrayForm", ws, ( "array" | "createArrayString" ) ;
+
+(* @operationOptions "<text>"  — e.g. "Asynchronous". JSON-string encoded. *)
+operation_options_tag = "@operationOptions", ws, json_string ;
+
+
+(* ----- Boolean (presence-only) tags --------------------------------------- *)
+
+(* @paramsOmitted  — marker: source connector action had no `parameters` key. *)
+params_omitted_tag = "@paramsOmitted" ;
+
+
+(* ---------------------------------------------------------------------------
+   Lexical helpers
+   --------------------------------------------------------------------------- *)
+
+json_object      = "{", ? balanced JSON object text, parsed with JSON.parse ?, "}" ;
+json_string      = ? a JSON-encoded string literal, e.g. "abc\"def" ? ;
+quoted_string    = '"', { ? any char except unescaped '"' ? }, '"' ;
+bare_name        = ? one or more chars excluding ':' '@' and whitespace ? ;
+integer          = [ "-" ], digit, { digit } ;
+word             = letter, { letter | digit | "_" } ;
+free_text        = ? prose; `*` line-prefixes are stripped ? ;
+free_text_until_tag        = ? text up to the next ` @<letter>` tag or `*/` ? ;
+free_text_until_known_tag  = ? text up to the next KNOWN structural @tag or `*/` ? ;
+ws               = ? whitespace (spaces, tabs, newlines, `*` prefixes) ? ;
+digit            = "0".."9" ;
+letter           = "a".."z" | "A".."Z" ;
+
+
+(* ============================================================================
+   Tag applicability (which statements honor which tags) — informative:
+
+     action calls (ctx.*) ...... @runAfter @runtimeConfig @retryPolicy @limit(obj)
+                                  @trackedProperties @description @metadata
+                                  @operationOptions @paramsOmitted
+                                  (@action only on appendToStringVariable & connectors
+                                   without an explicit name arg)
+     variable decl (let x=...) .. @action(optional; auto-named Initialize_<name>)
+                                  @runAfter @runtimeConfig @description @metadata
+                                  @trackedProperties @originalName @varType
+     variable mutation .......... @action(optional; auto-named Set_/Increment_/
+                                  Decrement_/Append_<name>) @runAfter @runtimeConfig
+                                  @description @metadata @trackedProperties
+                                  @valueArrayForm @varNameCase
+                                  (NOTE: arr.push(), x++, x-- IGNORE @action — always
+                                   auto-named Append_/Increment_/Decrement_<name>)
+     if / foreach / switch /
+     until / scope .............. @action(optional; auto-named) @type @runAfter
+                                  @runtimeConfig @description @metadata @trackedProperties
+                                  @type is REQUIRED only for scope; for if/foreach/
+                                  switch/until it is advisory (recognized structurally)
+                                  if:      @conditionFormat
+                                  foreach: @typeCase
+                                  until:   @limit(number|obj)
+                                  case:    @action(optional) @type=case (advisory)
+   ============================================================================ *)

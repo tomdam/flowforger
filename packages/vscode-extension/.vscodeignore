@@ -1,0 +1,11 @@
+.vscode/**
+node_modules/**
+src/**
+.gitignore
+tsconfig.json
+**/*.ts
+**/*.map
+*.vsix
+*.txt
+../**
+!server/dist/index.js

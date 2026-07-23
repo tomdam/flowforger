@@ -27,7 +27,7 @@ class SharePoint_Get_Item_Changes_Example {
       versionCount: ctx.outputs('GetItemChanges')?.['value'].length,
       versions: ctx.outputs('GetItemChanges')?.['value']
     });
-    /** @action Check if Changes Exist @type if @runAfter trigger */
+    /** @action CheckIfChangesExist @type if @runAfter trigger */
     if ((ctx.outputs('GetItemChanges')?.['value'].length > 0)) {
       await ctx.compose("LatestChange", ctx.first(ctx.outputs('GetItemChanges')?.['value']));
     }
@@ -41,7 +41,7 @@ class SharePoint_Get_Item_Changes_Example {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

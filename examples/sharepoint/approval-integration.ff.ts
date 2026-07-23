@@ -45,7 +45,7 @@ Last Modified: ${ctx.body('GetDocumentDetails').Modified}`,
         enableReassignment: true
       }
     });
-    /** @action Check approval response @type if @runAfter trigger */
+    /** @action CheckApprovalResponse @type if @runAfter trigger */
     if ((ctx.body('StartApprovalRequest').outcome === 'Approve')) {
       await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveInSharePoint", {
         dataset: ctx.triggerBody().siteUrl,
@@ -89,7 +89,7 @@ Last Modified: ${ctx.body('GetDocumentDetails').Modified}`,
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

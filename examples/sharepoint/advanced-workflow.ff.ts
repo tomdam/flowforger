@@ -13,7 +13,7 @@ class SharePoint_Advanced_Discovery_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize site URL */
+    /** @action InitializeSiteURL */
     let siteUrl: string = ctx.triggerBody().siteUrl;
     /** @runAfter trigger */
     await ctx.connectors.sharepoint.SendHttpRequest("GetSiteMetadata", {
@@ -30,19 +30,19 @@ class SharePoint_Advanced_Discovery_Workflow {
       dataset: ctx.variables('siteUrl'),
       email: ctx.triggerBody().userEmail
     });
-    /** @action Process each library @type foreach @runAfter trigger */
+    /** @action ProcessEachLibrary @type foreach @runAfter trigger */
     for (const item of ctx.body('Get document libraries')) {
       await ctx.connectors.sharepoint.GetListViews("GetLibraryViews", {
         dataset: ctx.variables('siteUrl'),
-        table: ctx.items('Process each library').Id
+        table: ctx.items('ProcessEachLibrary').Id
       });
       /** @runAfter first */
       await ctx.compose("LibraryInfo", {
-        libraryName: ctx.items('Process each library').Title,
-        libraryId: ctx.items('Process each library').Id,
-        itemCount: ctx.items('Process each library').ItemCount,
+        libraryName: ctx.items('ProcessEachLibrary').Title,
+        libraryId: ctx.items('ProcessEachLibrary').Id,
+        itemCount: ctx.items('ProcessEachLibrary').ItemCount,
         viewCount: ctx.body('GetLibraryViews').value.length,
-        created: ctx.items('Process each library').Created
+        created: ctx.items('ProcessEachLibrary').Created
       });
     }
     /** @runAfter trigger */
@@ -74,7 +74,7 @@ class SharePoint_Advanced_Discovery_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

@@ -31,7 +31,7 @@ class Office365GroupsListMembers {
       schemaVersion: '1.0.0.0',
     };
     ctx.flow.connectionReferences = {
-      shared_office365groups: { runtimeUrl: '' },
+      shared_office365groups: { apiId: '/providers/Microsoft.PowerApps/apis/shared_office365groups' },
     };
     ctx.flow.parameters = {
       $connections: { defaultValue: {}, type: 'Object' },

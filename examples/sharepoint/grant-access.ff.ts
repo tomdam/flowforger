@@ -44,7 +44,7 @@ class SharePoint_Grant_Access {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

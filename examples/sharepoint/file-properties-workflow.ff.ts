@@ -16,27 +16,27 @@ class SharePoint_File_Properties_Workflow {
       orderby: "Modified desc",
       top: 50
     });
-    /** @action For Each File @type foreach @runAfter trigger */
+    /** @action ForEachFile @type foreach @runAfter trigger */
     for (const item of ctx.outputs('GetFilesInReportsFolder')?.['value']) {
       await ctx.connectors.sharepoint.GetFileProperties("GetFileProperties", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         listId: "{LIBRARY-GUID}",
-        itemId: ctx.items('For Each File')?.['Id']
+        itemId: ctx.items('ForEachFile')?.['Id']
       });
-      /** @action Check if Missing Title @type if @runAfter first */
+      /** @action CheckIfMissingTitle @type if @runAfter first */
       if ((ctx.empty(ctx.outputs('GetFileProperties')?.['Title']) || (ctx.outputs('GetFileProperties')?.['Title'] === ''))) {
         await ctx.connectors.sharepoint.UpdateFileProperties("UpdateTitle", {
           dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
           listId: "{LIBRARY-GUID}",
-          itemId: ctx.items('For Each File')?.['Id'],
-          fields: { Title: ctx.items('For Each File')?.['FileLeafRef'] }
+          itemId: ctx.items('ForEachFile')?.['Id'],
+          fields: { Title: ctx.items('ForEachFile')?.['FileLeafRef'] }
         });
       }
       /** @runAfter first */
       await ctx.connectors.sharepoint.GetItemChanges("GetChangeHistory", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         listId: "{LIBRARY-GUID}",
-        itemId: ctx.items('For Each File')?.['Id'],
+        itemId: ctx.items('ForEachFile')?.['Id'],
         since: ctx.addDays(ctx.utcNow(), -30)
       });
     }
@@ -55,7 +55,7 @@ class SharePoint_File_Properties_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

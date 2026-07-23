@@ -16,14 +16,14 @@ class SharePoint_Version_Control_Workflow {
     });
     /** @action InitializeFileId */
     let fileId: string = ctx.first(ctx.outputs('GetFilesNeedingUpdate')?.['value'])?.['File']?.['UniqueId'];
-    /** @action Check if File Found @type if */
+    /** @action CheckIfFileFound @type if */
     if ((ctx.outputs('GetFilesNeedingUpdate')?.['value'].length > 0)) {
       /** @runAfter first */
       await ctx.connectors.sharepoint.CheckOutFile("CheckOutForEditing", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         fileId: ctx.variables('fileId')
       });
-      /** @action Try Update File @type scope @runAfter first */
+      /** @action TryUpdateFile @type scope @runAfter first */
       {
         await ctx.connectors.sharepoint.UpdateFile("UpdateFileContent", {
           dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
@@ -38,7 +38,7 @@ class SharePoint_Version_Control_Workflow {
           checkInType: 1
         });
       }
-      /** @action Handle Failure @type scope @runAfter Try Update File: Failed */
+      /** @action HandleFailure @type scope @runAfter TryUpdateFile: Failed */
       {
         await ctx.connectors.sharepoint.DiscardCheckOut("DiscardChangesOnError", {
           dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
@@ -67,7 +67,7 @@ class SharePoint_Version_Control_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

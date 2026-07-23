@@ -39,7 +39,7 @@ class DvSearch {
       schemaVersion: '1.0.0.0',
     };
     ctx.flow.connectionReferences = {
-      shared_commondataserviceforapps: { runtimeUrl: '' },
+      shared_commondataserviceforapps: { apiId: '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps' },
     };
     ctx.flow.parameters = {
       $connections: { defaultValue: {}, type: 'Object' },

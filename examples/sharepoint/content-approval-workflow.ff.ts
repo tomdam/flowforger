@@ -45,7 +45,7 @@ class SharePoint_Content_Approval_Workflow {
       currentStatus: ctx.body('GetCurrentApprovalStatus').approvalStatusText,
       moderationComments: ctx.body('GetCurrentApprovalStatus')._ModerationComments
     });
-    /** @action Check action type @type if @runAfter trigger */
+    /** @action CheckActionType @type if @runAfter trigger */
     if ((ctx.triggerBody().action === 'Approved')) {
       await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveItem", {
         dataset: ctx.variables('siteUrl'),
@@ -102,7 +102,7 @@ class SharePoint_Content_Approval_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

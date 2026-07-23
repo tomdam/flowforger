@@ -32,7 +32,7 @@ class SharePoint_Sharing_Workflow {
       fileName: ctx.triggerBody().fileName,
       body: "This is a confidential document that needs to be shared securely."
     });
-    /** @action Store file ID @runAfter first */
+    /** @action StoreFileID @runAfter first */
     let fileId: string = ctx.body('CreateDocument').UniqueId;
     /** @runAfter trigger */
     await ctx.connectors.sharepoint.CreateSharingLink("CreateSecureSharingLink", {
@@ -79,7 +79,7 @@ class SharePoint_Sharing_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

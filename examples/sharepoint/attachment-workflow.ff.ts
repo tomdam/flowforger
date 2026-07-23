@@ -36,17 +36,17 @@ class SharePoint_Attachment_Workflow {
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
-    /** @action For Each Attachment @type foreach @runAfter trigger */
+    /** @action ForEachAttachment @type foreach @runAfter trigger */
     for (const item of ctx.outputs('GetAllAttachments')?.['value']) {
       await ctx.connectors.sharepoint.GetAttachmentContent("GetAttachmentContent", {
         dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
         listId: ctx.triggerBody()?.['listId'],
         itemId: ctx.triggerBody()?.['itemId'],
-        attachmentId: ctx.items('For Each Attachment')?.['FileName']
+        attachmentId: ctx.items('ForEachAttachment')?.['FileName']
       });
       /** @runAfter first */
       await ctx.compose("AttachmentInfo", {
-        fileName: ctx.items('For Each Attachment')?.['FileName'],
+        fileName: ctx.items('ForEachAttachment')?.['FileName'],
         contentType: ctx.outputs('GetAttachmentContent')?.['$contentType'],
         contentSize: ctx.outputs('GetAttachmentContent')?.['$content'].length
       });
@@ -81,7 +81,7 @@ class SharePoint_Attachment_Workflow {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

@@ -25,7 +25,7 @@ class SharePoint_Get_Attachments_Example {
       attachmentCount: ctx.outputs('GetAttachments')?.['value'].length,
       attachments: ctx.outputs('GetAttachments')?.['value']
     });
-    /** @action Check if Has Attachments @type if @runAfter trigger */
+    /** @action CheckIfHasAttachments @type if @runAfter trigger */
     if ((ctx.outputs('GetAttachments')?.['value'].length > 0)) {
       await ctx.compose("FirstAttachment", ctx.first(ctx.outputs('GetAttachments')?.['value']));
     }
@@ -39,7 +39,7 @@ class SharePoint_Get_Attachments_Example {
     };
     ctx.flow.connectionReferences = {
       shared_sharepointonline: {
-        runtimeUrl: '',
+        apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline',
       },
     };
     ctx.flow.parameters = {

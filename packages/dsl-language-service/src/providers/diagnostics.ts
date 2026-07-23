@@ -1300,7 +1300,7 @@ const KNOWN_CTX_METHODS = new Set([
   'triggerFormDataValue', 'triggerFormDataMultiValues', 'triggerMultipartBody',
   'action', 'actionBody', 'iterationIndexes', 'listCallbackUrl',
   // Property-like access (not methods but accessed on ctx)
-  'flow', 'connectors', 'initVariable',
+  'flow', 'connectors',
 ]);
 
 /**

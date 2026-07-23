@@ -48,6 +48,10 @@ export {
 } from './transformer/expression-transformer.js';
 export type { TransformContext } from './transformer/expression-transformer.js';
 
+// Expression scope + DSL expression evaluation support (debug console)
+export { buildExpressionScope, dslExpressionToPA, evaluateDebugInput } from './expression-scope.js';
+export type { ExpressionScope, DebugEvalOutcome, DebugEvalContext } from './expression-scope.js';
+
 // Utilities
 export { resetIdCounter, genId } from './utils/id-generator.js';
 export { inferVariableType, PAVariableType } from './utils/type-inference.js';

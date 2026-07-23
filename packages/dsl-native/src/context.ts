@@ -842,6 +842,662 @@ export interface FlowContext {
   ticks(timestamp: string): number;
 
   // ============================================
+  // Collection Functions (Runtime)
+  // ============================================
+
+  /**
+   * Create an array from the given values.
+   * Emits `@createArray(...)`.
+   */
+  createArray<T = any>(...items: T[]): T[];
+
+  /**
+   * Combine collections into one, removing duplicates.
+   * Works on arrays and objects (later objects' properties win).
+   * Emits `@union(...)`.
+   */
+  union<T = any>(...collections: T[]): T;
+
+  /**
+   * Return only the items present in all collections.
+   * Works on arrays and objects.
+   * Emits `@intersection(...)`.
+   */
+  intersection<T = any>(...collections: T[]): T;
+
+  /**
+   * Generate an array of integers, starting at startIndex with count elements.
+   * Emits `@range(...)`.
+   */
+  range(startIndex: number, count: number): number[];
+
+  /**
+   * Get the first element of an array or the first character of a string.
+   * Emits `@first(...)`.
+   */
+  first<T = any>(collection: T[] | string): T;
+
+  /**
+   * Get the last element of an array or the last character of a string.
+   * Emits `@last(...)`.
+   */
+  last<T = any>(collection: T[] | string): T;
+
+  /**
+   * Skip the first count elements of an array.
+   * Emits `@skip(...)`.
+   */
+  skip<T = any>(collection: T[], count: number): T[];
+
+  /**
+   * Take the first count elements of an array or characters of a string.
+   * Emits `@take(...)`.
+   */
+  take<T = any>(collection: T[] | string, count: number): T;
+
+  /**
+   * Check whether an array, string, or object is empty.
+   * Emits `@empty(...)`.
+   */
+  empty(collection: any[] | string | object): boolean;
+
+  /**
+   * Get the number of elements in an array or characters in a string.
+   * Emits `@length(...)`.
+   */
+  length(collection: any[] | string): number;
+
+  /**
+   * Check whether a collection contains a value (string contains substring,
+   * array contains item, object contains key).
+   * Emits `@contains(...)`.
+   */
+  contains(collection: string | any[] | object, value: any): boolean;
+
+  /**
+   * Split an array or string into chunks of the given length.
+   * Emits `@chunk(...)`.
+   */
+  chunk<T = any>(collection: T[] | string, length: number): T[][];
+
+  /**
+   * Reverse the order of items in an array.
+   * Emits `@reverse(...)`.
+   */
+  reverse<T = any>(collection: T[]): T[];
+
+  /**
+   * Sort an array, optionally by an object property.
+   * Emits `@sort(...)`.
+   */
+  sort<T = any>(collection: T[], sortBy?: string): T[];
+
+  // ============================================
+  // String Functions (Runtime)
+  // ============================================
+
+  /**
+   * Concatenate values into a single string.
+   * Emits `@concat(...)`.
+   */
+  concat(...values: any[]): string;
+
+  /**
+   * Index of the first occurrence of searchText (case-insensitive), or -1.
+   * Emits `@indexOf(...)`.
+   */
+  indexOf(text: string, searchText: string): number;
+
+  /**
+   * Index of the last occurrence of searchText (case-insensitive), or -1.
+   * Emits `@lastIndexOf(...)`.
+   */
+  lastIndexOf(text: string, searchText: string): number;
+
+  /**
+   * Index of the nth occurrence of searchText, or -1.
+   * Emits `@nthIndexOf(...)`.
+   */
+  nthIndexOf(text: string, searchText: string, occurrence: number): number;
+
+  /**
+   * Extract a substring by start index and length (NOT end index).
+   * Emits `@substring(...)`.
+   */
+  substring(text: string, startIndex: number, length?: number): string;
+
+  /**
+   * Replace all occurrences of oldText with newText (case-sensitive).
+   * Emits `@replace(...)`.
+   */
+  replace(text: string, oldText: string, newText: string): string;
+
+  /**
+   * Convert to lowercase.
+   * Emits `@toLower(...)`.
+   */
+  toLower(text: string): string;
+
+  /**
+   * Convert to uppercase.
+   * Emits `@toUpper(...)`.
+   */
+  toUpper(text: string): string;
+
+  /**
+   * Remove leading and trailing whitespace.
+   * Emits `@trim(...)`.
+   */
+  trim(text: string): string;
+
+  /**
+   * Split a string into an array on a delimiter.
+   * Emits `@split(...)`.
+   */
+  split(text: string, delimiter: string): string[];
+
+  /**
+   * Whether the string starts with searchText (case-insensitive).
+   * Emits `@startsWith(...)`.
+   */
+  startsWith(text: string, searchText: string): boolean;
+
+  /**
+   * Whether the string ends with searchText (case-insensitive).
+   * Emits `@endsWith(...)`.
+   */
+  endsWith(text: string, searchText: string): boolean;
+
+  /**
+   * Extract a substring by start index and end index (exclusive).
+   * Emits `@slice(...)`.
+   */
+  slice(text: string, startIndex: number, endIndex?: number): string;
+
+  // ============================================
+  // Math Functions (Runtime)
+  // ============================================
+
+  /**
+   * Add two numbers.
+   * Emits `@add(...)`.
+   */
+  add(summand1: number, summand2: number): number;
+
+  /**
+   * Subtract the second number from the first.
+   * Emits `@sub(...)`.
+   */
+  sub(minuend: number, subtrahend: number): number;
+
+  /**
+   * Multiply two numbers.
+   * Emits `@mul(...)`.
+   */
+  mul(multiplicand1: number, multiplicand2: number): number;
+
+  /**
+   * Divide the first number by the second.
+   * Emits `@div(...)`.
+   */
+  div(dividend: number, divisor: number): number;
+
+  /**
+   * Remainder after dividing the first number by the second.
+   * Emits `@mod(...)`.
+   */
+  mod(dividend: number, divisor: number): number;
+
+  /**
+   * Lowest value among the arguments (numbers or a single array of numbers).
+   * Emits `@min(...)`.
+   */
+  min(...numbers: (number | number[])[]): number;
+
+  /**
+   * Highest value among the arguments (numbers or a single array of numbers).
+   * Emits `@max(...)`.
+   */
+  max(...numbers: (number | number[])[]): number;
+
+  /**
+   * Absolute value.
+   * Emits `@abs(...)`.
+   */
+  abs(value: number): number;
+
+  /**
+   * Round up to the nearest integer.
+   * Emits `@ceil(...)`.
+   */
+  ceil(value: number): number;
+
+  /**
+   * Round down to the nearest integer.
+   * Emits `@floor(...)`.
+   */
+  floor(value: number): number;
+
+  /**
+   * Round to the given number of decimal places.
+   * Emits `@round(...)`.
+   */
+  round(value: number, digits?: number): number;
+
+  /**
+   * Random integer in the range [minValue, maxValue).
+   * Emits `@rand(...)`.
+   */
+  rand(minValue: number, maxValue: number): number;
+
+  /**
+   * Convert a value to an integer.
+   * Emits `@int(...)`.
+   */
+  int(value: any): number;
+
+  /**
+   * Convert a value to a floating-point number.
+   * Emits `@float(...)`.
+   */
+  float(value: any): number;
+
+  /**
+   * Convert a value to a decimal number.
+   * Emits `@decimal(...)`.
+   */
+  decimal(value: any): number;
+
+  /**
+   * Whether the value is a floating-point number (optionally locale-aware).
+   * Emits `@isFloat(...)`.
+   */
+  isFloat(value: any, locale?: string): boolean;
+
+  /**
+   * Whether the value is an integer.
+   * Emits `@isInt(...)`.
+   */
+  isInt(value: any): boolean;
+
+  // ============================================
+  // Comparison & Logical Functions (Runtime)
+  // ============================================
+
+  /**
+   * Whether two values are equal.
+   * Emits `@equals(...)`.
+   */
+  equals(object1: any, object2: any): boolean;
+
+  /**
+   * Whether the first value is greater than the second.
+   * Emits `@greater(...)`.
+   */
+  greater(value: any, compareTo: any): boolean;
+
+  /**
+   * Whether the first value is less than the second.
+   * Emits `@less(...)`.
+   */
+  less(value: any, compareTo: any): boolean;
+
+  /**
+   * Whether the first value is greater than or equal to the second.
+   * Emits `@greaterOrEquals(...)`.
+   */
+  greaterOrEquals(value: any, compareTo: any): boolean;
+
+  /**
+   * Whether the first value is less than or equal to the second.
+   * Emits `@lessOrEquals(...)`.
+   */
+  lessOrEquals(value: any, compareTo: any): boolean;
+
+  /**
+   * Whether all expressions are true.
+   * Emits `@and(...)`.
+   */
+  and(...expressions: boolean[]): boolean;
+
+  /**
+   * Whether at least one expression is true.
+   * Emits `@or(...)`.
+   */
+  or(...expressions: boolean[]): boolean;
+
+  /**
+   * Negate a boolean expression.
+   * Emits `@not(...)`.
+   */
+  not(expression: boolean): boolean;
+
+  /**
+   * Return one of two values based on a condition.
+   * Emits `@if(...)`.
+   */
+  if<T = any>(expression: boolean, valueIfTrue: T, valueIfFalse: T): T;
+
+  /**
+   * First non-null value among the arguments.
+   * Emits `@coalesce(...)`.
+   */
+  coalesce<T = any>(...values: T[]): T;
+
+  // ============================================
+  // Conversion & Encoding Functions (Runtime)
+  // ============================================
+
+  /**
+   * Parse a JSON string (or XML) into an object.
+   * Emits `@json(...)`.
+   */
+  json<T = any>(value: string): T;
+
+  /**
+   * Convert a value to a string.
+   * Emits `@string(...)`.
+   */
+  string(value: any): string;
+
+  /**
+   * Wrap a value in an array.
+   * Emits `@array(...)`.
+   */
+  array<T = any>(value: T): T[];
+
+  /**
+   * Convert a value to a boolean.
+   * Emits `@bool(...)`.
+   */
+  bool(value: any): boolean;
+
+  /**
+   * Base64-encode a string.
+   * Emits `@base64(...)`.
+   */
+  base64(value: string): string;
+
+  /**
+   * Decode a base64 string to text.
+   * Emits `@base64ToString(...)`.
+   */
+  base64ToString(value: string): string;
+
+  /**
+   * Convert a base64 string to binary content.
+   * Emits `@base64ToBinary(...)`.
+   */
+  base64ToBinary(value: string): any;
+
+  /**
+   * Convert a string to binary content.
+   * Emits `@binary(...)`.
+   */
+  binary(value: string): any;
+
+  /**
+   * Convert a string to a data URI.
+   * Emits `@dataUri(...)`.
+   */
+  dataUri(value: string): string;
+
+  /**
+   * Convert a data URI to binary content.
+   * Emits `@dataUriToBinary(...)`.
+   */
+  dataUriToBinary(value: string): any;
+
+  /**
+   * Convert a data URI to a string.
+   * Emits `@dataUriToString(...)`.
+   */
+  dataUriToString(value: string): string;
+
+  /**
+   * Decode the data portion of a data URI.
+   * Emits `@decodeDataUri(...)`.
+   */
+  decodeDataUri(value: string): any;
+
+  /**
+   * URI-encode a string.
+   * Emits `@uriComponent(...)`.
+   */
+  uriComponent(value: string): string;
+
+  /**
+   * Decode a URI-encoded string.
+   * Emits `@uriComponentToString(...)`.
+   */
+  uriComponentToString(value: string): string;
+
+  /**
+   * Convert a URI-encoded string to binary content.
+   * Emits `@uriComponentToBinary(...)`.
+   */
+  uriComponentToBinary(value: string): any;
+
+  /**
+   * Decode a URI-encoded string. Prefer `uriComponentToString()`.
+   * Emits `@decodeUriComponent(...)`.
+   */
+  decodeUriComponent(value: string): string;
+
+  /**
+   * Decode a base64 string to text. Prefer `base64ToString()`.
+   * Emits `@decodeBase64(...)`.
+   */
+  decodeBase64(value: string): string;
+
+  /**
+   * URI-encode a string. Prefer `uriComponent()`.
+   * Emits `@encodeUriComponent(...)`.
+   */
+  encodeUriComponent(value: string): string;
+
+  /**
+   * Convert a string or JSON object to XML.
+   * Emits `@xml(...)`.
+   */
+  xml(value: any): any;
+
+  /**
+   * Evaluate an XPath expression against XML content.
+   * Emits `@xpath(...)`.
+   */
+  xpath(xml: any, xpath: string): any;
+
+  // ============================================
+  // Object Functions (Runtime)
+  // ============================================
+
+  /**
+   * Return a copy of the object with the property set (added or updated).
+   * Emits `@setProperty(...)`.
+   */
+  setProperty<T = any>(object: T, property: string, value: any): T;
+
+  /**
+   * Return a copy of the object with the property added.
+   * Emits `@addProperty(...)`.
+   */
+  addProperty<T = any>(object: T, property: string, value: any): T;
+
+  /**
+   * Return a copy of the object with the property removed.
+   * Emits `@removeProperty(...)`.
+   */
+  removeProperty<T = any>(object: T, property: string): T;
+
+  // ============================================
+  // URI Parsing Functions (Runtime)
+  // ============================================
+
+  /**
+   * Host portion of a URI.
+   * Emits `@uriHost(...)`.
+   */
+  uriHost(uri: string): string;
+
+  /**
+   * Path portion of a URI.
+   * Emits `@uriPath(...)`.
+   */
+  uriPath(uri: string): string;
+
+  /**
+   * Path and query portion of a URI.
+   * Emits `@uriPathAndQuery(...)`.
+   */
+  uriPathAndQuery(uri: string): string;
+
+  /**
+   * Port number of a URI.
+   * Emits `@uriPort(...)`.
+   */
+  uriPort(uri: string): number;
+
+  /**
+   * Query string portion of a URI.
+   * Emits `@uriQuery(...)`.
+   */
+  uriQuery(uri: string): string;
+
+  /**
+   * Scheme (protocol) of a URI.
+   * Emits `@uriScheme(...)`.
+   */
+  uriScheme(uri: string): string;
+
+  // ============================================
+  // Workflow & Form Data Functions (Runtime)
+  // ============================================
+
+  /**
+   * Results of all actions inside a scope (useful in error handling).
+   * Emits `@result(...)`.
+   */
+  result(scopeName: string): any[];
+
+  /**
+   * Details of the current action (inside do-until or error handlers).
+   * Emits `@action()`.
+   */
+  action<T = any>(): T;
+
+  /**
+   * Body of a previous action. Prefer `body()`.
+   * Emits `@actionBody(...)`.
+   */
+  actionBody<T = any>(actionName: string): T;
+
+  /**
+   * Current iteration index of a do-until loop.
+   * Emits `@iterationIndexes(...)`.
+   */
+  iterationIndexes(loopName: string): number;
+
+  /**
+   * Callback URL of the flow's HTTP trigger.
+   * Emits `@listCallbackUrl()`.
+   */
+  listCallbackUrl(): string;
+
+  /**
+   * Value of a form-data key in an action's output.
+   * Emits `@formDataValue(...)`.
+   */
+  formDataValue(actionName: string, key: string): any;
+
+  /**
+   * All values of a form-data key in an action's output.
+   * Emits `@formDataMultiValues(...)`.
+   */
+  formDataMultiValues(actionName: string, key: string): any[];
+
+  /**
+   * Body of a part in an action's multipart output.
+   * Emits `@multipartBody(...)`.
+   */
+  multipartBody(actionName: string, index: number): any;
+
+  /**
+   * Value of a form-data key in the trigger output.
+   * Emits `@triggerFormDataValue(...)`.
+   */
+  triggerFormDataValue(key: string): any;
+
+  /**
+   * All values of a form-data key in the trigger output.
+   * Emits `@triggerFormDataMultiValues(...)`.
+   */
+  triggerFormDataMultiValues(key: string): any[];
+
+  /**
+   * Body of a part in the trigger's multipart output.
+   * Emits `@triggerMultipartBody(...)`.
+   */
+  triggerMultipartBody(index: number): any;
+
+  // ============================================
+  // Additional Date/Time Functions (Runtime)
+  // ============================================
+
+  /**
+   * Add an interval to a timestamp (unit: 'Second', 'Minute', 'Hour', 'Day', 'Week', 'Month', 'Year').
+   * Emits `@addToTime(...)`.
+   */
+  addToTime(timestamp: string, interval: number, timeUnit: string, format?: string): string;
+
+  /**
+   * Subtract an interval from a timestamp (unit: 'Second', 'Minute', 'Hour', 'Day', 'Week', 'Month', 'Year').
+   * Emits `@subtractFromTime(...)`.
+   */
+  subtractFromTime(timestamp: string, interval: number, timeUnit: string, format?: string): string;
+
+  /**
+   * Difference between two timestamps as a timespan string (e.g. "1.00:00:00").
+   * Emits `@dateDifference(...)`.
+   */
+  dateDifference(startDate: string, endDate: string): string;
+
+  // ============================================
+  // Expression Literal Helpers (DSL-specific)
+  // ============================================
+
+  /**
+   * Force string-interpolation output: wraps the expression as `@{...}`
+   * (string coercion) instead of `@...` (type-preserving).
+   */
+  braced(expression: any): string;
+
+  /**
+   * Emit the literal expression `@true` (for parity with existing flows).
+   */
+  atTrue(): boolean;
+
+  /**
+   * Emit the literal expression `@false` (for parity with existing flows).
+   */
+  atFalse(): boolean;
+
+  /**
+   * Emit a literal number expression like `@0` (for parity with existing flows).
+   */
+  atNumber(value: number): number;
+
+  /**
+   * Emit a quoted string-literal expression like `@'text'` (for parity with existing flows).
+   */
+  atString(value: string): string;
+
+  /**
+   * Emit the literal expression `@null` (for parity with existing flows).
+   */
+  null(): null;
+
+  // ============================================
   // Utility Functions (Runtime)
   // ============================================
 

@@ -145,10 +145,19 @@ function getSortText(method: MethodSignature): string {
     Office365: '4',
     Connector: '5',
     DateTime: '6',
-    Utility: '7',
+    Collection: '7',
+    String: '8',
+    Math: '9',
+    Logical: 'a',
+    Conversion: 'b',
+    Object: 'c',
+    Uri: 'd',
+    Workflow: 'e',
+    Expression: 'f',
+    Utility: 'g',
   };
 
-  const prefix = categoryOrder[method.category || ''] || '9';
+  const prefix = categoryOrder[method.category || ''] || 'z';
   const deprecatedSuffix = method.deprecated ? 'z' : 'a';
   return `${prefix}${deprecatedSuffix}_${method.name}`;
 }

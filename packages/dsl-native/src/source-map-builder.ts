@@ -25,7 +25,7 @@ export interface DslSourceMap {
 // ---------------------------------------------------------------------------
 
 /** Recursively collect all nodes from IR, including nested control flow. */
-function collectAllNodes(nodes: Node[]): Node[] {
+export function collectAllNodes(nodes: Node[]): Node[] {
   const result: Node[] = [];
   for (const node of nodes) {
     result.push(node);
@@ -141,7 +141,7 @@ function isControlFlowType(type: string): boolean {
 }
 
 /** Sanitize a variable name using the same rules as the DSL transformer. */
-function sanitizeVarName(name: string): string {
+export function sanitizeVarName(name: string): string {
   return name.replace(/[^\p{L}\p{N}_$]/gu, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').replace(/^[0-9]/, '_$&') || '_var';
 }
 

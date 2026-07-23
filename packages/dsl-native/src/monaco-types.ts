@@ -690,57 +690,159 @@ interface FlowContext {
   flow: FlowConfig;
 
   // Reference Functions
-  /** Get the body/output of a previous action */
+  /**
+   * Get the body/output of a previous action. Use for HTTP and connector actions.
+   * @param actionName Name of the action to reference
+   * @example const user = ctx.body('GetUser');
+   */
   body<T = any>(actionName: string): T;
-  /** Get the outputs of a previous action */
+  /**
+   * Get the outputs of a previous action (includes headers, statusCode, etc.).
+   * Use for Compose actions.
+   * @param actionName Name of the action to reference
+   * @example const value = ctx.outputs('MyCompose');
+   */
   outputs<T = any>(actionName: string): T;
-  /** Get the full action reference including status */
+  /**
+   * Get the full action reference including execution status.
+   * @param actionName Name of the action to reference
+   * @example if (ctx.actions('GetUser').status === 'Succeeded') { ... }
+   */
   actions(actionName: string): ActionReference;
-  /** Get the trigger body */
+  /**
+   * Get the trigger body (request payload for HTTP triggers).
+   * @example const id = ctx.triggerBody()?.['id'];
+   */
   triggerBody<T = any>(): T;
-  /** Get the trigger outputs */
+  /**
+   * Get the trigger outputs (includes headers, queries, etc.).
+   * @example const q = ctx.triggerOutputs().queries['id'];
+   */
   triggerOutputs<T = any>(): T;
-  /** Get a variable value */
+  /**
+   * Get a variable value.
+   * @param name Name of the variable
+   * @example const count = ctx.variables('counter');
+   */
   variables<T = any>(name: string): T;
-  /** Get the current item in a foreach loop */
+  /**
+   * Get the current item in a foreach loop. In the DSL, prefer using the loop
+   * variable directly - it maps to item() automatically.
+   */
   item<T = any>(): T;
-  /** Get the current item from a named foreach loop */
+  /**
+   * Get the current item from a named foreach loop (for nested loops). In the
+   * DSL, prefer using the outer loop variable directly.
+   * @param loopName Name of the foreach loop
+   */
   items<T = any>(loopName: string): T;
 
   // Built-in Actions
-  /** HTTP request action */
+  /**
+   * HTTP request action.
+   * @param name Unique name for this action
+   * @param inputs Request options (method, url, headers, body, ...)
+   * @example const res = await ctx.http('GetData', { method: 'GET', url: 'https://api.example.com/items' });
+   */
   http(name: string, inputs: HttpInputs): Promise<HttpResponse>;
-  /** Compose action - creates a value */
+  /**
+   * Compose action - creates a value that can be referenced later via ctx.outputs().
+   * @param name Unique name for this action
+   * @param value The value to compose
+   * @example await ctx.compose('FullName', ctx.concat(first, ' ', last));
+   */
   compose(name: string, value: any): Promise<any>;
   /** Save File (debug aid) - compiles to a Compose; host saves/downloads the file when run locally. No Maker-portal effect. */
   saveFile(name: string, file: SaveFileInputs): Promise<any>;
-  /** Response action - returns an HTTP response */
+  /**
+   * Response action - returns an HTTP response to the caller of the flow.
+   * @param name Unique name for this action
+   * @param statusCode HTTP status code
+   * @param body Optional response body
+   * @param headers Optional response headers
+   * @example await ctx.response('Reply', 200, { ok: true });
+   */
   response(name: string, statusCode: number): Promise<void>;
   response(name: string, statusCode: number, body: any): Promise<void>;
   response(name: string, statusCode: number, body: any, headers: Record<string, string>): Promise<void>;
   response(name: string, statusCode: number, body: any, headers: Record<string, string> | undefined, schema: any): Promise<void>;
   response(name: string, statusCode: number, body: any, headers: Record<string, string> | undefined, schema: any, kind: 'VirtualAgent' | 'PowerApp' | 'Http'): Promise<void>;
-  /** Terminate action - ends the flow */
+  /**
+   * Terminate action - ends the flow with the given run status. Use instead of
+   * return statements.
+   * @param name Unique name for this action
+   * @param runStatus Final status: 'Succeeded', 'Cancelled', or 'Failed'
+   * @param runError Optional error details when runStatus is 'Failed'
+   * @example await ctx.terminate('StopEarly', 'Succeeded');
+   */
   terminate(name: string, runStatus: 'Succeeded' | 'Cancelled' | 'Failed', runError?: { code?: string; message?: string }): Promise<void>;
-  /** Delay action - wait for a specified duration */
+  /**
+   * Delay action - wait for a specified duration.
+   * @param name Unique name for this action
+   * @param count Number of units to wait
+   * @param unit Time unit ('Second', 'Minute', 'Hour', 'Day', ...)
+   * @example await ctx.delay('Wait5Min', 5, 'Minute');
+   */
   delay(name: string, count: number, unit: DelayUnit): Promise<void>;
-  /** Delay Until action - wait until a specified time */
+  /**
+   * Delay Until action - wait until a specific timestamp.
+   * @param name Unique name for this action
+   * @param until ISO 8601 timestamp to wait until
+   * @example await ctx.delayUntil('WaitUntilNoon', '2026-01-01T12:00:00Z');
+   */
   delayUntil(name: string, until: string): Promise<void>;
-  /** Call a child workflow */
+  /**
+   * Call a child workflow.
+   * @param name Unique name for this action
+   * @param workflowReferenceName Child flow reference (defined in ctx.flow.childFlows)
+   * @param body Optional payload passed to the child flow
+   * @param headers Optional headers
+   * @example const result = await ctx.callWorkflow('RunChild', 'ProcessOrder', { orderId });
+   */
   callWorkflow(name: string, workflowReferenceName: string, body?: any, headers?: Record<string, string>): Promise<any>;
-  /** Parse JSON action */
+  /**
+   * Parse JSON action - parses content against an optional schema.
+   * @param name Unique name for this action
+   * @param content JSON string or object to parse
+   * @param schema Optional JSON schema for validation and typing
+   * @example const data = await ctx.parseJson('ParsePayload', ctx.triggerBody());
+   */
   parseJson<T = any>(name: string, content: any, schema?: object): Promise<T>;
-  /** Join array elements into a string */
+  /**
+   * Join action - joins array elements into a string with a delimiter.
+   * @param name Unique name for this action
+   * @param from Source array
+   * @param joinWith Delimiter string
+   * @example const csv = await ctx.join('MakeCsv', emails, ';');
+   */
   join(name: string, from: any[], joinWith: string): Promise<string>;
-  /** Select/map array elements */
+  /**
+   * Select action - maps each array element to a new shape.
+   * @param name Unique name for this action
+   * @param from Source array
+   * @param selectMap Mapping object (values may reference item())
+   * @example const names = await ctx.select('PickNames', users, { name: ctx.item()?.['displayName'] });
+   */
   select<T = any>(name: string, from: any[], selectMap: any): Promise<T[]>;
   /** Filter an array. 'where' accepts either a raw PA expression string (e.g. "@and(equals(item()?['type'], 'X'), ...)") or a TypeScript expression (e.g. ctx.item()?.['type'] === 'X' && ctx.item()?.['isEnabled']). */
   filter<T = any>(name: string, from: T[], where: string | boolean): Promise<T[]>;
   /** Filter an array (alias for filter). 'where' accepts either a raw PA expression string or a TypeScript expression. */
   filterArray<T = any>(name: string, from: T[], where: string | boolean): Promise<T[]>;
-  /** Create CSV table from array */
+  /**
+   * Create CSV Table action.
+   * @param name Unique name for this action
+   * @param from Source array of objects
+   * @param columns Optional column definitions (header + value expression)
+   * @example const csv = await ctx.createCsvTable('ToCsv', orders);
+   */
   createCsvTable(name: string, from: any[], columns?: Array<{ header: string; value: any }>): Promise<string>;
-  /** Create HTML table from array */
+  /**
+   * Create HTML Table action.
+   * @param name Unique name for this action
+   * @param from Source array of objects
+   * @param columns Optional column definitions (header + value expression)
+   * @example const html = await ctx.createHtmlTable('ToHtml', orders);
+   */
   createHtmlTable(name: string, from: any[], columns?: Array<{ header: string; value: any }>): Promise<string>;
   /** Append text to a string variable (objects are JSON-serialized, matching Logic Apps implicit coercion) */
   appendToStringVariable(name: string, value: string | Record<string, any>): Promise<void>;
@@ -789,6 +891,232 @@ interface FlowContext {
   getFutureTime(interval: number, unit: string, format?: string): string;
   getPastTime(interval: number, unit: string, format?: string): string;
   ticks(timestamp: string): number;
+
+  // Collection Functions
+  /** Create an array from the given values (emits @createArray) */
+  createArray<T = any>(...items: T[]): T[];
+  /** Combine collections into one, removing duplicates (emits @union) */
+  union<T = any>(...collections: T[]): T;
+  /** Return only the items present in all collections (emits @intersection) */
+  intersection<T = any>(...collections: T[]): T;
+  /** Generate an array of integers starting at startIndex with count elements (emits @range) */
+  range(startIndex: number, count: number): number[];
+  /** Get the first element of an array or first character of a string (emits @first) */
+  first<T = any>(collection: T[] | string): T;
+  /** Get the last element of an array or last character of a string (emits @last) */
+  last<T = any>(collection: T[] | string): T;
+  /** Skip the first count elements of an array (emits @skip) */
+  skip<T = any>(collection: T[], count: number): T[];
+  /** Take the first count elements of an array or characters of a string (emits @take) */
+  take<T = any>(collection: T[] | string, count: number): T;
+  /** Check whether an array, string, or object is empty (emits @empty) */
+  empty(collection: any[] | string | object): boolean;
+  /** Get the number of elements in an array or characters in a string (emits @length) */
+  length(collection: any[] | string): number;
+  /** Check whether a collection contains a value (emits @contains) */
+  contains(collection: string | any[] | object, value: any): boolean;
+  /** Split an array or string into chunks of the given length (emits @chunk) */
+  chunk<T = any>(collection: T[] | string, length: number): T[][];
+  /** Reverse the order of items in an array (emits @reverse) */
+  reverse<T = any>(collection: T[]): T[];
+  /** Sort an array, optionally by an object property (emits @sort) */
+  sort<T = any>(collection: T[], sortBy?: string): T[];
+
+  // String Functions
+  /** Concatenate values into a single string (emits @concat) */
+  concat(...values: any[]): string;
+  /** Index of the first occurrence of searchText, or -1 (emits @indexOf) */
+  indexOf(text: string, searchText: string): number;
+  /** Index of the last occurrence of searchText, or -1 (emits @lastIndexOf) */
+  lastIndexOf(text: string, searchText: string): number;
+  /** Index of the nth occurrence of searchText, or -1 (emits @nthIndexOf) */
+  nthIndexOf(text: string, searchText: string, occurrence: number): number;
+  /** Extract a substring by start index and length (emits @substring) */
+  substring(text: string, startIndex: number, length?: number): string;
+  /** Replace all occurrences of oldText with newText (emits @replace) */
+  replace(text: string, oldText: string, newText: string): string;
+  /** Convert to lowercase (emits @toLower) */
+  toLower(text: string): string;
+  /** Convert to uppercase (emits @toUpper) */
+  toUpper(text: string): string;
+  /** Remove leading and trailing whitespace (emits @trim) */
+  trim(text: string): string;
+  /** Split a string into an array on a delimiter (emits @split) */
+  split(text: string, delimiter: string): string[];
+  /** Whether the string starts with searchText (emits @startsWith) */
+  startsWith(text: string, searchText: string): boolean;
+  /** Whether the string ends with searchText (emits @endsWith) */
+  endsWith(text: string, searchText: string): boolean;
+  /** Extract a substring by start and end index (emits @slice) */
+  slice(text: string, startIndex: number, endIndex?: number): string;
+
+  // Math Functions
+  /** Add two numbers (emits @add) */
+  add(summand1: number, summand2: number): number;
+  /** Subtract the second number from the first (emits @sub) */
+  sub(minuend: number, subtrahend: number): number;
+  /** Multiply two numbers (emits @mul) */
+  mul(multiplicand1: number, multiplicand2: number): number;
+  /** Divide the first number by the second (emits @div) */
+  div(dividend: number, divisor: number): number;
+  /** Remainder after division (emits @mod) */
+  mod(dividend: number, divisor: number): number;
+  /** Lowest value among the arguments (emits @min) */
+  min(...numbers: (number | number[])[]): number;
+  /** Highest value among the arguments (emits @max) */
+  max(...numbers: (number | number[])[]): number;
+  /** Absolute value (emits @abs) */
+  abs(value: number): number;
+  /** Round up to the nearest integer (emits @ceil) */
+  ceil(value: number): number;
+  /** Round down to the nearest integer (emits @floor) */
+  floor(value: number): number;
+  /** Round to the given number of decimal places (emits @round) */
+  round(value: number, digits?: number): number;
+  /** Random integer in the range [minValue, maxValue) (emits @rand) */
+  rand(minValue: number, maxValue: number): number;
+  /** Convert a value to an integer (emits @int) */
+  int(value: any): number;
+  /** Convert a value to a floating-point number (emits @float) */
+  float(value: any): number;
+  /** Convert a value to a decimal number (emits @decimal) */
+  decimal(value: any): number;
+  /** Whether the value is a floating-point number (emits @isFloat) */
+  isFloat(value: any, locale?: string): boolean;
+  /** Whether the value is an integer (emits @isInt) */
+  isInt(value: any): boolean;
+
+  // Comparison & Logical Functions
+  /** Whether two values are equal (emits @equals) */
+  equals(object1: any, object2: any): boolean;
+  /** Whether the first value is greater than the second (emits @greater) */
+  greater(value: any, compareTo: any): boolean;
+  /** Whether the first value is less than the second (emits @less) */
+  less(value: any, compareTo: any): boolean;
+  /** Whether the first value is greater than or equal to the second (emits @greaterOrEquals) */
+  greaterOrEquals(value: any, compareTo: any): boolean;
+  /** Whether the first value is less than or equal to the second (emits @lessOrEquals) */
+  lessOrEquals(value: any, compareTo: any): boolean;
+  /** Whether all expressions are true (emits @and) */
+  and(...expressions: boolean[]): boolean;
+  /** Whether at least one expression is true (emits @or) */
+  or(...expressions: boolean[]): boolean;
+  /** Negate a boolean expression (emits @not) */
+  not(expression: boolean): boolean;
+  /** Return one of two values based on a condition (emits @if) */
+  if<T = any>(expression: boolean, valueIfTrue: T, valueIfFalse: T): T;
+  /** First non-null value among the arguments (emits @coalesce) */
+  coalesce<T = any>(...values: T[]): T;
+
+  // Conversion & Encoding Functions
+  /** Parse a JSON string (or XML) into an object (emits @json) */
+  json<T = any>(value: string): T;
+  /** Convert a value to a string (emits @string) */
+  string(value: any): string;
+  /** Wrap a value in an array (emits @array) */
+  array<T = any>(value: T): T[];
+  /** Convert a value to a boolean (emits @bool) */
+  bool(value: any): boolean;
+  /** Base64-encode a string (emits @base64) */
+  base64(value: string): string;
+  /** Decode a base64 string to text (emits @base64ToString) */
+  base64ToString(value: string): string;
+  /** Convert a base64 string to binary content (emits @base64ToBinary) */
+  base64ToBinary(value: string): any;
+  /** Convert a string to binary content (emits @binary) */
+  binary(value: string): any;
+  /** Convert a string to a data URI (emits @dataUri) */
+  dataUri(value: string): string;
+  /** Convert a data URI to binary content (emits @dataUriToBinary) */
+  dataUriToBinary(value: string): any;
+  /** Convert a data URI to a string (emits @dataUriToString) */
+  dataUriToString(value: string): string;
+  /** Decode the data portion of a data URI (emits @decodeDataUri) */
+  decodeDataUri(value: string): any;
+  /** URI-encode a string (emits @uriComponent) */
+  uriComponent(value: string): string;
+  /** Decode a URI-encoded string (emits @uriComponentToString) */
+  uriComponentToString(value: string): string;
+  /** Convert a URI-encoded string to binary content (emits @uriComponentToBinary) */
+  uriComponentToBinary(value: string): any;
+  /** Decode a URI-encoded string; prefer uriComponentToString() (emits @decodeUriComponent) */
+  decodeUriComponent(value: string): string;
+  /** Decode a base64 string to text; prefer base64ToString() (emits @decodeBase64) */
+  decodeBase64(value: string): string;
+  /** URI-encode a string; prefer uriComponent() (emits @encodeUriComponent) */
+  encodeUriComponent(value: string): string;
+  /** Convert a string or JSON object to XML (emits @xml) */
+  xml(value: any): any;
+  /** Evaluate an XPath expression against XML content (emits @xpath) */
+  xpath(xml: any, xpath: string): any;
+
+  // Object Functions
+  /** Return a copy of the object with the property set (emits @setProperty) */
+  setProperty<T = any>(object: T, property: string, value: any): T;
+  /** Return a copy of the object with the property added (emits @addProperty) */
+  addProperty<T = any>(object: T, property: string, value: any): T;
+  /** Return a copy of the object with the property removed (emits @removeProperty) */
+  removeProperty<T = any>(object: T, property: string): T;
+
+  // URI Parsing Functions
+  /** Host portion of a URI (emits @uriHost) */
+  uriHost(uri: string): string;
+  /** Path portion of a URI (emits @uriPath) */
+  uriPath(uri: string): string;
+  /** Path and query portion of a URI (emits @uriPathAndQuery) */
+  uriPathAndQuery(uri: string): string;
+  /** Port number of a URI (emits @uriPort) */
+  uriPort(uri: string): number;
+  /** Query string portion of a URI (emits @uriQuery) */
+  uriQuery(uri: string): string;
+  /** Scheme (protocol) of a URI (emits @uriScheme) */
+  uriScheme(uri: string): string;
+
+  // Workflow & Form Data Functions
+  /** Results of all actions inside a scope (emits @result) */
+  result(scopeName: string): any[];
+  /** Details of the current action, inside do-until or error handlers (emits @action) */
+  action<T = any>(): T;
+  /** Body of a previous action; prefer body() (emits @actionBody) */
+  actionBody<T = any>(actionName: string): T;
+  /** Current iteration index of a do-until loop (emits @iterationIndexes) */
+  iterationIndexes(loopName: string): number;
+  /** Callback URL of the flow's HTTP trigger (emits @listCallbackUrl) */
+  listCallbackUrl(): string;
+  /** Value of a form-data key in an action's output (emits @formDataValue) */
+  formDataValue(actionName: string, key: string): any;
+  /** All values of a form-data key in an action's output (emits @formDataMultiValues) */
+  formDataMultiValues(actionName: string, key: string): any[];
+  /** Body of a part in an action's multipart output (emits @multipartBody) */
+  multipartBody(actionName: string, index: number): any;
+  /** Value of a form-data key in the trigger output (emits @triggerFormDataValue) */
+  triggerFormDataValue(key: string): any;
+  /** All values of a form-data key in the trigger output (emits @triggerFormDataMultiValues) */
+  triggerFormDataMultiValues(key: string): any[];
+  /** Body of a part in the trigger's multipart output (emits @triggerMultipartBody) */
+  triggerMultipartBody(index: number): any;
+
+  // Additional Date/Time Functions
+  /** Add an interval to a timestamp (emits @addToTime) */
+  addToTime(timestamp: string, interval: number, timeUnit: string, format?: string): string;
+  /** Subtract an interval from a timestamp (emits @subtractFromTime) */
+  subtractFromTime(timestamp: string, interval: number, timeUnit: string, format?: string): string;
+  /** Difference between two timestamps as a timespan string (emits @dateDifference) */
+  dateDifference(startDate: string, endDate: string): string;
+
+  // Expression Literal Helpers (DSL-specific)
+  /** Force string-interpolation output: wraps the expression in braces for string coercion */
+  braced(expression: any): string;
+  /** Emit the literal expression @true */
+  atTrue(): boolean;
+  /** Emit the literal expression @false */
+  atFalse(): boolean;
+  /** Emit a literal number expression like @0 */
+  atNumber(value: number): number;
+  /** Emit a quoted string-literal expression like @'text' */
+  atString(value: string): string;
+  /** Emit the literal expression @null */
+  null(): null;
 
   // Utility Functions
   guid(): string;

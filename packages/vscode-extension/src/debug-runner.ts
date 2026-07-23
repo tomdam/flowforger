@@ -17,8 +17,8 @@ import { WordOnlineConnector } from '@flowforger/connectors-wordonline';
 import { ExcelOnlineConnector } from '@flowforger/connectors-excelonline';
 import { TeamsConnector } from '@flowforger/connectors-teams';
 import { OneDriveConnector } from '@flowforger/connectors-onedrive';
-import { transformCode, buildSourceMapFromDsl } from '@flowforger/dsl-native';
-import type { DslSourceMap } from '@flowforger/dsl-native';
+import { transformCode, buildSourceMapFromDsl, buildExpressionScope, evaluateDebugInput } from '@flowforger/dsl-native';
+import type { DslSourceMap, ExpressionScope } from '@flowforger/dsl-native';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -120,6 +120,9 @@ export class FlowForgerDebugRunner {
   // Current state for DAP queries
   private pausedNode: Node | null = null;
   private currentIterationContext: IterationContextInfo | null = null;
+
+  // Expression scopes for DSL evaluation, cached per file (normalized path)
+  private expressionScopes = new Map<string, ExpressionScope | null>();
 
   constructor(
     ir: FlowIR,
@@ -749,9 +752,19 @@ export class FlowForgerDebugRunner {
 
   // --- Breakpoint helpers ---
 
+  /**
+   * Get the live breakpoint map for a file, creating and storing it if missing.
+   * The returned map is mutated in place by setBreakpointsForFile so that
+   * references captured by running execution loops see mid-run updates.
+   */
   private getBreakpointsForFile(filePath: string): Map<string, number> {
     const norm = this.normalizePath(filePath);
-    return this.breakpointsPerFile.get(norm) || new Map();
+    let bps = this.breakpointsPerFile.get(norm);
+    if (!bps) {
+      bps = new Map();
+      this.breakpointsPerFile.set(norm, bps);
+    }
+    return bps;
   }
 
   private hasBreakpointsForFile(filePath: string): boolean {
@@ -862,15 +875,17 @@ export class FlowForgerDebugRunner {
    * that has breakpoints, not just the main file.
    */
   setBreakpointsForFile(filePath: string, breakpointEntries: Array<{ nodeId: string; line: number }>): void {
-    const norm = this.normalizePath(filePath);
-    const bpMap = new Map<string, number>();
+    // Mutate the existing map in place — never replace it. Execution loops
+    // capture a reference to this map at start; replacing it would leave them
+    // checking a stale snapshot and skip breakpoints added mid-run.
+    const bpMap = this.getBreakpointsForFile(filePath);
+    bpMap.clear();
     for (const bp of breakpointEntries) {
       bpMap.set(bp.nodeId, bp.line);
     }
-    this.breakpointsPerFile.set(norm, bpMap);
 
     // Also update the legacy breakpoints map if this is the main file
-    if (norm === this.normalizePath(this.filePath)) {
+    if (this.normalizePath(filePath) === this.normalizePath(this.filePath)) {
       this.breakpoints = bpMap;
     }
   }
@@ -879,28 +894,20 @@ export class FlowForgerDebugRunner {
    * Clear breakpoints for a specific file.
    */
   clearBreakpointsForFile(filePath: string): void {
-    const norm = this.normalizePath(filePath);
-    this.breakpointsPerFile.set(norm, new Map());
-    if (norm === this.normalizePath(this.filePath)) {
-      this.breakpoints = new Map();
-    }
+    this.getBreakpointsForFile(filePath).clear();
   }
 
   // Legacy single-file API (still used by adapter for main file)
   setBreakpoint(nodeId: string, line: number): void {
-    this.breakpoints.set(nodeId, line);
-    // Also update per-file map
-    const norm = this.normalizePath(this.filePath);
-    if (!this.breakpointsPerFile.has(norm)) {
-      this.breakpointsPerFile.set(norm, new Map());
-    }
-    this.breakpointsPerFile.get(norm)!.set(nodeId, line);
+    const bps = this.getBreakpointsForFile(this.filePath);
+    bps.set(nodeId, line);
+    this.breakpoints = bps;
   }
 
   clearBreakpoints(): void {
-    this.breakpoints.clear();
-    const norm = this.normalizePath(this.filePath);
-    this.breakpointsPerFile.set(norm, new Map());
+    const bps = this.getBreakpointsForFile(this.filePath);
+    bps.clear();
+    this.breakpoints = bps;
   }
 
   getBreakpointCount(): number {
@@ -961,15 +968,36 @@ export class FlowForgerDebugRunner {
     this.callbacks.onOutput(`[Compose] ${node.name} = ${formatted}`, 'console');
   }
 
-  /** Evaluate a Power Automate expression in the current context. */
-  evaluate(expression: string): { result: string; value?: any } {
-    try {
-      const expr = expression.startsWith('@') ? expression : '@' + expression;
-      const result = evalExpression(expr, this.getActiveContext());
-      const resultStr = typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
-      return { result: resultStr, value: result };
-    } catch (err: any) {
-      return { result: `Error: ${err.message}` };
+  /**
+   * Build (and cache) the DSL expression scope for the active frame's file.
+   * Returns null if the source can't be read — DSL evaluation is then skipped.
+   */
+  private getExpressionScope(): ExpressionScope | null {
+    const filePath = this.getActiveFilePath();
+    const norm = this.normalizePath(filePath);
+    if (this.expressionScopes.has(norm)) {
+      return this.expressionScopes.get(norm)!;
     }
+    let scope: ExpressionScope | null = null;
+    try {
+      const source = fs.readFileSync(filePath, 'utf-8');
+      const ir = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1].ir : this.ir;
+      scope = buildExpressionScope(source, ir, this.getActiveSourceMap());
+    } catch {
+      scope = null;
+    }
+    this.expressionScopes.set(norm, scope);
+    return scope;
+  }
+
+  /** Evaluate a DSL (TypeScript) or Power Automate expression in the current context. */
+  evaluate(expression: string): { result: string; value?: any } {
+    const outcome = evaluateDebugInput(
+      expression,
+      this.getExpressionScope(),
+      this.getActiveContext(),
+      evalExpression,
+    );
+    return { result: outcome.result, value: outcome.value };
   }
 }

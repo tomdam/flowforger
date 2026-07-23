@@ -121,7 +121,7 @@ export const DiagnosticCodes = {
     severity: 'error' as DiagnosticSeverity,
     message: 'Variable initialization inside control structure',
     format: (name: string) =>
-      `Variable '${name}' cannot be initialized inside a control structure (if, for, scope). Move ctx.initVariable() to the root level of the action method.`,
+      `Variable '${name}' cannot be initialized inside a control structure (if, for, scope). Move the variable declaration to the root level of the action method.`,
   },
 
   // Undefined Parameter Reference (DSL015)

@@ -1109,9 +1109,18 @@ function getCategorySortOrder(category?: string): string {
     Office365: '4',
     Connector: '5',
     DateTime: '6',
-    Utility: '7',
+    Collection: '7',
+    String: '8',
+    Math: '9',
+    Logical: 'a',
+    Conversion: 'b',
+    Object: 'c',
+    Uri: 'd',
+    Workflow: 'e',
+    Expression: 'f',
+    Utility: 'g',
   };
-  return order[category || ''] || '9';
+  return order[category || ''] || 'z';
 }
 
 // Listen on documents

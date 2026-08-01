@@ -2,13 +2,20 @@
 
 This directory contains example flows demonstrating SharePoint connector operations in FlowForger.
 
+## Configuring the examples
+
+Each example declares its tenant-specific values in a configuration block at the top
+of `run()` — edit those and the flow is ready to run. See
+[Configuring the examples](../README.md#configuring-the-examples) for what each value
+means, where to find it, and which mechanism to use in a production flow.
+
 ## Available Operations
 
 ### List Item Operations
 
 **Get Items** (`GetItems`)
 - Retrieve multiple items from a SharePoint list
-- Example: `get-items.ir.json`
+- Example: `get-items.ff.ts`
 - DSL: `.spGetItems(name, params)`
 
 **Get Item by ID** (`GetItemById`)
@@ -17,30 +24,31 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Create Item** (`CreateItem`)
 - Create a new item in a SharePoint list
-- Example: `create-item.ir.json`
+- Example: `create-item.ff.ts`
 - DSL: `.spCreateItem(name, params)`
 
 **Update Item** (`UpdateItem`)
 - Update an existing list item
-- Example: `update-item.ir.json`
+- Example: `update-item.ff.ts`
 - DSL: `.spUpdateItem(name, params)`
 
 **Delete Item** (`DeleteItem`)
 - Delete a list item
-- Example: `delete-item.ir.json`
+- Example: `delete-item.ff.ts`
 - DSL: `.spDeleteItem(name, params)`
 
 ### File Operations (Phase 1)
 
 **Create File** (`CreateFile`)
 - Upload a file to a SharePoint document library
-- Example: `create-file.ir.json`
+- Example: `create-file.ff.ts`
 - DSL: `.spCreateFile(name, params)`
-- Required params: `dataset` (site URL), `parameters/folderPath`, `parameters/name`, `body` (file content)
+- Required params: `dataset` (site URL), `folderPath`, `name`, `body` (file content)
+- These are flat parameters — do **not** nest them under a `parameters: { ... }` object. The DSL flattens a nested object to `parameters/folderPath` etc., and Power Automate rejects the flow on save with `WorkflowOperationParametersExtraParameter: The API operation does not contain a definition for parameter 'parameters'`.
 
 **Get File Content** (`GetFileContent`)
 - Retrieve file content by file ID
-- Example: `get-file-content.ir.json`
+- Example: `get-file-content.ff.ts`
 - DSL: `.spGetFileContent(name, params)`
 - Required params: `dataset`, `id` (file unique ID)
 - Returns: `{ $content: base64, $contentType: string }`
@@ -63,7 +71,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Copy File** (`CopyFile`)
 - Copy a file to another location
-- Example: `copy-file.ir.json`
+- Example: `copy-file.ff.ts`
 - DSL: `.spCopyFile(name, params)`
 - Required params: `dataset`, `id`, `destSiteUrl`, `destFolderPath`
 
@@ -92,20 +100,20 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get File Properties** (`GetFileProperties`)
 - Get library column values for a file
-- Example: `get-file-properties.ir.json`
+- Example: `get-file-properties.ff.ts`
 - DSL: `.spGetFileProperties(name, params)`
 - Required params: `dataset`, `listId` (library GUID), `itemId` (list item ID)
 - Returns: All column values including Title, FileLeafRef, Created, Modified, Author, etc.
 
 **Update File Properties** (`UpdateFileProperties`)
 - Update library column values for a file (metadata only, not file content)
-- Example: `update-file-properties.ir.json`
+- Example: `update-file-properties.ff.ts`
 - DSL: `.spUpdateFileProperties(name, params)`
 - Required params: `dataset`, `listId`, `itemId`, `fields` (object with column values)
 
 **Get Files (Properties Only)** (`GetFilesPropertiesOnly`)
 - Get all file/folder properties with advanced filtering and sorting
-- Example: `get-files-properties-only.ir.json`
+- Example: `get-files-properties-only.ff.ts`
 - DSL: `.spGetFilesPropertiesOnly(name, params)`
 - Required params: `dataset`, `listId`
 - Optional params: `filter` (OData filter), `orderby`, `top`, `skip`, `folderPath`, `includeNestedItems`
@@ -113,7 +121,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get Item Changes** (`GetItemChanges`)
 - Get version history and audit trail for a file
-- Example: `get-item-changes.ir.json`
+- Example: `get-item-changes.ff.ts`
 - DSL: `.spGetItemChanges(name, params)`
 - Required params: `dataset`, `listId`, `itemId`
 - Optional params: `since` (date), `until` (date)
@@ -123,7 +131,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Add Attachment** (`AddAttachment`)
 - Add a file attachment to a list item
-- Example: `add-attachment.ir.json`
+- Example: `add-attachment.ff.ts`
 - DSL: `.spAddAttachment(name, params)`
 - Required params: `dataset`, `listId`, `itemId`, `fileName`, `content` (file data)
 - Returns: Attachment metadata including FileName and ServerRelativeUrl
@@ -131,7 +139,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get Attachments** (`GetAttachments`)
 - Get list of all attachments for a list item
-- Example: `get-attachments.ir.json`
+- Example: `get-attachments.ff.ts`
 - DSL: `.spGetAttachments(name, params)`
 - Required params: `dataset`, `listId`, `itemId`
 - Returns: Array of attachment metadata (FileName, ServerRelativeUrl)
@@ -151,21 +159,21 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Check Out File** (`CheckOutFile`)
 - Lock a file for editing, preventing others from making changes
-- Example: `checkout-checkin-workflow.ir.json`
+- Example: `checkout-checkin-workflow.ff.ts`
 - DSL: `.spCheckOutFile(name, params)`
 - Required params: `dataset`, `fileId`
 - Note: File remains locked until checked in or checkout is discarded
 
 **Check In File** (`CheckInFile`)
 - Release file lock and make changes visible to others
-- Example: `checkout-checkin-workflow.ir.json`
+- Example: `checkout-checkin-workflow.ff.ts`
 - DSL: `.spCheckInFile(name, params)`
 - Required params: `dataset`, `fileId`
 - Optional params: `comment` (check-in comment), `checkInType` (0=Minor, 1=Major, 2=Overwrite, default=1)
 
 **Discard Check Out** (`DiscardCheckOut`)
 - Cancel checkout without saving changes
-- Example: `discard-checkout.ir.json`
+- Example: `discard-checkout.ff.ts`
 - DSL: `.spDiscardCheckOut(name, params)`
 - Required params: `dataset`, `fileId`
 - Note: All changes made while checked out will be lost
@@ -174,7 +182,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Create Sharing Link** (`CreateSharingLink`)
 - Generate a shareable link for a file or folder
-- Examples: `create-sharing-link.ir.json`, `sharing-workflow.ir.json`
+- Examples: `create-sharing-link.ff.ts`, `sharing-workflow.ff.ts`
 - DSL: `.spCreateSharingLink(name, params)`
 - Required params: `dataset`, `itemId`, `linkType` (view/edit/embed)
 - Optional params:
@@ -189,7 +197,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Grant Access** (`GrantAccess`)
 - Share a file or folder with specific users or groups
-- Examples: `grant-access.ir.json`, `sharing-workflow.ir.json`
+- Examples: `grant-access.ff.ts`, `sharing-workflow.ff.ts`
 - DSL: `.spGrantAccess(name, params)`
 - Required params: `dataset`, `itemId`, `recipients`, `roleValue`
 - Parameters:
@@ -206,7 +214,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Stop Sharing** (`StopSharing`)
 - Remove all sharing permissions from a file or folder
-- Examples: `stop-sharing.ir.json`, `sharing-workflow.ir.json`
+- Examples: `stop-sharing.ff.ts`, `sharing-workflow.ff.ts`
 - DSL: `.spStopSharing(name, params)`
 - Required params: `dataset`, `itemId`
 - Note: Removes all sharing links and permissions for the item
@@ -215,7 +223,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Set Content Approval Status** (`SetContentApprovalStatus`)
 - Approve or reject a file/item in a list with content approval enabled
-- Examples: `set-approval-status.ir.json`, `content-approval-workflow.ir.json`, `approval-integration.ir.json`
+- Examples: `set-approval-status.ff.ts`, `content-approval-workflow.ff.ts`, `approval-integration.ff.ts`
 - DSL: `.spSetContentApprovalStatus(name, params)`
 - Required params: `dataset`, `table` (list/library ID), `itemId`, `approvalStatus`
 - Optional params: `comments` - Approval/rejection comments
@@ -229,7 +237,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get Content Approval Status** (`GetContentApprovalStatus`)
 - Retrieve approval status and metadata for an item
-- Examples: `get-approval-status.ir.json`, `content-approval-workflow.ir.json`, `approval-integration.ir.json`
+- Examples: `get-approval-status.ff.ts`, `content-approval-workflow.ff.ts`, `approval-integration.ff.ts`
 - DSL: `.spGetContentApprovalStatus(name, params)`
 - Required params: `dataset`, `table` (list/library ID), `itemId`
 - Returns: Item with moderation fields:
@@ -244,7 +252,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get Lists** (`GetLists` / `GetAllListsAndLibraries`)
 - Retrieve all lists and libraries in a SharePoint site
-- Examples: `get-lists.ir.json`, `advanced-workflow.ir.json`
+- Examples: `get-lists.ff.ts`, `advanced-workflow.ff.ts`
 - DSL: `.spGetLists(name, params)`
 - Required params: `dataset` (site URL)
 - Optional params: `filter` (OData filter), `select` (specific fields)
@@ -262,7 +270,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Get List Views** (`GetListViews`)
 - Retrieve all views for a specific list or library
-- Examples: `get-list-views.ir.json`, `advanced-workflow.ir.json`
+- Examples: `get-list-views.ff.ts`, `advanced-workflow.ff.ts`
 - DSL: `.spGetListViews(name, params)`
 - Required params: `dataset`, `table` (list ID)
 - Returns: Array of views with metadata:
@@ -278,7 +286,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Resolve Person** (`ResolvePerson`)
 - Look up user information by email or login name
-- Examples: `resolve-person.ir.json`, `advanced-workflow.ir.json`
+- Examples: `resolve-person.ff.ts`, `advanced-workflow.ff.ts`
 - DSL: `.spResolvePerson(name, params)`
 - Required params: `dataset`, `email` or `loginName`
 - Returns: User information:
@@ -292,7 +300,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 **Send HTTP Request** (`SendHttpRequest` / `HttpRequest`)
 - Execute custom HTTP requests to SharePoint REST API
-- Examples: `send-http-request.ir.json`, `advanced-workflow.ir.json`
+- Examples: `send-http-request.ff.ts`, `advanced-workflow.ff.ts`
 - DSL: `.spSendHttpRequest(name, params)`
 - Required params: `dataset`, `uri` (relative API path)
 - Optional params:
@@ -308,7 +316,7 @@ This directory contains example flows demonstrating SharePoint connector operati
 
 ## Complete Workflow Examples
 
-**File Operations** (`file-operations.ir.json`)
+**File Operations** (`file-operations.ff.ts`)
 Demonstrates basic file lifecycle:
 1. Creating a file
 2. Getting file metadata
@@ -317,7 +325,7 @@ Demonstrates basic file lifecycle:
 5. Copying file to archive
 6. Deleting original file
 
-**File Properties Workflow** (`file-properties-workflow.ir.json`)
+**File Properties Workflow** (`file-properties-workflow.ff.ts`)
 Demonstrates advanced file properties management:
 1. Get all files in a folder with filtering
 2. Loop through each file
@@ -326,7 +334,7 @@ Demonstrates advanced file properties management:
 5. Update properties if needed
 6. Get change history for each file
 
-**Attachment Workflow** (`attachment-workflow.ir.json`)
+**Attachment Workflow** (`attachment-workflow.ff.ts`)
 Demonstrates complete attachment lifecycle:
 1. Add multiple attachments to a list item
 2. Get list of all attachments
@@ -335,7 +343,7 @@ Demonstrates complete attachment lifecycle:
 5. Delete specific attachment
 6. Verify remaining attachments
 
-**Check Out/Check In Workflow** (`checkout-checkin-workflow.ir.json`)
+**Check Out/Check In Workflow** (`checkout-checkin-workflow.ff.ts`)
 Demonstrates version control best practices:
 1. Get file metadata
 2. Check out file for exclusive editing
@@ -343,13 +351,13 @@ Demonstrates version control best practices:
 4. Check in file with comment and version type
 5. Track changes with version history
 
-**Discard Check Out** (`discard-checkout.ir.json`)
+**Discard Check Out** (`discard-checkout.ff.ts`)
 Demonstrates abandoning changes:
 1. Check out file
 2. Decide not to make changes
 3. Discard checkout to unlock file
 
-**Version Control Workflow** (`version-control-workflow.ir.json`)
+**Version Control Workflow** (`version-control-workflow.ff.ts`)
 Demonstrates robust version control with error handling:
 1. Find files needing update
 2. Check out file
@@ -358,7 +366,7 @@ Demonstrates robust version control with error handling:
 5. Discard checkout on failure (error handling)
 6. View version history
 
-**Sharing Workflow** (`sharing-workflow.ir.json`)
+**Sharing Workflow** (`sharing-workflow.ff.ts`)
 Demonstrates complete sharing lifecycle with time-limited access:
 1. Create a new document in SharePoint
 2. Store the file ID for later operations
@@ -368,23 +376,23 @@ Demonstrates complete sharing lifecycle with time-limited access:
 6. Automatically remove sharing after expiration
 7. Return summary of sharing activity
 
-**Create Sharing Link** (`create-sharing-link.ir.json`)
+**Create Sharing Link** (`create-sharing-link.ff.ts`)
 Demonstrates different sharing link types:
 1. View-only link for anonymous users
 2. Edit link for organization with expiration
 3. Password-protected view link
 
-**Grant Access** (`grant-access.ir.json`)
+**Grant Access** (`grant-access.ff.ts`)
 Demonstrates different permission levels:
 1. Grant view access to single user with custom email
 2. Grant edit access to multiple users
 3. Grant owner access without email notification
 
-**Stop Sharing** (`stop-sharing.ir.json`)
+**Stop Sharing** (`stop-sharing.ff.ts`)
 Demonstrates removing all sharing:
 1. Remove all sharing links and permissions from a file
 
-**Content Approval Workflow** (`content-approval-workflow.ir.json`)
+**Content Approval Workflow** (`content-approval-workflow.ff.ts`)
 Demonstrates complete content approval lifecycle:
 1. Accept input for site, library, item, action (approve/reject), and comments
 2. Get current approval status before making changes
@@ -394,18 +402,18 @@ Demonstrates complete content approval lifecycle:
 6. Verify final status after change
 7. Return summary of workflow execution
 
-**Set Approval Status** (`set-approval-status.ir.json`)
+**Set Approval Status** (`set-approval-status.ff.ts`)
 Demonstrates different approval status settings:
 1. Approve a document with quality comments
 2. Reject a document with feedback
 3. Set document to pending approval status
 
-**Get Approval Status** (`get-approval-status.ir.json`)
+**Get Approval Status** (`get-approval-status.ff.ts`)
 Demonstrates retrieving approval information:
 1. Get item approval status and metadata
 2. Display all moderation fields including status, comments, and editor
 
-**Approval Integration** (`approval-integration.ir.json`)
+**Approval Integration** (`approval-integration.ff.ts`)
 Demonstrates integration with Power Automate Approvals:
 1. Get document details from SharePoint
 2. Set document to pending approval status
@@ -415,34 +423,34 @@ Demonstrates integration with Power Automate Approvals:
 6. Include approver name and comments in SharePoint
 7. Verify final status and return summary
 
-**Get Lists** (`get-lists.ir.json`)
+**Get Lists** (`get-lists.ff.ts`)
 Demonstrates site inventory and filtering:
 1. Get all lists and libraries from site
 2. Filter to document libraries only
 3. Filter to visible lists only
 4. Return summary with counts and details
 
-**Get List Views** (`get-list-views.ir.json`)
+**Get List Views** (`get-list-views.ff.ts`)
 Demonstrates view discovery and analysis:
 1. Get all views for a specific list
 2. Find the default view
 3. Filter to visible views only
 4. Return summary with view metadata
 
-**Resolve Person** (`resolve-person.ir.json`)
+**Resolve Person** (`resolve-person.ff.ts`)
 Demonstrates user lookup:
 1. Accept user email as input
 2. Look up user information in SharePoint
 3. Return user ID, display name, and login details
 
-**Send HTTP Request** (`send-http-request.ir.json`)
+**Send HTTP Request** (`send-http-request.ff.ts`)
 Demonstrates custom REST API calls:
 1. Get site metadata using custom endpoint
 2. Get current user information
 3. Create list item with custom HTTP request
 4. Return combined results
 
-**Advanced Discovery Workflow** (`advanced-workflow.ir.json`)
+**Advanced Discovery Workflow** (`advanced-workflow.ff.ts`)
 Demonstrates comprehensive site analysis:
 1. Get site metadata using custom HTTP request
 2. Get all lists and libraries
@@ -494,9 +502,8 @@ Parameters can use Power Automate naming convention:
 - `dataset` → site URL
 - `table` → list GUID
 - `id` → file/item ID
-- `parameters/path` → folder path
-- `parameters/name` → file name
-- `parameters/folderPath` → folder path
+- `parameters/path` → folder path (CreateNewFolder only — this operation really does take a `parameters` object)
+- `folderPath` / `name` → folder path and file name for `CreateFile` (flat, **not** under `parameters/`)
 - `body` → file content or item fields
 - `item/*` → list item field values (e.g., `item/Title`)
 

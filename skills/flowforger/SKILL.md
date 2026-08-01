@@ -119,9 +119,22 @@ ctx.eval(`@{parameters('Site URL (cr_SiteUrl)')}`)
 ### 3. JSDoc @action names variables and control flow — never named action calls
 Do NOT add `@action` before `ctx.compose()`, `ctx.http()`, or connector calls - they already take the name as first parameter. Variables and control-flow statements have no name argument, so `@action` is how you name them.
 
-**`@action` is optional, not required.** When it's missing, the transformer auto-derives a name: `Initialize_<var>`, `Set_<var>`, `Increment_<var>`, `Decrement_<var>`, `Append_<var>` for variables; `Condition` / `ForEach_<loopVar>` / `Switch` / `DoUntil` / `Case_<value>` for control flow. You should still usually provide one: the defaults are generic and collide easily (two un-annotated `if`s both become `Condition`, violating [Rule 1](#1-all-action-names-must-be-unique--including-across-switch-cases)), and a descriptive name is what you reference later with `ctx.outputs()`/`ctx.body()`.
+**`@action` is optional, not required.** When it's missing, the transformer auto-derives a name; the defaults per statement form are:
 
-> **Exception:** `arr.push()`, `x++`, and `x--` ignore `@action` entirely — they are ALWAYS auto-named `Append_<var>` / `Increment_<var>` / `Decrement_<var>`. To control those names, rename the variable.
+| Statement | Auto-derived name |
+|-----------|-------------------|
+| `let x = …` | `Initialize_<var>` |
+| `x = …` | `Set_<var>` |
+| `x += n` / `x++` | `Increment_<var>` |
+| `x -= n` / `x--` | `Decrement_<var>` |
+| `arr.push(v)` | `Append_to_<var>` |
+| `str += '…'` | `Append_<var>` |
+| `if` / `for…of` / `switch` / `do…while` | `Condition` / `ForEach_<loopVar>` / `Switch` / `DoUntil` |
+| `case` | `Case_<value>` |
+
+Collisions get a `_2`, `_3`, … suffix. You should still usually provide a name: the defaults are generic and collide easily (two un-annotated `if`s both become `Condition`, violating [Rule 1](#1-all-action-names-must-be-unique--including-across-switch-cases)), and a descriptive name is what you reference later with `ctx.outputs()`/`ctx.body()`.
+
+> **Exception:** the `x++` and `x--` forms ignore `@action` entirely — they are ALWAYS auto-named `Increment_<var>` / `Decrement_<var>`. To name those actions, write `x += 1` / `x -= 1` instead, which does honour `@action`. Note that `arr.push()` is **not** an exception: it honours `@action` normally.
 
 ```typescript
 // ❌ WRONG:
@@ -274,7 +287,7 @@ await ctx.callWorkflow('RunChild', 'MyChildFlow', { text: 'hello' });
 ctx.body('RunChild')               // ✅ for Child Workflows
 ```
 
-### 6. Try/Catch MUST have a Finally scope (or explicit multi-dependency @runAfter)
+### 6. Try/Catch MUST have a Finally scope (or an explicit @runAfter covering both paths)
 
 **This is the most common cause of broken flows.** The DSL transformer auto-chains each action to the previous one with `runAfter: { "PreviousAction": ["Succeeded"] }`. In a try/catch pattern, the "previous action" for anything after the catch is the CatchBlock — but CatchBlock only runs when TryBlock **fails**. If TryBlock succeeds, CatchBlock is skipped, and **every action after it is also skipped**, breaking the flow in half.
 
@@ -317,10 +330,12 @@ await ctx.response('Response', 200, { done: true }); // ← NEVER RUNS on succes
 await ctx.response('Response', 200, { done: true });
 ```
 
-**Fix B: Explicit multi-dependency @runAfter on the next action**
+**Fix B: Depend on the catch scope alone, accepting `Skipped`**
+
+`CatchBlock` has a status on *both* paths — `Succeeded` when it ran, `Skipped` when TryBlock succeeded. Listing both statuses on a **single** dependency covers the whole flow and keeps execution sequential:
 
 ```typescript
-// ✅ CORRECT — explicit @runAfter covers both paths
+// ✅ CORRECT — one dependency, both statuses
 /** @action TryBlock @type scope */
 {
   await ctx.http('RiskyCall', { method: 'GET', url: '...' });
@@ -331,11 +346,25 @@ await ctx.response('Response', 200, { done: true });
   await ctx.compose('Error', { failed: true });
 }
 
-/** @action SendResponse @runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded */
+/** @runAfter CatchBlock: Succeeded, Skipped */
 await ctx.response('Response', 200, { done: true });
 ```
 
-**The rule applies to ALL actions with conditional @runAfter**, not just try/catch. Any time an action uses `@runAfter X: Failed` (or any non-default status), actions after it will be skipped on the success path unless you add a finally scope or explicit multi-dependency @runAfter.
+Add `Failed` to the list (`Succeeded, Failed, Skipped`) if the action must run even when the catch scope itself fails.
+
+**Do NOT use two @runAfter tags for this.** Multiple `@runAfter` tags on one action are **ANDed** — the action runs only when *every* listed dependency finished in one of its listed statuses:
+
+```typescript
+// ❌ BROKEN — runs on NEITHER path.
+// Success path: TryBlock is Succeeded ✓ but CatchBlock is Skipped ✗ → action skipped.
+// Failure path: TryBlock is Failed ✗ → action skipped.
+/** @runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded */
+await ctx.response('Response', 200, { done: true });
+```
+
+Multiple `@runAfter` tags are the right tool for a **fan-in** — joining genuinely parallel branches, where AND is exactly what you want. See [DSL Syntax → Parallel branches](dsl-syntax.md#parallel-branches-fan-out-via-runafter).
+
+**The rule applies to ALL actions with conditional @runAfter**, not just try/catch. Any time an action uses `@runAfter X: Failed` (or any non-default status), actions after it will be skipped on the success path unless you add a finally scope or point them at that action with a status list covering every path.
 
 ### 7. Use `&&`/`||` operators instead of `ctx.and()`/`ctx.or()` in if conditions
 
@@ -462,7 +491,7 @@ for (const order of ctx.body('GetOrders')?.['value'] ?? []) { ... }
 | For Each | `@action Name @type foreach` | `for (const x of ...) { }` |
 | Do-Until | `@action Name @type until` | `do { } while (...)` |
 | Scope | `@action Name @type scope` | `{ ... }` (bare block) |
-| Try/Catch | Scope + `@runAfter` + **Finally scope** | See [Critical Rule 6](#6-trycatch-must-have-a-finally-scope-or-explicit-multi-dependency-runafter) |
+| Try/Catch | Scope + `@runAfter` + **Finally scope** | See [Critical Rule 6](#6-trycatch-must-have-a-finally-scope-or-an-explicit-runafter-covering-both-paths) |
 
 See [DSL Syntax Reference](dsl-syntax.md) for detailed syntax.
 
@@ -487,19 +516,3 @@ See [Connectors Reference](connectors.md) for all operations and parameters.
 - [Examples](examples.md) - Common flow patterns
 - [Formal Grammar & Conformance](https://github.com/tomdam/flowforger/blob/main/docs/grammar/README.md) - EBNF for the recognized subset and JSDoc tags, the 14 conformance rules (spec-style restatement of this file), and a fully-annotated [canonical example](https://github.com/tomdam/flowforger/blob/main/docs/grammar/canonical-example.ff.ts)
 
-## MCP Integration
-
-If connected to FlowForger MCP server, I can use these tools:
-- `transformDSL` - Convert DSL to FlowIR
-- `validateFlow` - Validate flow definitions
-- `compileToLogicApps` - Generate Logic Apps JSON
-- `runFlow` - Execute flows locally
-- `reverseEngineer` - Convert Logic Apps to DSL
-
-## Slash Commands
-
-- `/flowforger-create <description>` - Create a new flow
-- `/flowforger-run <file>` - Run a flow locally
-- `/flowforger-convert <file>` - Convert between formats
-- `/flowforger-validate <file>` - Validate a flow
-- `/flowforger-session <id>` - Connect to browser session

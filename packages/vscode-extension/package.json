@@ -218,6 +218,8 @@
     "vscode-languageclient": "^9.0.1",
     "@vscode/debugadapter": "^1.68.0",
     "@azure/msal-node": "^5.1.1",
+    "@flowforger/debug-core": "^0.1.0",
+    "@flowforger/debug-node": "^0.1.0",
     "@flowforger/dsl-native": "^0.1.0",
     "@flowforger/emitter-logicapps": "^0.1.0",
     "@flowforger/engine": "^0.1.0",

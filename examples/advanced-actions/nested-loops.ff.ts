@@ -12,21 +12,19 @@ class NestedLoops {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize_totalCount */
     let totalCount: number = 0;
 
-    /** @action Initialize_summaries */
     let summaries: any[] = [];
 
     // Extract departments array from trigger
     await ctx.compose('Departments', ctx.triggerBody()?.['departments']);
 
-    /** @action LoopDepartments @type foreach */
+    /** @action LoopDepartments */
     for (const dept of ctx.outputs('Departments') ?? []) {
       // Compose department info for reference inside inner loop
       await ctx.compose('CurrentDept', dept?.['name']);
 
-      /** @action LoopEmployees @type foreach */
+      /** @action LoopEmployees */
       for (const emp of dept?.['employees'] ?? []) {
         // Build a summary entry for each employee
         await ctx.compose('EmployeeSummary', {
@@ -35,10 +33,8 @@ class NestedLoops {
           role: emp?.['role']
         });
 
-        /** @action IncrementTotal */
         totalCount = totalCount + 1;
 
-        /** @action AppendSummary */
         summaries = ctx.eval(`@union(variables('summaries'), createArray(outputs('EmployeeSummary')))`);
       }
     }

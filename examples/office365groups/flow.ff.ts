@@ -14,7 +14,7 @@ class Office365GroupsListMembers {
   async run(ctx: FlowContext) {
     await ctx.connectors.office365groups.ListGroups('ListGroups', { top: 10 });
 
-    /** @action ForEachGroup @type foreach */
+    /** @action ForEachGroup */
     for (const _group of ctx.eval(`@body('ListGroups')?['value']`) ?? []) {
       await ctx.connectors.office365groups.ListGroupMembers('ListGroupMembers', {
         groupId: ctx.eval(`@items('ForEachGroup')?['id']`),

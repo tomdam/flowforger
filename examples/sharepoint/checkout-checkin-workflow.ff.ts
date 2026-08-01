@@ -14,35 +14,35 @@ class SharePoint_Check_Out_Check_In_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.GetFileMetadataByPath("GetFileMetadata", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       path: ctx.triggerBody()?.['filePath']
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CheckOutFile("CheckOutFile", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.outputs('GetFileMetadata')?.['UniqueId']
     });
-    /** @runAfter trigger */
     await ctx.compose("FileCheckedOut", {
       message: "File is now locked for editing",
       fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       fileName: ctx.outputs('GetFileMetadata')?.['Name']
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.UpdateFile("UpdateFileContent", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       content: "Updated content while file is checked out"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CheckInFile("CheckInFile", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.outputs('GetFileMetadata')?.['UniqueId'],
       comment: "Updated via FlowForger automation",
       checkInType: 1
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "File successfully updated and checked in",
       fileName: ctx.outputs('GetFileMetadata')?.['Name'],

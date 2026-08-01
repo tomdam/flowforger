@@ -25,19 +25,19 @@ class SharePoint_Content_Approval_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action InitializeSiteUrl */
+    // This example takes its configuration from the trigger payload - the caller
+    // supplies the site and item to act on. The alternative is a flow parameter
+    // bound to an environment variable, for values fixed per environment.
     let siteUrl: string = ctx.triggerBody().siteUrl;
-    /** @action InitializeLibraryId @runAfter first */
+    /** @action InitializeLibraryId */
     let libraryId: string = ctx.triggerBody().libraryId;
-    /** @action InitializeItemId @runAfter first */
+    /** @action InitializeItemId */
     let itemId: string = ctx.triggerBody().itemId;
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetContentApprovalStatus("GetCurrentApprovalStatus", {
       dataset: ctx.variables('siteUrl'),
       table: ctx.variables('libraryId'),
       itemId: ctx.variables('itemId')
     });
-    /** @runAfter trigger */
     await ctx.compose("LogCurrentStatus", {
       message: "Current approval status retrieved",
       itemId: ctx.body('GetCurrentApprovalStatus').Id,
@@ -45,7 +45,7 @@ class SharePoint_Content_Approval_Workflow {
       currentStatus: ctx.body('GetCurrentApprovalStatus').approvalStatusText,
       moderationComments: ctx.body('GetCurrentApprovalStatus')._ModerationComments
     });
-    /** @action CheckActionType @type if @runAfter trigger */
+    /** @action CheckActionType */
     if ((ctx.triggerBody().action === 'Approved')) {
       await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveItem", {
         dataset: ctx.variables('siteUrl'),
@@ -54,7 +54,6 @@ class SharePoint_Content_Approval_Workflow {
         approvalStatus: "Approved",
         comments: (ctx.triggerBody().comments ?? 'Approved via automated workflow')
       });
-      /** @runAfter first */
       await ctx.compose("ApprovalSuccess", {
         status: "Approved",
         message: "Item has been approved successfully",
@@ -69,7 +68,6 @@ class SharePoint_Content_Approval_Workflow {
         approvalStatus: "Rejected",
         comments: (ctx.triggerBody().comments ?? 'Rejected via automated workflow')
       });
-      /** @runAfter first */
       await ctx.compose("RejectionSuccess", {
         status: "Rejected",
         message: "Item has been rejected",
@@ -77,13 +75,11 @@ class SharePoint_Content_Approval_Workflow {
         comments: ctx.triggerBody().comments
       });
     }
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetContentApprovalStatus("VerifyFinalStatus", {
       dataset: ctx.variables('siteUrl'),
       table: ctx.variables('libraryId'),
       itemId: ctx.variables('itemId')
     });
-    /** @runAfter trigger */
     await ctx.compose("WorkflowSummary", {
       workflowCompleted: ctx.utcNow(),
       itemId: ctx.variables('itemId'),

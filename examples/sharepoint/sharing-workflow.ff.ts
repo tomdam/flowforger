@@ -21,20 +21,20 @@ class SharePoint_Sharing_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action InitializeSiteUrl */
+    // This example takes its configuration from the trigger payload - the caller
+    // supplies the site and item to act on. The alternative is a flow parameter
+    // bound to an environment variable, for values fixed per environment.
     let siteUrl: string = ctx.triggerBody().siteUrl;
-    /** @action InitializeLibraryId @runAfter first */
+    /** @action InitializeLibraryId */
     let libraryId: string = ctx.triggerBody().libraryId;
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CreateFile("CreateDocument", {
       dataset: ctx.variables('siteUrl'),
       folderPath: "/Shared Documents",
       fileName: ctx.triggerBody().fileName,
       body: "This is a confidential document that needs to be shared securely."
     });
-    /** @action StoreFileID @runAfter first */
+    /** @action StoreFileID */
     let fileId: string = ctx.body('CreateDocument').UniqueId;
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CreateSharingLink("CreateSecureSharingLink", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId'),
@@ -42,7 +42,6 @@ class SharePoint_Sharing_Workflow {
       scope: "organization",
       expirationDateTime: ctx.addDays(ctx.utcNow(), 7)
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GrantAccess("GrantEditAccessToRecipients", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId'),
@@ -53,14 +52,11 @@ class SharePoint_Sharing_Workflow {
       emailBody: "A new document has been created and shared with you. You have edit permissions. The sharing link will expire in 7 days.",
       requireSignIn: true
     });
-    /** @runAfter trigger */
     await ctx.delay("WaitForDocumentReview", 7, "Day");
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.StopSharing("RemoveSharingAfterExpiration", {
       dataset: ctx.variables('siteUrl'),
       itemId: ctx.variables('fileId')
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Document sharing workflow completed",
       fileId: ctx.variables('fileId'),

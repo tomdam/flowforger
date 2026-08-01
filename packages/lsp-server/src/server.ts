@@ -20,6 +20,7 @@ import {
   MarkupKind,
   TextDocumentPositionParams,
   CompletionParams,
+  ReferenceParams,
   Location,
 } from 'vscode-languageserver/node.js';
 
@@ -47,6 +48,8 @@ import {
   detectStringReference,
   findAction,
   findVariable,
+  findLoop,
+  findReferences,
   type Diagnostic,
   type SymbolIndex,
 } from '@flowforger/dsl-language-service';
@@ -72,7 +75,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
       },
       hoverProvider: true,
       definitionProvider: true,
-      // Future: referencesProvider, etc.
+      referencesProvider: true,
     },
   };
 });
@@ -730,10 +733,7 @@ connection.onDefinition((params: TextDocumentPositionParams): Location | null =>
     }
 
     case 'loop': {
-      const loopMatch = ref.name.match(/^Loop_(\d+)$/);
-      if (!loopMatch) return null;
-      const loopIndex = parseInt(loopMatch[1], 10) - 1;
-      const loop = symbolIndex.loops[loopIndex];
+      const loop = findLoop(symbolIndex, ref.name);
       if (!loop) return null;
       return Location.create(params.textDocument.uri, {
         start: { line: loop.range.start.line, character: loop.range.start.character },
@@ -744,6 +744,55 @@ connection.onDefinition((params: TextDocumentPositionParams): Location | null =>
     default:
       return null;
   }
+});
+
+/**
+ * Handle find-all-references / peek-references requests (Shift+F12).
+ *
+ * DSL symbols live in string literals (`ctx.body('Fetch')`), which the
+ * TypeScript language service has no symbol for — without this handler the
+ * editor reports "no results" even for heavily used actions and variables.
+ *
+ * When the request starts on a `let` identifier, VS Code's TypeScript support
+ * already lists every identifier hit, so only the string references are
+ * contributed here; returning the identifiers too would show each one twice.
+ */
+connection.onReferences((params: ReferenceParams): Location[] | null => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document) {
+    return null;
+  }
+
+  const text = document.getText();
+
+  if (!isFlowForgerFile(params.textDocument.uri, text)) {
+    return null;
+  }
+
+  let symbolIndex = symbolIndexCache.get(params.textDocument.uri);
+  if (!symbolIndex) {
+    symbolIndex = buildSymbolIndex(text);
+    symbolIndexCache.set(params.textDocument.uri, symbolIndex);
+  }
+
+  const result = findReferences(text, params.position, symbolIndex);
+  if (!result) return null;
+
+  let locations = result.locations;
+  if (result.origin === 'identifier') {
+    locations = locations.filter((l) => l.kind === 'stringReference');
+  }
+  if (!params.context.includeDeclaration) {
+    locations = locations.filter((l) => l.kind !== 'declaration');
+  }
+  if (locations.length === 0) return null;
+
+  return locations.map((location) =>
+    Location.create(params.textDocument.uri, {
+      start: { line: location.range.start.line, character: location.range.start.character },
+      end: { line: location.range.end.line, character: location.range.end.character },
+    })
+  );
 });
 
 /**
@@ -971,10 +1020,7 @@ function buildReferenceHoverContent(
     }
 
     case 'loop': {
-      const loopMatch = ref.name.match(/^Loop_(\d+)$/);
-      if (!loopMatch) return null;
-      const loopIndex = parseInt(loopMatch[1], 10) - 1;
-      const loop = symbolIndex.loops[loopIndex];
+      const loop = findLoop(symbolIndex, ref.name);
       if (!loop) return null;
       const line = loop.line + 1;
       const lines = [`**${ref.name}** (foreach loop)`, ''];

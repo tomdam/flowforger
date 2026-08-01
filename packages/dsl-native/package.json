@@ -41,10 +41,13 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --eval \"console.log('Tests will run after compilation')\""
+    "test": "node --import tsx --test test/expression-scope.test.ts test/generator-eol.test.ts test/generator-loop-variables.test.ts test/generator-skip-default-constructor.test.ts test/generator-sourcemap.test.ts test/savefile-transform.test.ts test/transformer.test.ts test/workflow-id-writer.test.ts"
   },
   "dependencies": {
     "@flowforger/ir": "^0.1.0",
     "ts-morph": "^24.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }

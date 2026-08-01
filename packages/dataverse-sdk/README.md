@@ -21,6 +21,8 @@ const client = new DataverseClient({
 
 Used by the [CLI](https://www.npmjs.com/package/flowforger) (`flowforger push`) to deploy compiled flow definitions into Dataverse, and by the Dataverse connector for local flow runs.
 
+Flow operations: `findFlowByName` (name lookup that also reports when more than one flow matches), `getFlow`, `listAllFlows`, `listFlowsInSolution`, `patchFlow` (update `clientdata` / state), and `createFlow` (create a modern cloud flow as Draft, optionally inside a solution via the `MSCRM.SolutionUniqueName` header).
+
 ## Related packages
 
 FlowForger is a toolset for building, running, and shipping Microsoft Power Automate / Azure Logic Apps flows as TypeScript.

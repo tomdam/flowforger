@@ -9,6 +9,22 @@ const IR_TO_PA_OPERATIONS: Record<string, Record<string, string>> = {
     'CreateItem': 'PostItem',
     'GetItemById': 'GetItem',
     'UpdateItem': 'PatchItem',
+    'getItems': 'GetItems',
+    'GetFilesPropertiesOnly': 'GetFileItems',
+    'GetFileProperties': 'GetFileItem',
+    'UpdateFileProperties': 'PatchFileItem',
+    'AddAttachment': 'CreateAttachment',
+    'GetAttachments': 'GetItemAttachments',
+    'StopSharing': 'UnshareItem',
+    'SendHttpRequest': 'HttpRequest',
+    'GetLists': 'GetAllTables',
+    'GetAllListsAndLibraries': 'GetAllTables',
+    // The plain Copy/Move ids are deprecated in the cloud connector; the maker
+    // portal emits the Async variants, which take the same parameters.
+    'CopyFile': 'CopyFileAsync',
+    'MoveFile': 'MoveFileAsync',
+    'CopyFolder': 'CopyFolderAsync',
+    'MoveFolder': 'MoveFolderAsync',
   },
   office365: {
     // Power Automate uses an underscore before the version suffix.
@@ -19,6 +35,90 @@ const IR_TO_PA_OPERATIONS: Record<string, Record<string, string>> = {
 function mapIrOperationToPa(connector: string, operation: string): string {
   return IR_TO_PA_OPERATIONS[connector]?.[operation] ?? operation;
 }
+
+/**
+ * Parameter renames: FlowForger DSL name → Power Automate parameter key.
+ *
+ * The SharePoint connector accepts friendly parameter names locally (it
+ * normalizes them at run time), but the cloud connector validates against its
+ * swagger, so the emitted clientdata.json has to carry the exact keys. Tables
+ * are keyed by *Power Automate* operationId — `denormalizeSpParams` runs after
+ * `mapIrOperationToPa`, so a flow authored with either spelling emits the same.
+ */
+const SP_COMMON_PARAM_ALIASES: Record<string, string> = {
+  siteUrl: 'dataset',
+  siteId: 'dataset',
+  listId: 'table',
+};
+
+/** OData query options travel as `$`-prefixed keys on the list-read operations. */
+const SP_ODATA_PARAM_ALIASES: Record<string, string> = {
+  filter: '$filter',
+  orderby: '$orderby',
+  top: '$top',
+  skip: '$skip',
+  select: '$select',
+  expand: '$expand',
+};
+
+const SP_FILE_TRANSFER_PARAM_ALIASES: Record<string, string> = {
+  fileId: 'parameters/sourceFileId',
+  id: 'parameters/sourceFileId',
+  destSiteUrl: 'parameters/destinationDataset',
+  destFolderPath: 'parameters/destinationFolderPath',
+  nameConflictBehavior: 'parameters/nameConflictBehavior',
+};
+
+const SP_FOLDER_TRANSFER_PARAM_ALIASES: Record<string, string> = {
+  folderId: 'parameters/sourceFolderId',
+  id: 'parameters/sourceFolderId',
+  destSiteUrl: 'parameters/destinationDataset',
+  destFolderPath: 'parameters/destinationFolderPath',
+  nameConflictBehavior: 'parameters/nameConflictBehavior',
+};
+
+const SP_PARAM_ALIASES: Record<string, Record<string, string>> = {
+  GetItems: SP_ODATA_PARAM_ALIASES,
+  GetFileItems: SP_ODATA_PARAM_ALIASES,
+  // Item-addressed operations take `id`, not the DSL's `itemId`.
+  GetItem: { itemId: 'id' },
+  PatchItem: { itemId: 'id' },
+  DeleteItem: { itemId: 'id' },
+  GetFileItem: { itemId: 'id' },
+  PatchFileItem: { itemId: 'id' },
+  UnshareItem: { itemId: 'id' },
+  GetItemChanges: { itemId: 'id' },
+  // File/folder-addressed operations also collapse onto `id`.
+  GetFileContent: { fileId: 'id' },
+  DeleteFile: { fileId: 'id' },
+  UpdateFile: { fileId: 'id', content: 'body' },
+  ListFolder: { folderId: 'id' },
+  GetFolderMetadata: { folderId: 'id' },
+  GetFileContentByPath: { filePath: 'path' },
+  GetFileMetadataByPath: { filePath: 'path' },
+  CreateFile: { fileName: 'name', content: 'body' },
+  CreateNewFolder: { folderPath: 'parameters/path', path: 'parameters/path' },
+  // Attachments keep `itemId` but rename the payload pair.
+  CreateAttachment: { fileName: 'displayName', name: 'displayName', content: 'body' },
+  CreateSharingLink: { itemId: 'id', linkType: 'permission/type', scope: 'permission/scope' },
+  // Note the singular `parameter/` prefix — GrantAccess is the odd one out.
+  GrantAccess: {
+    itemId: 'id',
+    recipients: 'parameter/recipients',
+    roleValue: 'parameter/roleValue',
+    sendEmail: 'parameter/sendEmail',
+  },
+  HttpRequest: {
+    method: 'parameters/method',
+    uri: 'parameters/uri',
+    headers: 'parameters/headers',
+    body: 'parameters/body',
+  },
+  CopyFileAsync: SP_FILE_TRANSFER_PARAM_ALIASES,
+  MoveFileAsync: SP_FILE_TRANSFER_PARAM_ALIASES,
+  CopyFolderAsync: SP_FOLDER_TRANSFER_PARAM_ALIASES,
+  MoveFolderAsync: SP_FOLDER_TRANSFER_PARAM_ALIASES,
+};
 
 // Browser-compatible UUID generation
 function randomUUID(): string {
@@ -490,9 +590,16 @@ function denormalizeSpParams(operation: string, params: any): any {
     delete p.fields;
   }
 
-  // Add legacy parameter names for compatibility (Power Automate may expect both)
-  if (p.siteId && !p.dataset) p.dataset = p.siteId;
-  if (p.listId && !p.table) p.table = p.listId;
+  // Rename DSL parameter names to the keys the cloud connector validates against.
+  // Renames are dropped rather than duplicated: the cloud connector rejects keys
+  // outside its swagger, so leaving e.g. both `listId` and `table` is not safe.
+  const aliases = { ...SP_COMMON_PARAM_ALIASES, ...(SP_PARAM_ALIASES[operation] || {}) };
+  for (const [from, to] of Object.entries(aliases)) {
+    if (!(from in p)) continue;
+    // An explicitly-supplied Power Automate key always wins over the alias.
+    if (!(to in p)) p[to] = p[from];
+    delete p[from];
+  }
 
   return p;
 }

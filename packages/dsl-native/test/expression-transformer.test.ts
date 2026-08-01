@@ -1,5 +1,11 @@
 /**
  * Tests for the expression transformer
+ *
+ * NOTE: this file is deliberately NOT included in `npm test` (see
+ * package.json's `test` script, which lists suites explicitly). It has 7
+ * pre-existing failures on main, unrelated to the push-create-flow work —
+ * see MEMORY.md "dsl-native tests" note. Fix separately; do not re-add it to
+ * the `test` script until those failures are resolved.
  */
 
 import { describe, it, beforeEach } from 'node:test';

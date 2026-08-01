@@ -859,9 +859,43 @@ function checkMissingAwait(sourceFile: ts.SourceFile): Diagnostic[] {
   return diagnostics;
 }
 
+/** ctx reference-read methods whose result cannot be captured in a `const` (use `let`, or reference inline). */
+const CTX_REFERENCE_READ_METHODS = new Set([
+  'body',
+  'outputs',
+  'actions',
+  'triggerBody',
+  'triggerOutputs',
+  'variables',
+  'item',
+  'items',
+]);
+
+/**
+ * True if `expr` is a call whose callee chain roots at the `ctx` identifier —
+ * e.g. `ctx.http(...)` or `ctx.connectors.dataverse.ListRecords(...)`.
+ */
+function isCtxRootedCall(expr: ts.Expression): boolean {
+  if (!ts.isCallExpression(expr)) return false;
+  let cur: ts.Expression = expr.expression;
+  while (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
+    cur = cur.expression;
+  }
+  return ts.isIdentifier(cur) && cur.text === 'ctx';
+}
+
+/** True if `call` is a direct ctx reference read (`ctx.body(...)`, `ctx.variables(...)`, etc.). */
+function isCtxReferenceRead(call: ts.CallExpression): boolean {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee)) return false;
+  if (!ts.isIdentifier(callee.expression) || callee.expression.text !== 'ctx') return false;
+  return CTX_REFERENCE_READ_METHODS.has(callee.name.text);
+}
+
 /**
  * Check for return statements (DSL018), unsupported statements (DSL020),
- * and const variable declarations (DSL025) inside the @Action method body.
+ * const variable declarations (DSL025), and action-result bindings (DSL032)
+ * inside the @Action method body.
  */
 function checkActionMethodBody(sourceFile: ts.SourceFile): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
@@ -907,48 +941,41 @@ function checkActionMethodBody(sourceFile: ts.SourceFile): Diagnostic[] {
       });
     }
 
-    // DSL025: const variable (not action result)
+    // DSL032 (action result binding) and DSL025 (const won't generate InitializeVariable)
     if (ts.isVariableStatement(node)) {
       const declList = node.declarationList;
-      if (declList.flags & ts.NodeFlags.Const) {
-        for (const decl of declList.declarations) {
-          if (!ts.isIdentifier(decl.name)) continue;
-          const init = decl.initializer;
-          // Skip: const result = await ctx.http(...) — that's an action result, not a variable
-          if (init && ts.isAwaitExpression(init)) continue;
-          // Skip: const items = ctx.body(...) — that's a reference expression binding
-          if (init && ts.isCallExpression(init)) {
-            const callExpr = init.expression;
-            if (ts.isPropertyAccessExpression(callExpr) &&
-                ts.isIdentifier(callExpr.expression) &&
-                callExpr.expression.text === 'ctx') {
-              // If it's a reference method like ctx.body(), ctx.triggerBody(), etc. — skip
-              // If it's an action method without await, DSL017 handles that
-              continue;
-            }
-          }
-          // Skip: const x = someExpression — only flag simple value initializers
-          // that look like variable declarations (literals, objects, arrays, template strings)
-          if (init) {
-            const isSimpleValue =
-              ts.isNumericLiteral(init) ||
-              ts.isStringLiteral(init) ||
-              ts.isNoSubstitutionTemplateLiteral(init) ||
-              ts.isArrayLiteralExpression(init) ||
-              ts.isObjectLiteralExpression(init) ||
-              ts.isTemplateExpression(init) ||
-              init.kind === ts.SyntaxKind.TrueKeyword ||
-              init.kind === ts.SyntaxKind.FalseKeyword ||
-              init.kind === ts.SyntaxKind.NullKeyword ||
-              ts.isPrefixUnaryExpression(init); // e.g., -1
-            if (!isSimpleValue) continue;
-          }
-          // No initializer (const x;) is a TS error anyway — skip
-          if (!init) continue;
+      const isConst = (declList.flags & ts.NodeFlags.Const) !== 0;
+      for (const decl of declList.declarations) {
+        if (!ts.isIdentifier(decl.name)) continue;
+        const init = decl.initializer;
+        // No initializer (const x;) is a TS error anyway — skip
+        if (!init) continue;
 
-          const varName = decl.name.text;
-          const startPos = sourceFile.getLineAndCharacterOfPosition(decl.getStart(sourceFile));
-          const endPos = sourceFile.getLineAndCharacterOfPosition(decl.getEnd());
+        const varName = decl.name.text;
+        const startPos = sourceFile.getLineAndCharacterOfPosition(decl.getStart(sourceFile));
+        const endPos = sourceFile.getLineAndCharacterOfPosition(decl.getEnd());
+
+        // DSL032: const/let x = await ctx.<action>(...) — the await IS the action call;
+        // the binding is dropped and any use of `x` compiles to a broken '@x' reference.
+        // Applies to both const and let (neither can capture an action result).
+        if (ts.isAwaitExpression(init) && isCtxRootedCall(init.expression)) {
+          diagnostics.push({
+            code: DiagnosticCodes.DSL032.code,
+            severity: DiagnosticCodes.DSL032.severity,
+            message: DiagnosticCodes.DSL032.format!(varName),
+            range: { start: startPos, end: endPos },
+            source: 'flowforger',
+          });
+          continue;
+        }
+
+        // Remaining checks only concern `const`. A `let` bound to a reference read or a
+        // simple value is valid — it becomes an InitializeVariable action.
+        if (!isConst) continue;
+
+        // DSL025: const bound to a ctx reference read (ctx.body/outputs/variables/...) —
+        // const is not tracked as a variable, so `x` leaks as '@x'. `let` works here.
+        if (ts.isCallExpression(init) && isCtxReferenceRead(init)) {
           diagnostics.push({
             code: DiagnosticCodes.DSL025.code,
             severity: DiagnosticCodes.DSL025.severity,
@@ -956,7 +983,31 @@ function checkActionMethodBody(sourceFile: ts.SourceFile): Diagnostic[] {
             range: { start: startPos, end: endPos },
             source: 'flowforger',
           });
+          continue;
         }
+
+        // DSL025: const bound to a simple value (literal/object/array/...) that should be a
+        // `let` InitializeVariable. Other expressions (helpers, odata builders) are left alone.
+        const isSimpleValue =
+          ts.isNumericLiteral(init) ||
+          ts.isStringLiteral(init) ||
+          ts.isNoSubstitutionTemplateLiteral(init) ||
+          ts.isArrayLiteralExpression(init) ||
+          ts.isObjectLiteralExpression(init) ||
+          ts.isTemplateExpression(init) ||
+          init.kind === ts.SyntaxKind.TrueKeyword ||
+          init.kind === ts.SyntaxKind.FalseKeyword ||
+          init.kind === ts.SyntaxKind.NullKeyword ||
+          ts.isPrefixUnaryExpression(init); // e.g., -1
+        if (!isSimpleValue) continue;
+
+        diagnostics.push({
+          code: DiagnosticCodes.DSL025.code,
+          severity: DiagnosticCodes.DSL025.severity,
+          message: DiagnosticCodes.DSL025.format!(varName),
+          range: { start: startPos, end: endPos },
+          source: 'flowforger',
+        });
       }
     }
 

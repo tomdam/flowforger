@@ -13,20 +13,17 @@ class ComplexControlFlow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize_processedOrders */
     let processedOrders: any[] = [];
 
-    /** @action Initialize_failedOrders */
     let failedOrders: any[] = [];
 
-    /** @action Initialize_retryCount */
     let retryCount: number = 0;
 
     // Get order batches from trigger
     await ctx.compose('OrderBatches', ctx.triggerBody()?.['batches']);
 
     // ===== Outer loop: iterate over batches =====
-    /** @action ProcessBatches @type foreach */
+    /** @action ProcessBatches */
     for (const batch of ctx.outputs('OrderBatches') ?? []) {
       await ctx.compose('BatchInfo', {
         batchId: batch?.['batchId'],
@@ -34,29 +31,28 @@ class ComplexControlFlow {
       });
 
       // ===== Switch on region to apply different rules =====
-      /** @action RouteByRegion @type switch */
+      /** @action RouteByRegion */
       switch (batch?.['region']) {
-        /** @action CaseUS @type case */
+        /** @action CaseUS */
         case 'US':
           await ctx.compose('TaxRate_US', 0.08);
           break;
-        /** @action CaseEU @type case */
+        /** @action CaseEU */
         case 'EU':
           await ctx.compose('TaxRate_EU', 0.20);
           break;
-        /** @action CaseDefault @type case */
         default:
           await ctx.compose('TaxRate_Other', 0.10);
       }
 
       // ===== Inner loop: process each order in the batch =====
-      /** @action ProcessOrders @type foreach */
+      /** @action ProcessOrders */
       for (const order of batch?.['orders'] ?? []) {
         // Try/catch scope around order processing
         /** @action TryProcessOrder @type scope */
         {
           // Validate order has required fields
-          /** @action ValidateOrder @type if */
+          /** @action ValidateOrder */
           if (ctx.not(ctx.empty(order?.['productId'])) && ctx.greater(order?.['quantity'], 0)) {
             // Calculate order total
             await ctx.compose('OrderTotal', {
@@ -67,14 +63,14 @@ class ComplexControlFlow {
             });
 
             // Check if order exceeds threshold for approval
-            /** @action CheckThreshold @type if */
+            /** @action CheckThreshold */
             if (ctx.greater(ctx.mul(order?.['quantity'], order?.['unitPrice']), 1000)) {
               await ctx.compose('NeedsApproval', true);
 
               // Nested loop: check each line item for restricted products
-              /** @action CheckLineItems @type foreach */
+              /** @action CheckLineItems */
               for (const lineItem of order?.['lineItems'] ?? []) {
-                /** @action IsRestricted @type if */
+                /** @action IsRestricted */
                 if (lineItem?.['restricted'] === true) {
                   await ctx.compose('RestrictedFlag', {
                     productId: lineItem?.['productId'],
@@ -87,7 +83,6 @@ class ComplexControlFlow {
             }
 
             // Append to processed
-            /** @action AppendProcessed */
             processedOrders = ctx.eval(`@union(variables('processedOrders'), createArray(outputs('OrderTotal')))`);
           } else {
             // Invalid order
@@ -96,7 +91,6 @@ class ComplexControlFlow {
               reason: 'Missing productId or invalid quantity'
             });
 
-            /** @action AppendFailed */
             failedOrders = ctx.eval(`@union(variables('failedOrders'), createArray(outputs('InvalidOrder')))`);
           }
         }
@@ -108,7 +102,6 @@ class ComplexControlFlow {
             error: 'Unexpected error during processing'
           });
 
-          /** @action AppendErrorOrder */
           failedOrders = ctx.eval(`@union(variables('failedOrders'), createArray(outputs('OrderError')))`);
         }
 
@@ -120,15 +113,14 @@ class ComplexControlFlow {
     }
 
     // ===== Do-Until: retry loop runs up to 3 times =====
-    /** @action RetryFailedOrders @type until */
+    /** @action RetryFailedOrders */
     do {
-      /** @action IncrementRetry */
       retryCount = retryCount + 1;
 
       // Re-check failed orders count
       await ctx.compose('FailedCount', ctx.length(ctx.variables('failedOrders')));
 
-      /** @action CheckRetryNeeded @type if */
+      /** @action CheckRetryNeeded */
       if (ctx.equals(ctx.outputs('FailedCount'), 0)) {
         await ctx.compose('AllCleared', 'No more failed orders');
       } else {

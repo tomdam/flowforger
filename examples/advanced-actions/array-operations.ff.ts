@@ -13,34 +13,28 @@ class ArrayOperations {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize_highPriority */
     let highPriority: any[] = [];
 
-    /** @action Initialize_lowPriority */
     let lowPriority: any[] = [];
 
-    /** @action Initialize_processedIds */
     let processedIds: any[] = [];
 
     // Get tasks from trigger body
     await ctx.compose('AllTasks', ctx.triggerBody()?.['tasks']);
 
     // Categorize tasks by priority using a loop + if
-    /** @action CategorizeLoop @type foreach */
+    /** @action CategorizeLoop */
     for (const task of ctx.outputs('AllTasks') ?? []) {
-      /** @action CheckPriority @type if */
+      /** @action CheckPriority */
       if (task?.['priority'] === 'high') {
         // Append to high priority array
-        /** @action AppendHigh */
         highPriority = ctx.eval(`@union(variables('highPriority'), createArray(items('CategorizeLoop')))`);
       } else {
         // Append to low priority array
-        /** @action AppendLow */
         lowPriority = ctx.eval(`@union(variables('lowPriority'), createArray(items('CategorizeLoop')))`);
       }
 
       // Track all processed IDs
-      /** @action TrackId */
       processedIds = ctx.eval(`@union(variables('processedIds'), createArray(items('CategorizeLoop')?['id']))`);
     }
 
@@ -69,7 +63,7 @@ class ArrayOperations {
     });
 
     // Process merged high priority items in a second loop
-    /** @action ProcessHighPriority @type foreach */
+    /** @action ProcessHighPriority */
     for (const item of ctx.outputs('MergedHighPriority') ?? []) {
       await ctx.compose('ProcessedItem', {
         id: item?.['id'],

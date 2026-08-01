@@ -131,7 +131,7 @@ export const sharePointMetadata: ConnectorMetadata = connector(
           `ctx.connectors.sharepoint.CreateFile('UploadDocument', {
   dataset: 'https://tenant.sharepoint.com/sites/mysite',
   folderPath: '/Shared Documents/Reports',
-  fileName: 'report.pdf',
+  name: 'report.pdf',
   body: fileContent
 });`,
         ],

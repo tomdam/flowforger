@@ -59,6 +59,8 @@ export interface ParameterDeclaration {
   name: string;
   /** Parameter type (if available) */
   type?: string;
+  /** Default value, when declared as a string literal (used for schema completion resolution). */
+  defaultValue?: string;
   /** Source range of the parameter definition */
   range: SourceRange;
   /** Line number */
@@ -216,8 +218,9 @@ function findParameters(sourceFile: ts.SourceFile): ParameterDeclaration[] {
                       continue;
                     }
 
-                    // Try to extract the type from the property value
+                    // Try to extract the type and default value from the property value
                     let paramType: string | undefined;
+                    let paramDefault: string | undefined;
                     if (ts.isObjectLiteralExpression(prop.initializer)) {
                       for (const innerProp of prop.initializer.properties) {
                         if (ts.isPropertyAssignment(innerProp) &&
@@ -226,12 +229,19 @@ function findParameters(sourceFile: ts.SourceFile): ParameterDeclaration[] {
                             ts.isStringLiteral(innerProp.initializer)) {
                           paramType = innerProp.initializer.text;
                         }
+                        if (ts.isPropertyAssignment(innerProp) &&
+                            ts.isIdentifier(innerProp.name) &&
+                            innerProp.name.text === 'defaultValue' &&
+                            ts.isStringLiteral(innerProp.initializer)) {
+                          paramDefault = innerProp.initializer.text;
+                        }
                       }
                     }
 
                     parameters.push({
                       name: paramName,
                       type: paramType,
+                      defaultValue: paramDefault,
                       range: getNodeRange(sourceFile, prop),
                       line: sourceFile.getLineAndCharacterOfPosition(prop.getStart(sourceFile)).line,
                     });
@@ -535,6 +545,33 @@ export function findVariable(
 ): VariableDeclaration | undefined {
   const lowerName = name.toLowerCase();
   return index.variables.find((v) => v.name.toLowerCase() === lowerName && v.isInitialDeclaration);
+}
+
+/**
+ * Resolve a loop reference (`ctx.items('X')`) to its for-of declaration.
+ *
+ * Two naming schemes reach here:
+ * - generated names (`Loop_1`, `Loop_2`, ...), which index into `loops`
+ * - JSDoc names (`\@action CategorizeLoop \@type foreach`), which are indexed
+ *   as foreach *actions*, so the loop is matched back by source position
+ */
+export function findLoop(index: SymbolIndex, name: string): LoopDeclaration | undefined {
+  const generated = name.match(/^Loop_(\d+)$/);
+  if (generated) {
+    return index.loops[parseInt(generated[1], 10) - 1];
+  }
+
+  const lowerName = name.toLowerCase();
+  const namedLoop = index.actions.find(
+    (a) => a.type === 'foreach' && a.name.toLowerCase() === lowerName
+  );
+  if (!namedLoop) return undefined;
+
+  return index.loops.find(
+    (loop) =>
+      loop.range.start.line === namedLoop.range.start.line &&
+      loop.range.start.character === namedLoop.range.start.character
+  );
 }
 
 /**

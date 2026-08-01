@@ -9,11 +9,17 @@ class sp_update_item {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let listId = "aaaaaaaa-1111-2222-3333-444444444444";
+
     await ctx.connectors.sharepoint.UpdateItem("UpdateItem", {
-      siteId: "<your-site-id>",
-      listId: "<your-list-id>",
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("listId"),
       itemId: 1,
-      fields: { Title: "Updated" }
+      item: { Title: "Updated" }
     });
   }
 

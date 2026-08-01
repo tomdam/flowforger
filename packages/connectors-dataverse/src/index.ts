@@ -137,10 +137,24 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
     const select = getParam<string>(inputs, ['$select', 'select']);
     const filter = getParam<string>(inputs, ['$filter', 'filter']);
     const top = getParam<number>(inputs, ['$top', 'top']);
+    const orderby = getParam<string>(inputs, ['$orderby', 'orderby', 'orderBy']);
+    const expand = getParam<string>(inputs, ['$expand', 'expand']);
+    const skip = getParam<number>(inputs, ['$skip', 'skip']);
+    const skiptoken = getParam<string>(inputs, ['$skiptoken', 'skiptoken', 'skipToken']);
+    const apply = getParam<string>(inputs, ['$apply', 'apply']);
+    const count = getParam<boolean | string>(inputs, ['$count', 'count']);
+    const fetchXml = getParam<string>(inputs, ['fetchXml', 'fetchxml']);
 
     if (select) query['$select'] = select;
     if (filter) query['$filter'] = filter;
     if (top) query['$top'] = top;
+    if (orderby) query['$orderby'] = orderby;
+    if (expand) query['$expand'] = expand;
+    if (skip) query['$skip'] = skip;
+    if (skiptoken) query['$skiptoken'] = skiptoken;
+    if (apply) query['$apply'] = apply;
+    if (count) query['$count'] = true;
+    if (fetchXml) query['fetchXml'] = fetchXml;
 
     return this.get(`/${entityName}`, ctx.log, {
       query,
@@ -200,8 +214,10 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
     if (!recordId) throw new Error('retrieveRow requires recordId or id');
 
     const select = getParam<string>(inputs, ['$select', 'select']);
+    const expand = getParam<string>(inputs, ['$expand', 'expand']);
     const query: Record<string, string | undefined> = {};
     if (select) query['$select'] = select;
+    if (expand) query['$expand'] = expand;
 
     return this.get(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
       query,

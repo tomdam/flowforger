@@ -20,14 +20,18 @@ class SharePoint_Add_Attachment_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.AddAttachment("AddAttachment", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId'],
       fileName: ctx.triggerBody()?.['fileName'],
       content: ctx.triggerBody()?.['fileContent']
     });
-    /** @runAfter trigger */
     await ctx.compose("ShowResult", {
       message: "Attachment added successfully",
       fileName: ctx.outputs('AddAttachment')?.['FileName'],

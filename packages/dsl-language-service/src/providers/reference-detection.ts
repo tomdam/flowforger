@@ -38,13 +38,14 @@ const REFERENCE_PATTERNS: Array<{ funcNames: string[]; type: StringReference['ty
 ];
 
 /**
- * Detect if the cursor is inside a string reference on the given line.
+ * List every string reference on a line, in detection-precedence order
+ * (reference-function calls first, then @runAfter tags).
  *
  * @param lineText - The full text of the line
- * @param column - 0-indexed cursor column
- * @returns The detected reference, or null if cursor is not on a string reference
  */
-export function detectStringReference(lineText: string, column: number): StringReference | null {
+export function findStringReferencesInLine(lineText: string): StringReference[] {
+  const refs: StringReference[] = [];
+
   for (const pattern of REFERENCE_PATTERNS) {
     for (const funcName of pattern.funcNames) {
       // Build regex: optional ctx. prefix, function name, opening paren, optional whitespace, quote
@@ -65,17 +66,13 @@ export function detectStringReference(lineText: string, column: number): StringR
         // The string content starts at: match.index + (everything before the opening quote) + 1
         const quoteIndex = match.index + fullMatch.indexOf(quote);
         const nameStart = quoteIndex + 1;
-        const nameEnd = nameStart + name.length;
 
-        // Check if cursor is within the name (inclusive start, exclusive end)
-        if (column >= nameStart && column < nameEnd) {
-          return {
-            type: pattern.type,
-            name,
-            nameStart,
-            nameEnd,
-          };
-        }
+        refs.push({
+          type: pattern.type,
+          name,
+          nameStart,
+          nameEnd: nameStart + name.length,
+        });
       }
     }
   }
@@ -88,10 +85,7 @@ export function detectStringReference(lineText: string, column: number): StringR
   while ((raMatch = runAfterQuotedRegex.exec(lineText)) !== null) {
     const name = raMatch[1];
     const nameStart = raMatch.index + raMatch[0].indexOf('"') + 1;
-    const nameEnd = nameStart + name.length;
-    if (column >= nameStart && column < nameEnd) {
-      return { type: 'action', name, nameStart, nameEnd };
-    }
+    refs.push({ type: 'action', name, nameStart, nameEnd: nameStart + name.length });
   }
 
   const runAfterBareRegex = /@runAfter\s+([^":\s@*][^:@*]*?):\s/g;
@@ -100,9 +94,24 @@ export function detectStringReference(lineText: string, column: number): StringR
     // Find where the name starts in the match
     const afterTag = raMatch[0].indexOf(raMatch[1]);
     const nameStart = raMatch.index + afterTag;
-    const nameEnd = nameStart + name.length;
-    if (column >= nameStart && column < nameEnd) {
-      return { type: 'action', name, nameStart, nameEnd };
+    refs.push({ type: 'action', name, nameStart, nameEnd: nameStart + name.length });
+  }
+
+  return refs;
+}
+
+/**
+ * Detect if the cursor is inside a string reference on the given line.
+ *
+ * @param lineText - The full text of the line
+ * @param column - 0-indexed cursor column
+ * @returns The detected reference, or null if cursor is not on a string reference
+ */
+export function detectStringReference(lineText: string, column: number): StringReference | null {
+  for (const ref of findStringReferencesInLine(lineText)) {
+    // Cursor is within the name (inclusive start, exclusive end)
+    if (column >= ref.nameStart && column < ref.nameEnd) {
+      return ref;
     }
   }
 

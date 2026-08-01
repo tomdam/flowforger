@@ -8,12 +8,14 @@ import { validateFlowIR, validateLogicApps } from '@flowforger/validator';
 import type { FlowIR, FlowForgerConfig, ChildFlowDefinition, ChildFlowParameter } from '@flowforger/ir';
 import { parseConfigFromJson, DEFAULT_CONFIG } from '@flowforger/ir';
 import { run as runEngine, WorkflowLoader, type FileArtifact } from '@flowforger/engine';
-import { HttpConnector } from '@flowforger/connectors-http';
 import { DataverseClient } from '@flowforger/dataverse-sdk';
+import { buildConnectors } from '@flowforger/debug-node';
 import { parseLogicAppsToIR, generateNativeDslFromIR } from '@flowforger/dsl-native';
 import { getDiagnostics, getDiagnosticCounts, type Diagnostic } from '@flowforger/dsl-language-service';
 import { resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTriggerCallbackUrl, flowUsesListCallbackUrl, type AuthConfig } from './auth.js';
 import { checkParity, ParityTransformError } from './parity.js';
+import { runPush, PushError } from './push.js';
+import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from './cli-args.js';
 
 /**
  * Resolve the CLI's own package root (one level above dist/), working in both
@@ -87,6 +89,9 @@ function buildConfigFromFlags(args: Record<string, any>, baseConfig?: FlowForger
   }
   if (args['description-comment'] !== undefined) {
     config.generator = { ...config.generator, descriptionStyle: 'lineComment' };
+  }
+  if (args['skip-default-constructor'] !== undefined) {
+    config.generator = { ...config.generator, skipDefaultConstructor: true };
   }
 
   // Parity flags
@@ -210,7 +215,12 @@ Usage:
                     [--no-children]
   --token accepts a Dataverse AAD token (audience = the environment URL); DATAVERSE_TOKEN env var also works. --auth uses the config's auth section.
   flowforger push [--id <workflowid>] --file <flow.ff.ts|clientdata.json> --url <dataverseUrl> [--token <token>] [--auth] [--config flowforger.config.json]
+                    [--name <flowName>] [--solution <uniqueName>] [--create | --no-create]
   --id is optional when the DSL has \`workflowId\` in @Flow({...}); explicit --id always wins.
+  With no id, push finds the flow by name and updates it, or creates it if there is no match
+  (as Draft, and writing the new workflowId back into your @Flow decorator).
+  --solution places a newly created flow in that solution. --create always creates; --no-create
+  makes a missing flow an error. JSON files need --name for name lookup and creation.
   flowforger activate --id <workflowid> --url <dataverseUrl> [--token <token>] --state <statecode> --status <statuscode>
   flowforger generate-dsl --in <clientdata.json> --out <flow.ff.ts> [--name <flowName>] [--config <config.json>]
   flowforger parity --in <clientdata.json> [--name <flowName>] [--config <config.json>] [--ignore-whitespace]
@@ -218,6 +228,7 @@ Usage:
   flowforger optimize <input.ff.ts> [--out <output.ff.ts>] [--report <report.json>]
   flowforger init --url <dataverseUrl> --client-id <azureAdClientId> [--tenant-id <id>] [--sp-url <sharepointUrl>] [--out <config.json>]
   flowforger skills install [--dir <targetDir>] [--bundled] [--repo <owner/repo>] [--ref <branch>] [--path <repoPath>]
+  flowforger mcp [--auth] [--budget N]            Run the debug MCP server over stdio (for AI agents)
 
 Config Options:
   --config <file>           Path to flowforger.config.json (optional)
@@ -230,6 +241,9 @@ Generator Options (for generate-dsl, parity):
   --whitespace-compact      No spaces after commas: func(a,b)
   --description-comment     Render action descriptions as // line comments (default)
   --description-jsdoc       Render action descriptions as /** @description ... */ tags
+  --skip-default-constructor  Omit the constructor when it only contains default boilerplate
+                            (standard schema metadata, default $connections/$authentication,
+                            empty connection references) that compile re-injects
 
 Parity Options:
   --ignore-whitespace       Ignore whitespace differences in expressions
@@ -373,23 +387,6 @@ async function installSkillsFromGitHub(
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
-}
-
-function parseArgs(argv: string[]): Record<string, any> {
-  const args: Record<string, any> = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const val = argv[i + 1] && !argv[i + 1].startsWith('--') ? (argv[++i] as string) : true;
-      if (args[key] === undefined) args[key] = val;
-      else if (Array.isArray(args[key])) (args[key] as any[]).push(val);
-      else args[key] = [args[key], val];
-    } else if (!args['_']) {
-      args['_'] = a;
-    }
-  }
-  return args;
 }
 
 // ── Pretty trace rendering for `run` ─────────────────────────────────────────
@@ -762,56 +759,15 @@ async function main() {
         }
       }
 
-      const http = new HttpConnector();
-      let connectors: Record<string, any> = { http };
-      // Optional connectors via flags
-      if (args['sp-token']) {
-        try {
-          const { SharePointConnector } = await import('@flowforger/connectors-sharepoint');
-          connectors['sharepoint'] = new (SharePointConnector as any)({ token: args['sp-token'] as string });
-        } catch {}
-      }
-      if (args['dv-url'] && args['dv-token']) {
-        try {
-          const { DataverseConnector } = await import('@flowforger/connectors-dataverse');
-          connectors['dataverse'] = new (DataverseConnector as any)({ baseUrl: args['dv-url'] as string, token: args['dv-token'] as string });
-        } catch (err) {
-          console.error('[ERROR] Failed to load Dataverse connector:', err instanceof Error ? err.message : err);
-          throw err;
-        }
-      }
-      // Graph-token connectors: each is loaded on demand and keyed into
-      // `connectors`. A dedicated `tokenFlag` (e.g. --word-token) takes
-      // precedence over the shared --graph-token. `keys[0]` is canonical; any
-      // remaining keys are aliases pointing at the same instance.
-      // Import specifiers are static string literals so esbuild bundles them.
-      const graphConnectors: Array<{
-        label: string;
-        tokenFlag?: string;
-        load: () => Promise<any>;
-        exportName: string;
-        keys: string[];
-      }> = [
-        { label: 'Office 365', load: () => import('@flowforger/connectors-office365'), exportName: 'Office365Connector', keys: ['office365'] },
-        { label: 'Teams', load: () => import('@flowforger/connectors-teams'), exportName: 'TeamsConnector', keys: ['teams'] },
-        { label: 'Word Online', tokenFlag: 'word-token', load: () => import('@flowforger/connectors-wordonline'), exportName: 'WordOnlineConnector', keys: ['wordonlinebusiness', 'wordonline'] },
-        { label: 'Excel Online', tokenFlag: 'excel-token', load: () => import('@flowforger/connectors-excelonline'), exportName: 'ExcelOnlineConnector', keys: ['excelonlinebusiness', 'excelonline'] },
-        { label: 'OneDrive for Business', tokenFlag: 'onedrive-token', load: () => import('@flowforger/connectors-onedrive'), exportName: 'OneDriveConnector', keys: ['onedriveforbusiness', 'onedrive'] },
-        { label: 'Office 365 Groups', load: () => import('@flowforger/connectors-office365groups'), exportName: 'Office365GroupsConnector', keys: ['office365groups'] },
-        { label: 'Office 365 Users', load: () => import('@flowforger/connectors-office365users'), exportName: 'Office365UsersConnector', keys: ['office365users'] },
-      ];
-      for (const c of graphConnectors) {
-        const token = (c.tokenFlag && args[c.tokenFlag]) || args['graph-token'];
-        if (!token) continue;
-        try {
-          const mod = await c.load();
-          const instance = new mod[c.exportName]({ token: token as string });
-          for (const key of c.keys) connectors[key] = instance;
-        } catch (err) {
-          console.error(`[ERROR] Failed to load ${c.label} connector:`, err instanceof Error ? err.message : err);
-          throw err;
-        }
-      }
+      const connectors: Record<string, any> = buildConnectors({
+        spToken: args['sp-token'] as string | undefined,
+        dvUrl: args['dv-url'] as string | undefined,
+        dvToken: args['dv-token'] as string | undefined,
+        graphToken: args['graph-token'] as string | undefined,
+        wordToken: args['word-token'] as string | undefined,
+        excelToken: args['excel-token'] as string | undefined,
+        onedriveToken: args['onedrive-token'] as string | undefined,
+      });
       // Variables
       let variables: Record<string, any> = {};
       if (args['vars']) {
@@ -1378,8 +1334,24 @@ async function main() {
       break;
     }
     case 'push': {
+      let create: boolean;
+      let noCreate: boolean;
+      let pushName: string | undefined;
+      try {
+        create = requireBooleanFlag(args, 'create');
+        noCreate = requireBooleanFlag(args, 'no-create');
+        pushName = requireStringFlag(args, 'name');
+      } catch (err) {
+        if (err instanceof ArgError) {
+          console.error(err.message);
+          process.exit(2);
+        }
+        throw err;
+      }
+
       const explicitId = args.id as string | undefined;
       const file = args.file as string;
+      const solution = args.solution as string | undefined;
       let url = args.url as string;
       let token = (args.token as string) || process.env.DATAVERSE_TOKEN || '';
 
@@ -1395,14 +1367,19 @@ async function main() {
 
       let clientdata: string;
       let decoratorWorkflowId: string | undefined;
+      let flowName: string | undefined = pushName;
+      let description: string | undefined;
       const fileExt = extname(file).toLowerCase();
+      const isDsl = fileExt === '.ts';
 
-      if (fileExt === '.ts') {
+      if (isDsl) {
         // DSL → compile to Logic Apps JSON on the fly
         console.log(`Compiling ${file} to Logic Apps JSON...`);
         const { transformFile } = await import('@flowforger/dsl-native');
         const ir = await transformFile(resolve(file));
         decoratorWorkflowId = ir.workflowId;
+        flowName = ir.name;          // the IR name wins over --name for DSL sources
+        description = ir.description;
 
         const cfg = loadEmitterConfig(args, 'flowforger.config.json');
         const def = emitLogicAppsJson(ir, cfg);
@@ -1413,28 +1390,51 @@ async function main() {
         clientdata = readFileSync(resolve(file), 'utf-8');
       }
 
-      // Resolve effective workflow ID: explicit --id wins, then decorator workflowId, then error.
-      const effectiveId = explicitId || decoratorWorkflowId;
-      if (!effectiveId) {
-        if (fileExt === '.ts') {
-          console.error(
-            'Required: --id, or add `workflowId` to @Flow({...}) in your DSL. ' +
-            'Tip: run `flowforger pull --name "<flow>"` to embed the workflowId automatically.'
-          );
-        } else {
-          console.error('Required: --id (JSON files have no embedded workflowId)');
-        }
-        process.exit(2);
-      }
-      if (explicitId && decoratorWorkflowId && explicitId !== decoratorWorkflowId) {
-        console.warn(
-          `WARNING: --id ${explicitId} overrides decorator workflowId ${decoratorWorkflowId}`
+      const client = new DataverseClient({ baseUrl: url, token });
+
+      let result;
+      try {
+        result = await runPush(
+          client,
+          { clientdata, flowName, description, explicitId, decoratorWorkflowId, create, noCreate, solution, isDsl },
+          (msg) => console.log(msg),
         );
+      } catch (err) {
+        if (err instanceof PushError) {
+          console.error(err.message);
+          process.exit(2);
+        }
+        throw err;
       }
 
-      const client = new DataverseClient({ baseUrl: url, token });
-      await client.patchFlow(effectiveId, { clientdata });
-      console.log('Patched clientdata');
+      if (result.action === 'patched') {
+        console.log('Patched clientdata');
+        break;
+      }
+
+      console.log(
+        result.lookedUp
+          ? `Created flow '${result.name}' (${result.workflowId}) — no existing flow with this name was visible to you`
+          : `Created flow '${result.name}' (${result.workflowId})`
+      );
+      if (result.solution) console.log(`Added to solution '${result.solution}'`);
+
+      // Stamp the new GUID into the DSL so the next push is a plain update.
+      // Best-effort: a failure here must not look like the create failed.
+      if (isDsl) {
+        const { writeFlowWorkflowId } = await import('./workflow-id-writeback.js');
+        let written = false;
+        try {
+          written = writeFlowWorkflowId(resolve(file), result.workflowId);
+        } catch (err) {
+          console.warn(`WARNING: could not update ${file}: ${(err as Error).message}`);
+        }
+        if (written) {
+          console.log(`Added workflowId to ${file}`);
+        } else {
+          console.log(`Add workflowId: "${result.workflowId}" to your @Flow decorator in ${file}`);
+        }
+      }
       break;
     }
     case 'generate-dsl': {
@@ -1666,6 +1666,46 @@ async function main() {
       }
       log('  - Run: flowforger pull --name "My Flow" --url ' + url + ' --auth');
       break;
+    }
+    case 'mcp': {
+      const { startMcpServer } = await import('@flowforger/mcp-server');
+
+      // Static token flags; --auth resolves the rest lazily per flow.
+      const connectorOptions = {
+        spToken: args['sp-token'] as string | undefined,
+        dvUrl: args['dv-url'] as string | undefined,
+        dvToken: args['dv-token'] as string | undefined,
+        graphToken: args['graph-token'] as string | undefined,
+        wordToken: args['word-token'] as string | undefined,
+        excelToken: args['excel-token'] as string | undefined,
+        onedriveToken: args['onedrive-token'] as string | undefined,
+      };
+
+      const budgetArg = args['budget'] ? Number(args['budget']) : undefined;
+
+      // Scope resolution needs the flow IR, so auth is deferred to first start.
+      const resolveAuth = args['auth']
+        ? async (ir: FlowIR) => {
+            const authConfig = loadAuthConfig(args);
+            const scopes = await resolveRequiredScopes(ir, authConfig);
+            const tokens = await acquireTokens(authConfig, scopes, (msg) => console.error(msg), {
+              silentOnly: true,
+            });
+            return {
+              graphToken: tokens.graph,
+              spToken: tokens.sharepoint,
+              dvToken: tokens.dataverse,
+              dvUrl: tokens.dataverseUrl,
+            };
+          }
+        : undefined;
+
+      await startMcpServer({
+        connectorOptions,
+        defaultBudget: Number.isFinite(budgetArg) ? budgetArg : undefined,
+        resolveAuth,
+      });
+      return;
     }
     case 'skills': {
       const sub = (args._ as string) || 'install';

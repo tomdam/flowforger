@@ -1,40 +1,49 @@
 /**
- * FlowForger Debug Runner
+ * FlowForger Debug Session (host-agnostic core)
  *
  * Manages step-by-step flow execution with breakpoints and pause/resume.
  * Supports child flow debugging via a call stack of DebugFrames.
+ * Host specifics (file access, child flow resolution, connectors) are
+ * injected via DebugHost and the connectors record.
  */
 
 import type { FlowIR, Node, ActionNode } from '@flowforger/ir';
 import type { RunContext, ExecuteNodeResult, ActionOutput, BaseConnector } from '@flowforger/engine';
 import { executeNode, evalExpression, run as runEngine } from '@flowforger/engine';
-import { HttpConnector, WebContentsConnector } from '@flowforger/connectors-http';
-import { SharePointConnector } from '@flowforger/connectors-sharepoint';
-import { DataverseConnector } from '@flowforger/connectors-dataverse';
-import { Office365Connector } from '@flowforger/connectors-office365';
-import { Office365UsersConnector } from '@flowforger/connectors-office365users';
-import { WordOnlineConnector } from '@flowforger/connectors-wordonline';
-import { ExcelOnlineConnector } from '@flowforger/connectors-excelonline';
-import { TeamsConnector } from '@flowforger/connectors-teams';
-import { OneDriveConnector } from '@flowforger/connectors-onedrive';
-import { transformCode, buildSourceMapFromDsl, buildExpressionScope, evaluateDebugInput } from '@flowforger/dsl-native';
+import { buildExpressionScope, evaluateDebugInput } from '@flowforger/dsl-native';
 import type { DslSourceMap, ExpressionScope } from '@flowforger/dsl-native';
-import * as fs from 'fs';
-import * as path from 'path';
+import type { DebugFlowSource, DebugHost } from './host.js';
+import { computeContinuationSet, collectInlinedDescendantIds } from './jump.js';
 
-export type ResumeAction = 'step' | 'continue' | 'stop';
+export type ResumeAction = 'step' | 'continue' | 'stop' | 'jump';
+
+/** Result of a set-next-statement request. `resetNodeIds` = the continuation set (nodes that may now re-execute). */
+export type JumpResult =
+  | { ok: true; resetNodeIds: string[] }
+  | { ok: false; error: string };
 
 export interface DebugCallbacks {
   onStopped: (reason: string, nodeId: string) => void;
   onOutput: (text: string, category: string) => void;
   onTerminated: () => void;
+  /**
+   * Fired after each node executes (top-level and nested children), with the
+   * engine result and the key of the frame it ran in. Not fired for nodes the
+   * engine skipped (non-taken branches). Optional — the DAP adapter ignores it;
+   * the web driver uses it to maintain its ExecutionTrace.
+   */
+  onNodeExecuted?: (node: Node, result: ExecuteNodeResult, frameKey: string) => void;
 }
 
-export interface ConnectorOptions {
-  spToken?: string;
-  dvUrl?: string;
-  dvToken?: string;
-  graphToken?: string;
+export interface DebugSessionOptions {
+  /**
+   * Consulted before every node execution (top-level and nested children).
+   * Return true to pause before the node runs (reason 'step').
+   * Used by the fast-forward controller for edit-and-continue.
+   */
+  shouldPauseBefore?: (node: Node) => boolean;
+  /** When returning true, breakpoint-triggered pauses are disabled (fast-forward). */
+  suppressBreakpoints?: () => boolean;
 }
 
 export interface IterationContextInfo {
@@ -50,15 +59,14 @@ interface FlattenedStep {
 
 /**
  * A debug frame represents one level in the child flow call stack.
- * Each frame has its own IR, source map, file path, context, and step list.
+ * Each frame has its own source (IR + optional source map/DSL), context,
+ * and step list.
  */
 export interface DebugFrame {
-  ir: FlowIR;
-  sourceMap: DslSourceMap;
-  filePath: string;
+  source: DebugFlowSource;
   ctx: RunContext;
   steps: FlattenedStep[];
-  /** Breakpoints for this frame's file: nodeId -> line */
+  /** Breakpoints for this frame's source: nodeId -> line */
   breakpoints: Map<string, number>;
   /** The node ID in the parent flow that triggered this child flow */
   callerNodeId?: string;
@@ -86,13 +94,13 @@ function formatComposeValue(value: unknown): string {
   return str;
 }
 
-export class FlowForgerDebugRunner {
-  private ir: FlowIR;
-  private sourceMap: DslSourceMap;
-  private filePath: string;
+export class DebugSession {
+  private root: DebugFlowSource;
+  private host: DebugHost;
   private triggerPayload: any;
   private stopOnEntry: boolean;
   private callbacks: DebugCallbacks;
+  private options?: DebugSessionOptions;
 
   // Execution state
   private ctx: RunContext;
@@ -105,10 +113,8 @@ export class FlowForgerDebugRunner {
   // Call stack for child flow debugging
   private callStack: DebugFrame[] = [];
 
-  // Breakpoints per file (normalized path -> Map<nodeId, line>)
-  private breakpointsPerFile = new Map<string, Map<string, number>>();
-  // Also keep the main file breakpoints as the "active" set for the root frame
-  private breakpoints = new Map<string, number>();
+  // Breakpoints per source (normalized key -> Map<nodeId, line>)
+  private breakpointsPerKey = new Map<string, Map<string, number>>();
 
   // Pause/resume
   private resumeResolver: ((action: ResumeAction) => void) | null = null;
@@ -121,59 +127,47 @@ export class FlowForgerDebugRunner {
   private pausedNode: Node | null = null;
   private currentIterationContext: IterationContextInfo | null = null;
 
-  // Expression scopes for DSL evaluation, cached per file (normalized path)
+  // Innermost node currently executing (stack: top-level node, then nested
+  // children via the engine hooks). Read by the recording/replay proxies to
+  // stamp connector calls with their originating node (null = console call).
+  private executingNodeStack: Node[] = [];
+
+  // Set-next-statement: true while suspended at an executeSteps pause (the
+  // frame's own step loop), false during engine iteration pauses raised via
+  // onBeforeChildExecute. jumpTo is only valid in the former.
+  private pausedAtStepLoop = false;
+  // Pending jump, consumed by the executeSteps loop when resume('jump') lands.
+  private pendingJump: { targetIndex: number; continuationIds: Set<string> } | null = null;
+
+  // Expression scopes for DSL evaluation, cached per source (normalized key)
   private expressionScopes = new Map<string, ExpressionScope | null>();
 
+  // Sources by normalized key, for expression-scope lookup
+  private sources = new Map<string, DebugFlowSource>();
+
   constructor(
-    ir: FlowIR,
-    sourceMap: DslSourceMap,
-    filePath: string,
+    root: DebugFlowSource,
+    host: DebugHost,
+    connectors: Record<string, BaseConnector>,
     triggerPayload: any,
     initialVariables: Record<string, any>,
     stopOnEntry: boolean,
-    connectorOptions: ConnectorOptions,
     callbacks: DebugCallbacks,
     parameterOverrides?: Record<string, any>,
+    options?: DebugSessionOptions,
   ) {
-    this.ir = ir;
-    this.sourceMap = sourceMap;
-    this.filePath = path.resolve(filePath);
+    this.root = root;
+    this.host = host;
+    this.connectors = connectors;
     this.triggerPayload = triggerPayload;
     this.stopOnEntry = stopOnEntry;
     this.callbacks = callbacks;
-
-    // Set up connectors
-    const httpConnector = new HttpConnector();
-    this.connectors = { http: httpConnector } as Record<string, BaseConnector>;
-
-    if (connectorOptions.spToken) {
-      this.connectors['sharepoint'] = new SharePointConnector({ token: connectorOptions.spToken }) as any;
-    }
-    if (connectorOptions.dvUrl && connectorOptions.dvToken) {
-      this.connectors['dataverse'] = new DataverseConnector({
-        baseUrl: connectorOptions.dvUrl,
-        token: connectorOptions.dvToken,
-      }) as any;
-    }
-    if (connectorOptions.graphToken) {
-      this.connectors['office365'] = new Office365Connector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['office365users'] = new Office365UsersConnector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['wordonlinebusiness'] = new WordOnlineConnector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['wordonline'] = this.connectors['wordonlinebusiness']; // alias for DSL property name
-      this.connectors['excelonlinebusiness'] = new ExcelOnlineConnector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['excelonline'] = this.connectors['excelonlinebusiness']; // alias for DSL property name
-      this.connectors['teams'] = new TeamsConnector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['onedriveforbusiness'] = new OneDriveConnector({ token: connectorOptions.graphToken }) as any;
-      this.connectors['onedrive'] = this.connectors['onedriveforbusiness']; // alias
-      this.connectors['webcontents'] = new WebContentsConnector({
-        dataverseToken: connectorOptions.dvToken,
-        sharepointToken: connectorOptions.spToken || connectorOptions.graphToken,
-      }) as any;
-    }
+    this.options = options;
+    this.sources.set(host.normalizeKey(root.key), root);
 
     // Merge parameter overrides into flow parameters
     this.parameterOverrides = parameterOverrides || {};
-    const parameters = { ...(ir.parameters || {}) };
+    const parameters = { ...(root.ir.parameters || {}) };
     if (parameterOverrides) {
       for (const [key, value] of Object.entries(parameterOverrides)) {
         if (parameters[key] && typeof parameters[key] === 'object') {
@@ -184,13 +178,13 @@ export class FlowForgerDebugRunner {
       }
     }
 
-    // Create run context with child flow loader for step-over execution
     this.ctx = {
       variables: { ...initialVariables },
       actions: new Map<string, ActionOutput>(),
       triggerData: triggerPayload,
-      workflowName: ir.name,
+      workflowName: root.ir.name,
       parameters,
+      iterationStack: [],
       now: () => new Date(),
       sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
       log: (evt) => callbacks.onOutput(JSON.stringify(evt), 'console'),
@@ -200,11 +194,10 @@ export class FlowForgerDebugRunner {
         callbacks.onOutput(`Warning: connector '${name}' not available in debug mode`, 'console');
         return { invoke: async () => ({ statusCode: 200, body: null }) } as any;
       },
-      loadChildFlow: (workflowRef: string) => this.loadChildFlowAsIR(workflowRef, this.filePath, this.ir),
+      loadChildFlow: (workflowRef: string) => this.loadChildFlowAsIR(workflowRef, this.root),
     };
 
-    // Flatten nodes for step-by-step execution
-    this.steps = this.flattenNodes(ir.nodes);
+    this.steps = this.flattenNodes(root.ir.nodes);
   }
 
   /**
@@ -253,110 +246,62 @@ export class FlowForgerDebugRunner {
    * excluded here too.
    */
   private collectDescendantIds(node: Node, out: Set<string>): void {
-    if (node.type === 'scope' && 'actions' in node && Array.isArray((node as any).actions)) {
-      for (const child of (node as any).actions) {
-        out.add(child.id);
-        this.collectDescendantIds(child, out);
+    collectInlinedDescendantIds(node, out);
+  }
+
+  /** Find a node by name in a node tree (loop names are unique per flow). */
+  private findNodeByName(nodes: Node[], name: string): Node | null {
+    for (const node of nodes) {
+      if (node.name === name) return node;
+      const anyNode = node as any;
+      for (const list of [anyNode.actions, anyNode.elseActions, anyNode.defaultActions]) {
+        if (Array.isArray(list)) {
+          const found = this.findNodeByName(list, name);
+          if (found) return found;
+        }
       }
-    } else if (node.type === 'if') {
-      const ifNode = node as any;
-      for (const child of ifNode.actions || []) {
-        out.add(child.id);
-        this.collectDescendantIds(child, out);
-      }
-      for (const child of ifNode.elseActions || []) {
-        out.add(child.id);
-        this.collectDescendantIds(child, out);
-      }
-    } else if (node.type === 'switch') {
-      const switchNode = node as any;
-      if (switchNode.cases) {
-        for (const c of switchNode.cases) {
-          for (const child of c.actions || []) {
-            out.add(child.id);
-            this.collectDescendantIds(child, out);
+      if (Array.isArray(anyNode.cases)) {
+        for (const c of anyNode.cases) {
+          if (Array.isArray(c.actions)) {
+            const found = this.findNodeByName(c.actions, name);
+            if (found) return found;
           }
         }
       }
-      if (switchNode.defaultActions) {
-        for (const child of switchNode.defaultActions) {
-          out.add(child.id);
-          this.collectDescendantIds(child, out);
-        }
-      }
     }
+    return null;
+  }
+
+  /** Derive the paused-iteration info from the engine's iteration stack, if any. */
+  private updateIterationContext(childCtx: RunContext, source: DebugFlowSource): void {
+    const stack = childCtx.iterationStack;
+    const top = stack && stack.length > 0 ? stack[stack.length - 1] : undefined;
+    if (!top) {
+      this.currentIterationContext = null;
+      return;
+    }
+    const loopNode = this.findNodeByName(source.ir.nodes, top.loopName);
+    this.currentIterationContext = {
+      parentNodeId: loopNode?.id ?? top.loopName,
+      parentNodeName: top.loopName,
+      iterationIndex: top.index,
+      totalIterations: 0, // engine does not expose the total; adapter renders '?'
+    };
   }
 
   // --- Child flow resolution ---
 
-  /**
-   * Resolve a child flow's .ff.ts file path given a workflow reference name.
-   * 1. Check ir.childFlows[name].dslPath (resolve relative to parent file)
-   * 2. Convention fallback: {name}.ff.ts in same directory as parent
-   */
-  private resolveChildFlowFile(workflowRef: string, parentFilePath: string, ir: FlowIR): string | null {
-    const parentDir = path.dirname(parentFilePath);
-
-    // Check childFlows config for dslPath
-    if (ir.childFlows) {
-      const def = ir.childFlows[workflowRef];
-      if (def?.dslPath) {
-        const resolved = path.resolve(parentDir, def.dslPath);
-        if (fs.existsSync(resolved)) {
-          return resolved;
-        }
-        this.callbacks.onOutput(`Warning: dslPath '${def.dslPath}' not found at ${resolved}`, 'console');
-      }
-
-      // Also check by workflowId — the ref might be a GUID
-      for (const [name, childDef] of Object.entries(ir.childFlows)) {
-        if (childDef.workflowId === workflowRef && childDef.dslPath) {
-          const resolved = path.resolve(parentDir, childDef.dslPath);
-          if (fs.existsSync(resolved)) {
-            return resolved;
-          }
-        }
-      }
-    }
-
-    // Convention fallback: {workflowRef}.ff.ts in same directory
-    const conventionPath = path.resolve(parentDir, `${workflowRef}.ff.ts`);
-    if (fs.existsSync(conventionPath)) {
-      return conventionPath;
-    }
-
-    return null;
+  /** Resolve a child flow source via the host, caching it for scope/breakpoint lookup. */
+  private async resolveChild(ref: string, parent: DebugFlowSource): Promise<DebugFlowSource | null> {
+    const child = await this.host.resolveChildFlow(ref, parent);
+    if (child) this.sources.set(this.host.normalizeKey(child.key), child);
+    return child;
   }
 
-  /**
-   * Load a child flow as IR (for step-over / non-debug execution).
-   */
-  private async loadChildFlowAsIR(workflowRef: string, parentFilePath: string, ir: FlowIR): Promise<FlowIR | null> {
-    const childFile = this.resolveChildFlowFile(workflowRef, parentFilePath, ir);
-    if (!childFile) return null;
-
-    try {
-      const sourceContent = fs.readFileSync(childFile, 'utf-8');
-      return transformCode(sourceContent);
-    } catch (err: any) {
-      this.callbacks.onOutput(`Error compiling child flow '${childFile}': ${err.message}`, 'stderr');
-      return null;
-    }
-  }
-
-  /**
-   * Compile a child flow .ff.ts file and return IR + source map.
-   */
-  private compileChildFlow(childFilePath: string): { ir: FlowIR; sourceMap: DslSourceMap } | null {
-    try {
-      const sourceContent = fs.readFileSync(childFilePath, 'utf-8');
-      const ir = transformCode(sourceContent);
-      const sourceMap = buildSourceMapFromDsl(sourceContent, ir);
-      return { ir, sourceMap };
-    } catch (err: any) {
-      this.callbacks.onOutput(`Error compiling child flow '${childFilePath}': ${err.message}`, 'stderr');
-      return null;
-    }
+  /** Load a child flow as IR (for step-over / non-debug execution). */
+  private async loadChildFlowAsIR(workflowRef: string, parent: DebugFlowSource): Promise<FlowIR | null> {
+    const child = await this.resolveChild(workflowRef, parent);
+    return child?.ir ?? null;
   }
 
   // --- Execution ---
@@ -369,7 +314,7 @@ export class FlowForgerDebugRunner {
 
     try {
       // Handle trigger (pass-through)
-      const triggerNode = this.ir.nodes.find(
+      const triggerNode = this.root.ir.nodes.find(
         (n) => n.type === 'trigger' || n.type === 'recurrence',
       );
       if (triggerNode) {
@@ -382,7 +327,7 @@ export class FlowForgerDebugRunner {
 
       this.steppingMode = this.stopOnEntry ? 'step' : 'continue';
 
-      await this.executeSteps(this.steps, this.ctx, this.ir, this.sourceMap, this.filePath);
+      await this.executeSteps(this.steps, this.ctx, this.root);
 
       if (!this.isStopped) {
         this.callbacks.onOutput('Flow execution completed', 'console');
@@ -404,11 +349,9 @@ export class FlowForgerDebugRunner {
   private async executeSteps(
     steps: FlattenedStep[],
     ctx: RunContext,
-    ir: FlowIR,
-    sourceMap: DslSourceMap,
-    filePath: string,
+    source: DebugFlowSource,
   ): Promise<ExecuteNodeResult | null> {
-    const breakpoints = this.getBreakpointsForFile(filePath);
+    const breakpoints = this.getBreakpointsForKey(source.key);
     let lastResult: ExecuteNodeResult | null = null;
 
     // Track which inlined steps have already been handled by a parent control-
@@ -431,32 +374,64 @@ export class FlowForgerDebugRunner {
 
       // Check if we should pause BEFORE executing
       if (this.shouldPauseAt(node, i, breakpoints)) {
+        this.currentIterationContext = null;
         this.pausedNode = node;
-        const reason = breakpoints.has(node.id) ? 'breakpoint' : 'step';
+        const reason = breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.() ? 'breakpoint' : 'step';
+        this.pausedAtStepLoop = true;
         this.callbacks.onStopped(reason, node.id);
 
         const action = await this.waitForResume();
+        this.pausedAtStepLoop = false;
         if (action === 'stop') {
           this.isStopped = true;
           break;
         }
-        this.steppingMode = action;
+        if (action === 'jump') {
+          // Jump-then-pause: move the execution point and re-pause before the
+          // target on the next loop iteration (steppingMode 'step'). Nothing
+          // executes on the jump itself.
+          this.steppingMode = 'step';
+          const jump = this.pendingJump;
+          this.pendingJump = null;
+          if (jump) {
+            // Rebuild handledIds wholesale: the flat list inlines if/switch
+            // branch children, so clearing "everything after the target" would
+            // leak the OTHER branch's steps into the top-level loop once the
+            // jumped-into branch finishes. Instead mark every inlined
+            // descendant in the frame, then unmark the continuation set.
+            handledIds.clear();
+            for (const step of steps) this.collectDescendantIds(step.node, handledIds);
+            for (const id of jump.continuationIds) handledIds.delete(id);
+            i = jump.targetIndex - 1; // the loop's i++ lands on the target
+            continue;
+          }
+          // resume('jump') without a jumpTo() (host misuse): behave like a plain step
+        } else {
+          this.steppingMode = action;
+        }
       }
 
       // Execute the node
       this.callbacks.onOutput(`Executing: ${node.name} (${node.type})`, 'console');
 
+      const stackDepthBefore = this.executingNodeStack.length;
+      this.executingNodeStack.push(node);
       try {
-        const result = await this.executeStepNode(node, ctx, ir, sourceMap, filePath);
+        const result = await this.executeStepNode(node, ctx, source);
         lastResult = result;
 
         ctx.actions.set(node.name, {
           status: result.status,
+          // Omitted rather than set to undefined: only connector/HTTP/child-flow
+          // nodes capture a resolved invocation payload.
+          ...(result.inputs !== undefined ? { inputs: result.inputs } : {}),
           outputs: result.outputs,
           error: result.error,
         });
         ctx.variables = result.variables;
         handledIds.add(node.id);
+        this.callbacks.onNodeExecuted?.(node, result, source.key);
+        this.currentIterationContext = null;
 
         // The engine executed children of if/scope/switch internally via
         // runChildNodes; mark every descendant id so the flat-list loop skips
@@ -505,6 +480,8 @@ export class FlowForgerDebugRunner {
       } catch (err: any) {
         this.callbacks.onOutput(`Error executing '${node.name}': ${err.message}`, 'stderr');
         ctx.actions.set(node.name, { status: 'Failed', error: err.message });
+      } finally {
+        this.executingNodeStack.length = stackDepthBefore;
       }
     }
 
@@ -515,33 +492,38 @@ export class FlowForgerDebugRunner {
   private async executeStepNode(
     node: Node,
     ctx: RunContext,
-    ir: FlowIR,
-    sourceMap: DslSourceMap,
-    filePath: string,
+    source: DebugFlowSource,
   ): Promise<ExecuteNodeResult> {
     let childDebugMode: ResumeAction = this.steppingMode;
-    const breakpoints = this.getBreakpointsForFile(filePath);
+    const breakpoints = this.getBreakpointsForKey(source.key);
 
-    const onBeforeChildExecute = async (childNode: Node, _ctx: RunContext): Promise<'continue' | 'stop'> => {
+    const onBeforeChildExecute = async (childNode: Node, childCtx: RunContext): Promise<'continue' | 'stop'> => {
       if (this.isStopped) return 'stop';
 
-      const hasBreakpoint = breakpoints.has(childNode.id);
-      if (childDebugMode === 'step' || hasBreakpoint) {
+      const hasBreakpoint = breakpoints.has(childNode.id) && !this.options?.suppressBreakpoints?.();
+      const pauseBefore = this.options?.shouldPauseBefore?.(childNode) ?? false;
+      if (childDebugMode === 'step' || hasBreakpoint || pauseBefore) {
+        this.updateIterationContext(childCtx, source);
         this.pausedNode = childNode;
         const reason = hasBreakpoint ? 'breakpoint' : 'step';
         this.callbacks.onStopped(reason, childNode.id);
 
         const action = await this.waitForResume();
         if (action === 'stop') return 'stop';
-        childDebugMode = action;
-        this.steppingMode = action;
+        const effective = action === 'jump' ? 'step' : action;
+        childDebugMode = effective;
+        this.steppingMode = effective;
       }
+      this.executingNodeStack.push(childNode);
       return 'continue';
     };
 
     const onAfterChildExecute = async (childNode: Node, childResult: ExecuteNodeResult, _ctx: RunContext): Promise<void> => {
+      const top = this.executingNodeStack[this.executingNodeStack.length - 1];
+      if (top && top.id === childNode.id) this.executingNodeStack.pop();
       ctx.variables = { ...childResult.variables };
       this.logComposeOutput(childNode, childResult);
+      this.callbacks.onNodeExecuted?.(childNode, childResult, source.key);
     };
 
     // Hook to intercept child workflow execution for debugging
@@ -550,71 +532,53 @@ export class FlowForgerDebugRunner {
       workflowRef: string,
       evaluatedBody: any,
     ): Promise<{ handled: true; result: ExecuteNodeResult } | { handled: false }> => {
-      // Check if we should step into this child flow
       const shouldStepIn = this.wantStepIn && this.steppingMode === 'step';
-      const childFile = this.resolveChildFlowFile(workflowRef, filePath, ir);
+      const child = await this.resolveChild(workflowRef, source);
+      const childHasBreakpoints = child ? this.hasBreakpointsForKey(child.key) : false;
 
-      // Check if child file has breakpoints set
-      const childHasBreakpoints = childFile ? this.hasBreakpointsForFile(childFile) : false;
-
-      if (childFile && (shouldStepIn || childHasBreakpoints)) {
-        // Debug into the child flow
-        const compiled = this.compileChildFlow(childFile);
-        if (compiled) {
-          this.callbacks.onOutput(`Stepping into child flow: ${compiled.ir.name} (${path.basename(childFile)})`, 'console');
-          const result = await this.executeChildFlowDebug(
-            compiled.ir,
-            compiled.sourceMap,
-            childFile,
-            evaluatedBody,
-            workflowRef,
-            workflowNode.id,
-          );
-          return { handled: true, result };
-        }
+      if (child && (shouldStepIn || childHasBreakpoints)) {
+        this.callbacks.onOutput(
+          `Stepping into child flow: ${child.ir.name} (${this.host.displayName(child.key)})`,
+          'console',
+        );
+        const result = await this.executeChildFlowDebug(child, evaluatedBody, workflowRef, workflowNode.id);
+        return { handled: true, result };
       }
 
       // Step over: execute child flow without debugging (via engine's run())
-      if (childFile) {
-        const childIR = await this.loadChildFlowAsIR(workflowRef, filePath, ir);
-        if (childIR) {
-          try {
-            const childResult = await runEngine(childIR, {
-              input: evaluatedBody,
-              connectors: this.connectors,
-              variables: {},
-              parameterOverrides: this.parameterOverrides,
-              loadChildFlow: (ref: string) => this.loadChildFlowAsIR(ref, childFile, childIR),
-              strictWorkflows: false,
-            });
+      if (child) {
+        try {
+          const childResult = await runEngine(child.ir, {
+            input: evaluatedBody,
+            connectors: this.connectors,
+            variables: {},
+            parameterOverrides: this.parameterOverrides,
+            loadChildFlow: (ref: string) => this.loadChildFlowAsIR(ref, child),
+            strictWorkflows: false,
+          });
 
-            const childFlowBody = childResult.trace[childResult.trace.length - 1]?.outputs;
-            const result: ExecuteNodeResult = {
+          const childFlowBody = childResult.trace[childResult.trace.length - 1]?.outputs;
+          const result: ExecuteNodeResult = {
+            status: childResult.status,
+            outputs: {
+              workflowReferenceName: workflowRef,
+              childWorkflowName: child.ir.name,
               status: childResult.status,
-              outputs: {
-                workflowReferenceName: workflowRef,
-                childWorkflowName: childIR.name,
-                status: childResult.status,
-                body: childFlowBody,
-              },
-              variables: { ...ctx.variables },
-            };
-            return { handled: true, result };
-          } catch (err: any) {
-            this.callbacks.onOutput(`Child flow '${workflowRef}' failed: ${err.message}`, 'stderr');
-            return {
-              handled: true,
-              result: {
-                status: 'Failed',
-                error: err,
-                variables: { ...ctx.variables },
-              },
-            };
-          }
+              body: childFlowBody,
+            },
+            variables: { ...ctx.variables },
+          };
+          return { handled: true, result };
+        } catch (err: any) {
+          this.callbacks.onOutput(`Child flow '${workflowRef}' failed: ${err.message}`, 'stderr');
+          return {
+            handled: true,
+            result: { status: 'Failed', error: err, variables: { ...ctx.variables } },
+          };
         }
       }
 
-      // No child file found — let executeNode handle it (mock or loadChildFlow)
+      // No child source found — let executeNode handle it (mock or loadChildFlow)
       return { handled: false };
     };
 
@@ -631,15 +595,13 @@ export class FlowForgerDebugRunner {
    * Pushes a frame onto the call stack, runs through child steps, then pops.
    */
   private async executeChildFlowDebug(
-    childIR: FlowIR,
-    childSourceMap: DslSourceMap,
-    childFilePath: string,
+    child: DebugFlowSource,
     triggerInput: any,
     workflowRef: string,
     callerNodeId?: string,
   ): Promise<ExecuteNodeResult> {
     // Create isolated context for child flow, applying parameter overrides
-    const childParameters = { ...(childIR.parameters || {}) };
+    const childParameters = { ...(child.ir.parameters || {}) };
     for (const [key, value] of Object.entries(this.parameterOverrides)) {
       if (childParameters[key] && typeof childParameters[key] === 'object') {
         childParameters[key] = { ...childParameters[key], defaultValue: value };
@@ -652,8 +614,9 @@ export class FlowForgerDebugRunner {
       variables: {},
       actions: new Map<string, ActionOutput>(),
       triggerData: triggerInput,
-      workflowName: childIR.name,
+      workflowName: child.ir.name,
       parameters: childParameters,
+      iterationStack: [],
       now: () => new Date(),
       sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
       log: (evt) => this.callbacks.onOutput(JSON.stringify(evt), 'console'),
@@ -663,11 +626,11 @@ export class FlowForgerDebugRunner {
         this.callbacks.onOutput(`Warning: connector '${name}' not available in debug mode`, 'console');
         return { invoke: async () => ({ statusCode: 200, body: null }) } as any;
       },
-      loadChildFlow: (ref: string) => this.loadChildFlowAsIR(ref, childFilePath, childIR),
+      loadChildFlow: (ref: string) => this.loadChildFlowAsIR(ref, child),
     };
 
     // Handle trigger
-    const triggerNode = childIR.nodes.find(
+    const triggerNode = child.ir.nodes.find(
       (n) => n.type === 'trigger' || n.type === 'recurrence',
     );
     if (triggerNode) {
@@ -678,23 +641,21 @@ export class FlowForgerDebugRunner {
     }
 
     // Flatten child steps
-    const childSteps = this.flattenNodes(childIR.nodes);
+    const childSteps = this.flattenNodes(child.ir.nodes);
 
     // Push frame onto call stack
     const frame: DebugFrame = {
-      ir: childIR,
-      sourceMap: childSourceMap,
-      filePath: childFilePath,
+      source: child,
       ctx: childCtx,
       steps: childSteps,
-      breakpoints: this.getBreakpointsForFile(childFilePath),
+      breakpoints: this.getBreakpointsForKey(child.key),
       callerNodeId,
     };
     this.callStack.push(frame);
 
     try {
       // Execute child flow steps with debugging
-      const lastResult = await this.executeSteps(childSteps, childCtx, childIR, childSourceMap, childFilePath);
+      const lastResult = await this.executeSteps(childSteps, childCtx, child);
 
       // Build result from last action output
       const lastAction = childSteps
@@ -706,26 +667,26 @@ export class FlowForgerDebugRunner {
       const childFlowBody = lastAction?.outputs;
       const status = lastResult?.status || 'Succeeded';
 
-      this.callbacks.onOutput(`Returned from child flow: ${childIR.name}`, 'console');
+      this.callbacks.onOutput(`Returned from child flow: ${child.ir.name}`, 'console');
 
       return {
         status,
         outputs: {
           workflowReferenceName: workflowRef,
-          childWorkflowName: childIR.name,
+          childWorkflowName: child.ir.name,
           status,
           body: childFlowBody,
         },
         variables: { ...this.getActiveContext().variables },
       };
     } catch (err: any) {
-      this.callbacks.onOutput(`Child flow '${childIR.name}' failed: ${err.message}`, 'stderr');
+      this.callbacks.onOutput(`Child flow '${child.ir.name}' failed: ${err.message}`, 'stderr');
       return {
         status: 'Failed',
         error: err,
         outputs: {
           workflowReferenceName: workflowRef,
-          childWorkflowName: childIR.name,
+          childWorkflowName: child.ir.name,
           status: 'Failed',
           error: err.message,
         },
@@ -738,9 +699,10 @@ export class FlowForgerDebugRunner {
   }
 
   private shouldPauseAt(node: Node, stepIndex: number, breakpoints: Map<string, number>): boolean {
+    if (this.options?.shouldPauseBefore?.(node)) return true;
     if (this.stopOnEntry && stepIndex === 0 && this.callStack.length === 0) return true;
     if (this.steppingMode === 'step') return true;
-    if (breakpoints.has(node.id)) return true;
+    if (breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.()) return true;
     return false;
   }
 
@@ -752,29 +714,33 @@ export class FlowForgerDebugRunner {
 
   // --- Breakpoint helpers ---
 
-  /**
-   * Get the live breakpoint map for a file, creating and storing it if missing.
-   * The returned map is mutated in place by setBreakpointsForFile so that
-   * references captured by running execution loops see mid-run updates.
-   */
-  private getBreakpointsForFile(filePath: string): Map<string, number> {
-    const norm = this.normalizePath(filePath);
-    let bps = this.breakpointsPerFile.get(norm);
+  private getBreakpointsForKey(key: string): Map<string, number> {
+    const norm = this.host.normalizeKey(key);
+    let bps = this.breakpointsPerKey.get(norm);
     if (!bps) {
       bps = new Map();
-      this.breakpointsPerFile.set(norm, bps);
+      this.breakpointsPerKey.set(norm, bps);
     }
     return bps;
   }
 
-  private hasBreakpointsForFile(filePath: string): boolean {
-    const bps = this.getBreakpointsForFile(filePath);
-    return bps.size > 0;
+  private hasBreakpointsForKey(key: string): boolean {
+    return this.getBreakpointsForKey(key).size > 0;
   }
 
-  private normalizePath(p: string): string {
-    const resolved = path.resolve(p);
-    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  setBreakpointsForSource(key: string, breakpointEntries: Array<{ nodeId: string; line: number }>): void {
+    // Mutate the existing map in place — never replace it. Execution loops
+    // capture a reference to this map at start; replacing it would leave them
+    // checking a stale snapshot and skip breakpoints added mid-run.
+    const bpMap = this.getBreakpointsForKey(key);
+    bpMap.clear();
+    for (const bp of breakpointEntries) {
+      bpMap.set(bp.nodeId, bp.line);
+    }
+  }
+
+  clearBreakpointsForSource(key: string): void {
+    this.getBreakpointsForKey(key).clear();
   }
 
   // --- Public API for DAP adapter ---
@@ -785,6 +751,58 @@ export class FlowForgerDebugRunner {
       this.resumeResolver = null;
       resolver(action);
     }
+  }
+
+  /**
+   * Set Next Statement: move the execution point to `nodeId` within the
+   * active frame and re-pause before it — nothing executes on the jump
+   * itself; execution happens when the user then steps/continues, live,
+   * against the preserved current context. Valid only while suspended at the
+   * frame's own step loop; pauses raised by the engine while a control node
+   * executes its children — a foreach/dountil iteration or an if/scope/switch
+   * branch child — are rejected. Backward = re-execute, forward = skip
+   * (skipped nodes keep their stale ctx.actions entries). Returns the
+   * continuation set's node ids so hosts can rewind their trace display;
+   * `resetNodeIds` ordering is unspecified (Set insertion order — hosts must
+   * not depend on it).
+   */
+  jumpTo(nodeId: string): JumpResult {
+    if (!this.resumeResolver) {
+      return { ok: false, error: 'Cannot jump: the session is not paused.' };
+    }
+    if (!this.pausedAtStepLoop) {
+      return {
+        ok: false,
+        error:
+          'Cannot jump while paused inside a control-flow block (if/scope/switch branch or loop iteration) — jump is available when paused at the flow\'s own statements.',
+      };
+    }
+    const top = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1] : null;
+    const frameSteps = top ? top.steps : this.steps;
+    const frameNodes = top ? top.source.ir.nodes : this.root.ir.nodes;
+
+    const targetIndex = frameSteps.findIndex((s) => s.node.id === nodeId);
+    if (targetIndex < 0) {
+      return { ok: false, error: `Cannot jump: no jumpable statement '${nodeId}' in the current frame (loop bodies are not jumpable).` };
+    }
+    const target = frameSteps[targetIndex].node;
+    if (target.type === 'trigger' || target.type === 'recurrence') {
+      return { ok: false, error: 'Cannot jump to a trigger.' };
+    }
+    const continuationIds = computeContinuationSet(frameNodes, nodeId);
+    if (!continuationIds) {
+      // Unreachable when targetIndex >= 0 (same traversal); kept as a guard.
+      return { ok: false, error: `Cannot jump: node '${nodeId}' not found in the current frame.` };
+    }
+
+    this.pendingJump = { targetIndex, continuationIds };
+    this.resume('jump');
+    return { ok: true, resetNodeIds: [...continuationIds] };
+  }
+
+  /** True while suspended at the active frame's own step loop — the only pauses jumpTo accepts. */
+  isPausedAtStepLoop(): boolean {
+    return this.pausedAtStepLoop;
   }
 
   /** Set step-in mode (F11): will step into child flows */
@@ -803,16 +821,29 @@ export class FlowForgerDebugRunner {
     }
   }
 
-  getSourceMap(): DslSourceMap {
-    return this.sourceMap;
-  }
-
   getCurrentNode(): Node | null {
     return this.pausedNode;
   }
 
+  /**
+   * Name of the innermost node currently executing, or null between nodes —
+   * including while PAUSED (resumeResolver set): a pause always sits between
+   * executions, and any connector call made then is a console/immediate-window
+   * call that must not be stamped as flow-originated.
+   */
+  getCurrentExecutingNodeName(): string | null {
+    if (this.resumeResolver) return null;
+    const top = this.executingNodeStack[this.executingNodeStack.length - 1];
+    return top?.name ?? null;
+  }
+
   getContext(): RunContext {
     return this.getActiveContext();
+  }
+
+  /** Root frame context (the main flow's ctx, regardless of call stack depth). */
+  getRootContext(): RunContext {
+    return this.ctx;
   }
 
   /** Get the context for the currently active frame (top of stack, or root). */
@@ -832,30 +863,36 @@ export class FlowForgerDebugRunner {
     return [...this.callStack];
   }
 
-  /** Get the active (top) file path. */
-  getActiveFilePath(): string {
-    if (this.callStack.length > 0) {
-      return this.callStack[this.callStack.length - 1].filePath;
-    }
-    return this.filePath;
+  getRootSourceMap(): DslSourceMap | null {
+    return this.root.sourceMap;
   }
 
-  /** Get the active source map (for the current frame). */
-  getActiveSourceMap(): DslSourceMap {
+  getActiveSourceMap(): DslSourceMap | null {
     if (this.callStack.length > 0) {
-      return this.callStack[this.callStack.length - 1].sourceMap;
+      return this.callStack[this.callStack.length - 1].source.sourceMap;
     }
-    return this.sourceMap;
+    return this.root.sourceMap;
   }
 
-  /** Get the root file path. */
-  getRootFilePath(): string {
-    return this.filePath;
+  getActiveKey(): string {
+    if (this.callStack.length > 0) {
+      return this.callStack[this.callStack.length - 1].source.key;
+    }
+    return this.root.key;
+  }
+
+  getRootKey(): string {
+    return this.root.key;
+  }
+
+  getSourceMapForKey(key: string): DslSourceMap | null {
+    const source = this.sources.get(this.host.normalizeKey(key));
+    return source?.sourceMap ?? null;
   }
 
   /** Get the root flow name. */
   getRootFlowName(): string {
-    return this.ir.name;
+    return this.root.ir.name;
   }
 
   /** Whether we're currently inside a child flow. */
@@ -868,54 +905,9 @@ export class FlowForgerDebugRunner {
     return this.callStack.length;
   }
 
-  // --- Breakpoint management ---
-
-  /**
-   * Set breakpoints for a specific file. Called by the adapter for each file
-   * that has breakpoints, not just the main file.
-   */
-  setBreakpointsForFile(filePath: string, breakpointEntries: Array<{ nodeId: string; line: number }>): void {
-    // Mutate the existing map in place — never replace it. Execution loops
-    // capture a reference to this map at start; replacing it would leave them
-    // checking a stale snapshot and skip breakpoints added mid-run.
-    const bpMap = this.getBreakpointsForFile(filePath);
-    bpMap.clear();
-    for (const bp of breakpointEntries) {
-      bpMap.set(bp.nodeId, bp.line);
-    }
-
-    // Also update the legacy breakpoints map if this is the main file
-    if (this.normalizePath(filePath) === this.normalizePath(this.filePath)) {
-      this.breakpoints = bpMap;
-    }
-  }
-
-  /**
-   * Clear breakpoints for a specific file.
-   */
-  clearBreakpointsForFile(filePath: string): void {
-    this.getBreakpointsForFile(filePath).clear();
-  }
-
-  // Legacy single-file API (still used by adapter for main file)
-  setBreakpoint(nodeId: string, line: number): void {
-    const bps = this.getBreakpointsForFile(this.filePath);
-    bps.set(nodeId, line);
-    this.breakpoints = bps;
-  }
-
-  clearBreakpoints(): void {
-    const bps = this.getBreakpointsForFile(this.filePath);
-    bps.clear();
-    this.breakpoints = bps;
-  }
-
-  getBreakpointCount(): number {
-    return this.breakpoints.size;
-  }
-
   findNearestBreakpointableLine(requestedLine: number, sourceMap?: DslSourceMap): number | null {
-    const sm = sourceMap || this.sourceMap;
+    const sm = sourceMap || this.root.sourceMap;
+    if (!sm) return null;
     const lines = [...sm.breakpointableLines].sort((a, b) => a - b);
     for (const line of lines) {
       if (line >= requestedLine) return line;
@@ -923,35 +915,6 @@ export class FlowForgerDebugRunner {
     for (let i = lines.length - 1; i >= 0; i--) {
       if (lines[i] <= requestedLine) return lines[i];
     }
-    return null;
-  }
-
-  /**
-   * Try to get the source map for a given file path.
-   * If it's the main file, return the main source map.
-   * If it's a child flow file, compile it on-the-fly for breakpoint validation.
-   */
-  getSourceMapForFile(filePath: string): DslSourceMap | null {
-    const norm = this.normalizePath(filePath);
-    if (norm === this.normalizePath(this.filePath)) {
-      return this.sourceMap;
-    }
-
-    // Check if this file is currently in the call stack
-    for (const frame of this.callStack) {
-      if (this.normalizePath(frame.filePath) === norm) {
-        return frame.sourceMap;
-      }
-    }
-
-    // Try to compile on-the-fly for breakpoint validation
-    if (fs.existsSync(filePath) && filePath.endsWith('.ff.ts')) {
-      const compiled = this.compileChildFlow(filePath);
-      if (compiled) {
-        return compiled.sourceMap;
-      }
-    }
-
     return null;
   }
 
@@ -969,22 +932,26 @@ export class FlowForgerDebugRunner {
   }
 
   /**
-   * Build (and cache) the DSL expression scope for the active frame's file.
-   * Returns null if the source can't be read — DSL evaluation is then skipped.
+   * Build (and cache) the DSL expression scope for the active frame's source.
+   * Returns null when the source has no DSL text or source map — DSL-syntax
+   * evaluation is then skipped and PA-syntax evaluation still works.
    */
   private getExpressionScope(): ExpressionScope | null {
-    const filePath = this.getActiveFilePath();
-    const norm = this.normalizePath(filePath);
-    if (this.expressionScopes.has(norm)) {
-      return this.expressionScopes.get(norm)!;
-    }
+    return this.getExpressionScopeForKey(this.getActiveKey());
+  }
+
+  /** Expression scope for an arbitrary source key (cached; null when no DSL). */
+  getExpressionScopeForKey(key: string): ExpressionScope | null {
+    const norm = this.host.normalizeKey(key);
+    if (this.expressionScopes.has(norm)) return this.expressionScopes.get(norm)!;
     let scope: ExpressionScope | null = null;
-    try {
-      const source = fs.readFileSync(filePath, 'utf-8');
-      const ir = this.callStack.length > 0 ? this.callStack[this.callStack.length - 1].ir : this.ir;
-      scope = buildExpressionScope(source, ir, this.getActiveSourceMap());
-    } catch {
-      scope = null;
+    const source = this.sources.get(norm);
+    if (source?.dslCode && source.sourceMap) {
+      try {
+        scope = buildExpressionScope(source.dslCode, source.ir, source.sourceMap);
+      } catch {
+        scope = null;
+      }
     }
     this.expressionScopes.set(norm, scope);
     return scope;

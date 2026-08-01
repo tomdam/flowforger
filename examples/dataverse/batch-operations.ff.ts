@@ -13,6 +13,12 @@ class DvBatchOperations {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration - edit to point at records in your own environment.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters('...')), or values passed in via the trigger payload.
+    let accountId = '00000000-0000-0000-0000-000000000001';
+    let contactId = '00000000-0000-0000-0000-000000000002';
+
     await ctx.connectors.dataverse.ExecuteChangeset('ExecuteAtomicBatch', {
       requests: [
         {
@@ -35,14 +41,14 @@ class DvBatchOperations {
         {
           method: 'PATCH',
           entityName: 'accounts',
-          recordId: '00000000-0000-0000-0000-000000000001',
+          recordId: ctx.variables('accountId'),
           body: { revenue: 2000000 },
           contentId: '3',
         },
         {
           method: 'DELETE',
           entityName: 'contacts',
-          recordId: '00000000-0000-0000-0000-000000000002',
+          recordId: ctx.variables('contactId'),
           contentId: '4',
         },
       ],

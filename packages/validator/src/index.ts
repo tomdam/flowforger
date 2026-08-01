@@ -109,32 +109,60 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
         } else if (c.connector === 'sharepoint') {
           const op = String(c.operation).toLowerCase();
           const p = c.params || {};
-          const need = (keys: string[]) => keys.filter((k) => p[k] === undefined);
+          // Accept any spelling of a required concept; error only if none is present.
+          // Alternatives are backed by evidence (see task-10-report.md): the emitter's
+          // SP_COMMON_PARAM_ALIASES/SP_PARAM_ALIASES (packages/emitter-logicapps/src/index.ts),
+          // the SharePoint connector's normalizeInputs/extractItemFields
+          // (packages/connectors-sharepoint/src/index.ts), real tenant flows under
+          // tmp/*/logicapps.json, and examples/sharepoint/README.md's "Power Automate Format".
+          const hasAny = (keys: string[]) => keys.some((k) => p[k] !== undefined);
+          const hasItemPrefixed = () => Object.keys(p).some((k) => k.startsWith('item/'));
+          const SITE = { label: 'siteId (dataset)', present: () => hasAny(['siteId', 'dataset', 'siteUrl']) };
+          const LIST = { label: 'listId (table)', present: () => hasAny(['listId', 'table']) };
+          const ITEM_ID = { label: 'itemId (id)', present: () => hasAny(['itemId', 'id']) };
+          // Power Automate flattens the fields payload to item/<FieldName> keys rather
+          // than a fields object (see denormalizeSpParams and tmp/7/logicapps.json).
+          const FIELDS = { label: 'fields (item/*)', present: () => hasAny(['fields', 'item']) || hasItemPrefixed() };
+          const missingConcepts = (concepts: Array<{ label: string; present: () => boolean }>) =>
+            concepts.filter((concept) => !concept.present()).map((concept) => concept.label);
           if (op === 'getitems') {
-            const miss = need(['siteId','listId']); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([SITE, LIST]); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'getitembyid') {
-            const miss = need(['siteId','listId','itemId']); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([SITE, LIST, ITEM_ID]); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'createitem') {
-            const miss = need(['siteId','listId','fields']); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([SITE, LIST, FIELDS]); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'updateitem') {
-            const miss = need(['siteId','listId','itemId','fields']); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([SITE, LIST, ITEM_ID, FIELDS]); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'deleteitem') {
-            const miss = need(['siteId','listId','itemId']); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([SITE, LIST, ITEM_ID]); if (miss.length) issues.push({ level: 'error', code: 'SP_PARAMS', message: `SharePoint ${n.name} missing: ${miss.join(', ')}` });
           }
         } else if (c.connector === 'dataverse') {
           const op = String(c.operation).toLowerCase();
           const p = c.params || {};
-          const need = (keys: string[]) => keys.filter((k) => p[k] === undefined);
+          // Accept any spelling of a required concept; error only if none is present.
+          // Alternatives are backed by evidence (see task-10-report.md):
+          // packages/connectors-dataverse/src/index.ts's getEntityAndId/getBody (both
+          // 'entityName'/'entitySetName' and 'recordId'/'id' are read at runtime; the
+          // body is read from either a 'body' object or flattened 'item/*' keys), and
+          // real tenant flows under tmp/*/logicapps.json which consistently use
+          // entityName + recordId + flattened item/* payloads.
+          const hasAny = (keys: string[]) => keys.some((k) => p[k] !== undefined);
+          const hasItemPrefixed = () => Object.keys(p).some((k) => k.startsWith('item/'));
+          const ENTITY = { label: 'entitySetName (entityName)', present: () => hasAny(['entitySetName', 'entityName']) };
+          const RECORD_ID = { label: 'id (recordId)', present: () => hasAny(['id', 'recordId']) };
+          const BODY = { label: 'body (item/*)', present: () => hasAny(['body', 'item']) || hasItemPrefixed() };
+          const missingConcepts = (concepts: Array<{ label: string; present: () => boolean }>) =>
+            concepts.filter((concept) => !concept.present()).map((concept) => concept.label);
           if (op === 'listrows') {
-            const miss = need(['entitySetName']); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([ENTITY]); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'createrow') {
-            const miss = need(['entitySetName','body']); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([ENTITY, BODY]); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'updaterow') {
-            const miss = need(['entitySetName','id','body']); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([ENTITY, RECORD_ID, BODY]); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'deleterow') {
-            const miss = need(['entitySetName','id']); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([ENTITY, RECORD_ID]); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
           } else if (op === 'retrieverow') {
-            const miss = need(['entitySetName','id']); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
+            const miss = missingConcepts([ENTITY, RECORD_ID]); if (miss.length) issues.push({ level: 'error', code: 'DV_PARAMS', message: `Dataverse ${n.name} missing: ${miss.join(', ')}` });
           }
         }
       }

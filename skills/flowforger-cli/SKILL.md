@@ -18,7 +18,8 @@ Run `flowforger --help` for full flag reference. This skill covers what `--help`
 | First-time project setup | `flowforger init --url <envUrl> --client-id <appId>` |
 | Pull one flow | `flowforger pull --name "My Flow" --auth` |
 | Pull a whole solution | `flowforger pull --solution <UniqueName> --auth --out ./flows` |
-| Push a flow back | `flowforger push --file flow.ff.ts --auth` |
+| Push a flow back (updates or creates) | `flowforger push --file flow.ff.ts --auth` |
+| Create a brand-new flow in a solution | `flowforger push --file flow.ff.ts --solution <UniqueName> --auth` |
 | Activate / deactivate | `flowforger activate --id <guid> --url <envUrl> --token <t> --state 1 --status 2` |
 | Logic Apps JSON → DSL | `flowforger generate-dsl --in clientdata.json --out flow.ff.ts --name MyFlow` |
 | DSL → Logic Apps JSON | `flowforger compile flow.ff.ts --out clientdata.json --emit logicapps` |
@@ -55,8 +56,11 @@ Run `flowforger --help` for full flag reference. This skill covers what `--help`
 - **`run` output & exit code:** 0 only when the flow run `Succeeded`, 1 for anything else (Failed, Cancelled). When stdout is piped (the normal case for agents/CI) the JSON trace prints to **stdout** (jq-safe) and the human `=== FLOW FAILED ===` banner goes to stderr. On an interactive terminal a human-readable trace prints instead — pass `--json` to force the JSON trace (`--pretty` forces the opposite). The most explicit CI gate is still `.status == "Succeeded"` from the JSON.
 - **Un-awaited `ctx.*` action calls are SILENTLY OMITTED from the compiled flow** — no error at compile or run time, the action just doesn't exist. Always `await` action calls, and run `flowforger validate <file.ff.ts>` (diagnostic DSL017 catches this; exits 1 on DSL errors).
 - **`pull --solution` matches the solution UNIQUE name**, not the display name. Find it in the maker portal (Solutions list, "Name" column) — there is no CLI command to list solutions.
-- **Pulled `.ff.ts` embeds `workflowId`** in `@Flow({...})`, so `push --file <file> --auth` needs no `--id`. JSON pushes always need `--id`.
-- **`push` only PATCHes the flow definition** (`clientdata`). It does not change activation state, publish, or touch solution membership — run `activate` afterwards if needed. `.ff.ts` inputs are compiled on the fly using the cwd config's connection references. With `--auth`, `--url` may be omitted — it comes from `auth.resources.dataverse` in the config (an explicit `--url` overrides it).
+- **Pulled `.ff.ts` embeds `workflowId`** in `@Flow({...})`, so `push --file <file> --auth` needs no `--id`. JSON carries no workflowId and no flow name, so JSON pushes need `--id` (or `--name` to look up / create by name).
+- **`push` creates the flow when it does not exist yet.** Resolution order: `--id` → decorator `workflowId` → lookup by flow name. A name match is PATCHed; no match creates the flow. `--create` forces creation (errors if an id is also available); `--no-create` makes a miss an error — **use `--no-create` in CI**, where an accidental create is worse than a failure. `--solution <uniqueName>` places a newly created flow; it is ignored (with a warning) when updating.
+- **A created flow is Draft, and its GUID is written back into your `.ff.ts`.** `push` never activates — run `activate` afterwards. After a create, the new GUID is stamped into that file's `@Flow({...})` decorator so later pushes resolve by id instead of by name. If the decorator can't be edited (e.g. `@Flow(SOME_CONST)`), the create still succeeds and the CLI prints the GUID to add manually.
+- **Name resolution has three real limits.** (1) Two flows sharing a name → `push` refuses and demands `--id`, rather than guessing which to overwrite. (2) Flows owned by others and not shared with you are invisible to the lookup, so a push creates a duplicate — the create message says when no flow was visible. (3) `push` sends only `clientdata`, never `name`, so renaming in `@Flow({...})` and pushing by name creates a duplicate instead of renaming; push by id after a rename.
+- **`push` never publishes or changes solution membership of an existing flow.** `.ff.ts` inputs are compiled on the fly using the cwd config's connection references. With `--auth`, `--url` may be omitted — it comes from `auth.resources.dataverse` in the config (an explicit `--url` overrides it).
 - **`operationMetadataId` stripping** comes from `global.parser.skipMetadataFields` (init writes `["operationMetadataId"]`). `pull` applies it automatically via the cwd config (CLI ≥ 0.1.1 — check with `flowforger --version`); one-off override: `--skip-metadata-fields operationMetadataId` (also valid on `pull`, despite being listed under generate-dsl/parity options).
 - **`validate` is permissive** — it checks schema shape, not connection-reference correctness or referential integrity. `ok:true` does not guarantee an importable flow; use `parity` for round-trip confidence.
 - **`pull` creates the `--out` directory** if missing; no need to pre-create.
@@ -70,7 +74,9 @@ Run `flowforger --help` for full flag reference. This skill covers what `--help`
 | Passing a Graph token as `--sp-token` | 401; acquire with SharePoint host as resource |
 | Using the solution display name with `--solution` | Use the unique name |
 | Forgetting `await` on a `ctx.*` call | Action silently vanishes from the flow; `flowforger validate` catches it |
-| Expecting `push` to activate/publish | Follow with `flowforger activate` |
+| Expecting `push` to activate/publish | Follow with `flowforger activate` — a created flow is Draft |
+| Pushing in CI without `--no-create` | A typo'd name silently creates a second flow instead of failing |
+| Renaming a flow in `@Flow({...})` then pushing by name | Creates a duplicate; `push` never updates `name`. Push by id |
 | Adding `import` lines or npm deps for `.ff.ts` types | Not needed; the CLI resolves everything itself |
 
 For authoring `.ff.ts` content (DSL rules, connectors, expressions), see the `flowforger` skill if installed alongside this one.

@@ -280,6 +280,15 @@ export const DiagnosticCodes = {
     format: (length: string) =>
       `This comment becomes the action's description in Power Automate, which allows at most 255 characters (currently ${length}). Shorten the comment.`,
   },
+
+  // Action Result Assigned to a Variable (DSL032)
+  DSL032: {
+    code: 'DSL032',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Action result cannot be assigned to a variable',
+    format: (name: string) =>
+      `Action call result cannot be captured in variable '${name}' — the binding is dropped and '${name}' compiles to a broken '@${name}' reference. Call the action as a statement (e.g. await ctx.http('MyAction', ...)) and reference its output with ctx.body('MyAction') or ctx.outputs('MyAction').`,
+  },
 } as const;
 
 /**

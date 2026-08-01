@@ -215,8 +215,10 @@ Child flow outputs are accessed via `ctx.body('ActionName')`.
 Declare as local TypeScript variables. The JSDoc `@action` comment names the resulting
 InitializeVariable/SetVariable action — it is **optional** (the transformer auto-names a
 declaration `Initialize_<varName>`, an assignment `Set_<varName>`, etc.), but **recommended**
-so the names are descriptive and unique. (`arr.push()`, `x++`, and `x--` ignore `@action` —
-they are always auto-named `Append_`/`Increment_`/`Decrement_<varName>`.)
+so the names are descriptive and unique. (Only the `x++` and `x--` forms ignore `@action` —
+they are always auto-named `Increment_`/`Decrement_<varName>`; write `x += 1` / `x -= 1` if you
+need to name them. `arr.push()` honours `@action`, and auto-names to `Append_to_<varName>`.)
+See the [full table of auto-derived names](SKILL.md#3-jsdoc-action-names-variables-and-control-flow--never-named-action-calls).
 
 ```typescript
 /** @action Initialize_counter */
@@ -409,7 +411,7 @@ it is optional (those are recognized structurally) though still recommended for 
 
 ### Try/Catch Pattern (Scopes + RunAfter)
 
-> **WARNING:** See [Critical Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-explicit-multi-dependency-runafter). A try/catch without a Finally scope **breaks the flow** — all actions after the catch block will be skipped on the success path.
+> **WARNING:** See [Critical Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-an-explicit-runafter-covering-both-paths). A try/catch without a Finally scope **breaks the flow** — all actions after the catch block will be skipped on the success path.
 
 **Always use a Finally scope (recommended):**
 
@@ -433,7 +435,9 @@ it is optional (those are recognized structurally) though still recommended for 
 await ctx.response('Response', 200, { result: 'done' });
 ```
 
-**Alternative: explicit multi-dependency @runAfter on the next action:**
+**Alternative: point the next action at the catch scope, accepting `Skipped`:**
+
+The catch scope has a status on both paths — `Succeeded` when it ran, `Skipped` when the try scope succeeded — so one dependency listing both statuses covers the whole flow.
 
 ```typescript
 /** @action TryBlock @type scope */
@@ -446,10 +450,12 @@ await ctx.response('Response', 200, { result: 'done' });
   await ctx.compose('Error', { failed: true });
 }
 
-// Multiple @runAfter covers both success and failure paths
-/** @action SendResponse @runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded */
+// One dependency, both statuses — runs on the success path AND the failure path
+/** @runAfter CatchBlock: Succeeded, Skipped */
 await ctx.response('Response', 200, { done: true });
 ```
+
+> **Do not reach for two `@runAfter` tags here.** They are ANDed, so `@runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded` runs on *neither* path — see [Multiple @runAfter Dependencies](#multiple-runafter-dependencies).
 
 ## Referencing Data
 
@@ -573,10 +579,24 @@ Control execution order and error handling with `@runAfter`:
 
 ### Multiple @runAfter Dependencies
 
-An action can depend on multiple predecessors. This is essential after branching patterns (try/catch) where you need to cover both paths:
+An action can depend on multiple predecessors. **Multiple `@runAfter` tags are ANDed** — the action runs only once *every* listed dependency has finished in one of its listed statuses. That makes them the tool for a **fan-in**: joining parallel branches you want to wait for together.
 
 ```typescript
-/** @action Continue @runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded */
+// ✅ Runs after BOTH queries have succeeded
+/** @runAfter GetOrders: Succeeded @runAfter GetCustomers: Succeeded */
+await ctx.compose('Merged', ctx.union(ctx.body('GetOrders'), ctx.body('GetCustomers')));
+```
+
+Because it is AND and not OR, it is the **wrong** tool for covering the two branches of a try/catch — those paths are mutually exclusive, so no single AND can satisfy both:
+
+```typescript
+// ❌ BROKEN — runs on NEITHER path.
+// Success: TryBlock Succeeded ✓ but CatchBlock is Skipped ✗.  Failure: TryBlock Failed ✗.
+/** @runAfter TryBlock: Succeeded @runAfter CatchBlock: Succeeded */
+await ctx.compose('Next', 'never runs');
+
+// ✅ CORRECT — one dependency, every status it can have
+/** @runAfter CatchBlock: Succeeded, Skipped */
 await ctx.compose('Next', 'continues on both paths');
 ```
 

@@ -8,31 +8,34 @@ class SharePoint_Version_Control_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let libraryId = "aaaaaaaa-1111-2222-3333-444444444444";
+
     await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetFilesNeedingUpdate", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      listId: "{LIBRARY-GUID}",
+      dataset: ctx.variables("siteUrl"),
+      listId: ctx.variables("libraryId"),
       filter: "FSObjType eq 0 and FileLeafRef eq 'report.docx'",
       top: 1
     });
-    /** @action InitializeFileId */
     let fileId: string = ctx.first(ctx.outputs('GetFilesNeedingUpdate')?.['value'])?.['File']?.['UniqueId'];
-    /** @action CheckIfFileFound @type if */
+    /** @action CheckIfFileFound */
     if ((ctx.outputs('GetFilesNeedingUpdate')?.['value'].length > 0)) {
-      /** @runAfter first */
       await ctx.connectors.sharepoint.CheckOutFile("CheckOutForEditing", {
-        dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+        dataset: ctx.variables("siteUrl"),
         fileId: ctx.variables('fileId')
       });
-      /** @action TryUpdateFile @type scope @runAfter first */
+      /** @action TryUpdateFile @type scope */
       {
         await ctx.connectors.sharepoint.UpdateFile("UpdateFileContent", {
-          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          dataset: ctx.variables("siteUrl"),
           fileId: ctx.variables('fileId'),
           content: "Updated report content with new data"
         });
-        /** @runAfter first */
         await ctx.connectors.sharepoint.CheckInFile("CheckInWithMajorVersion", {
-          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          dataset: ctx.variables("siteUrl"),
           fileId: ctx.variables('fileId'),
           comment: "Automated update - major version",
           checkInType: 1
@@ -41,18 +44,17 @@ class SharePoint_Version_Control_Workflow {
       /** @action HandleFailure @type scope @runAfter TryUpdateFile: Failed */
       {
         await ctx.connectors.sharepoint.DiscardCheckOut("DiscardChangesOnError", {
-          dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+          dataset: ctx.variables("siteUrl"),
           fileId: ctx.variables('fileId')
         });
       }
-      /** @runAfter first */
+      /** @runAfter HandleFailure: Succeeded, Skipped */
       await ctx.connectors.sharepoint.GetItemChanges("GetVersionHistory", {
-        dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-        listId: "{LIBRARY-GUID}",
+        dataset: ctx.variables("siteUrl"),
+        listId: ctx.variables("libraryId"),
         itemId: ctx.first(ctx.outputs('GetFilesNeedingUpdate')?.['value'])?.['Id']
       });
     }
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Version control workflow completed",
       versionCount: ctx.outputs('GetVersionHistory')?.['value'].length

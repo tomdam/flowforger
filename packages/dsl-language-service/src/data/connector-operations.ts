@@ -14,12 +14,17 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'ListRecords',
     description: 'List rows from a Dataverse table.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name (e.g., "accounts")' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name used in the Web API path (e.g., "accounts"), not the singular logical name' },
       { name: '$filter', type: 'string', description: 'OData filter expression', optional: true },
       { name: '$select', type: 'string', description: 'Columns to return', optional: true },
       { name: '$orderby', type: 'string', description: 'Sort order', optional: true },
       { name: '$top', type: 'number', description: 'Maximum rows to return', optional: true },
       { name: '$expand', type: 'string', description: 'Related entities to expand', optional: true },
+      { name: '$skip', type: 'number', description: 'Rows to skip', optional: true },
+      { name: '$skiptoken', type: 'string', description: 'Paging cookie returned by a previous page', optional: true },
+      { name: '$apply', type: 'string', description: 'OData aggregation/grouping expression', optional: true },
+      { name: '$count', type: 'boolean', description: 'Include the total row count as @odata.count', optional: true },
+      { name: 'fetchXml', type: 'string', description: 'FetchXML query (alternative to $filter/$select)', optional: true },
     ],
   },
   {
@@ -27,7 +32,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'CreateRecord',
     description: 'Create a new row in a Dataverse table.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'item', type: 'object', description: 'Record data to create' },
     ],
   },
@@ -36,7 +41,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'UpdateRecord',
     description: 'Update an existing row in a Dataverse table.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'recordId', type: 'string', description: 'GUID of the record to update' },
       { name: 'item', type: 'object', description: 'Record data to update' },
     ],
@@ -46,7 +51,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'UpdateOnlyRecord',
     description: 'Update only specified fields of an existing row.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'recordId', type: 'string', description: 'GUID of the record to update' },
       { name: 'item', type: 'object', description: 'Record data to update' },
     ],
@@ -56,7 +61,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'DeleteRecord',
     description: 'Delete a row from a Dataverse table.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'recordId', type: 'string', description: 'GUID of the record to delete' },
     ],
   },
@@ -65,7 +70,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'GetItem',
     description: 'Get a single row by ID.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'recordId', type: 'string', description: 'GUID of the record' },
       { name: '$select', type: 'string', description: 'Columns to return', optional: true },
       { name: '$expand', type: 'string', description: 'Related entities to expand', optional: true },
@@ -76,7 +81,7 @@ export const dataverseOperations: ConnectorOperation[] = [
     operation: 'RetrieveRecord',
     description: 'Retrieve a single row with all details.',
     parameters: [
-      { name: 'entityName', type: 'string', description: 'Table logical name' },
+      { name: 'entityName', type: 'string', description: 'Entity set name — the PLURAL collection name (e.g., "accounts"), not the singular logical name' },
       { name: 'recordId', type: 'string', description: 'GUID of the record' },
       { name: '$select', type: 'string', description: 'Columns to return', optional: true },
       { name: '$expand', type: 'string', description: 'Related entities to expand', optional: true },

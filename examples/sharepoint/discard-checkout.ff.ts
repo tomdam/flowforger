@@ -14,25 +14,26 @@ class SharePoint_Discard_Check_Out_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.GetFileMetadata("GetFileMetadata", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.triggerBody()?.['fileId']
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CheckOutFile("CheckOutFile", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.triggerBody()?.['fileId']
     });
-    /** @runAfter trigger */
     await ctx.compose("SimulateWork", {
       message: "File is checked out, but we decide not to make changes"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.DiscardCheckOut("DiscardCheckOut", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       fileId: ctx.triggerBody()?.['fileId']
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Check out discarded, file unlocked without changes",
       fileName: ctx.outputs('GetFileMetadata')?.['Name']

@@ -8,15 +8,19 @@ class SharePoint_Create_File_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let folderPath = "/Shared Documents";
+
     await ctx.connectors.sharepoint.CreateFile("CreateTextFile", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      parameters: {
-        folderPath: "/sites/yoursite/Shared Documents",
-        name: "example.txt"
-      },
+      dataset: ctx.variables("siteUrl"),
+      folderPath: ctx.variables("folderPath"),
+      name: "example.txt",
       body: "Hello, this is a test file created by FlowForger!"
     });
-    /** @runAfter trigger */
+    
     await ctx.compose("ShowFileInfo", ctx.outputs('CreateTextFile'));
   }
 

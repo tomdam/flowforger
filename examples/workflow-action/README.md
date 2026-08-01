@@ -101,7 +101,7 @@ async run(ctx: FlowContext) {
 Call different child workflows based on conditions:
 
 ```typescript
-/** @action RouteCustomer @type if */
+/** @action RouteCustomer */
 if (ctx.equals(ctx.eval(`@triggerBody()?['type']`), 'premium')) {
   await ctx.callWorkflow('ProcessPremium', '11111111-1111-1111-1111-111111111111', {
     customer: ctx.eval(`@triggerBody()?['customer']`),
@@ -118,7 +118,7 @@ if (ctx.equals(ctx.eval(`@triggerBody()?['type']`), 'premium')) {
 Process items with a foreach loop:
 
 ```typescript
-/** @action ProcessEachItem @type foreach */
+/** @action ProcessEachItem */
 for (const item of ctx.eval(`@triggerBody()?['items']`) ?? []) {
   await ctx.callWorkflow('ProcessItem', '11111111-1111-1111-1111-111111111111', {
     item: ctx.items('ProcessEachItem'),

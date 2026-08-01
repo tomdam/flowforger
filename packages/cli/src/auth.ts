@@ -279,7 +279,8 @@ async function createCachePlugin(log: (msg: string) => void): Promise<ICachePlug
 export async function acquireTokens(
   authConfig: AuthConfig,
   scopesByResource: Map<string, string[]>,
-  logger?: (msg: string) => void
+  logger?: (msg: string) => void,
+  options?: { silentOnly?: boolean }
 ): Promise<ResolvedTokens> {
   if (scopesByResource.size === 0) return {};
 
@@ -302,7 +303,14 @@ export async function acquireTokens(
     const scopeList = scopes.join(', ');
     const shortResource = resourceUrl.replace('https://', '');
 
-    const token = await acquireTokenForResource(pca, scopes, shortResource, scopeList, log);
+    const token = await acquireTokenForResource(
+      pca,
+      scopes,
+      shortResource,
+      scopeList,
+      log,
+      options?.silentOnly
+    );
 
     // Map resource URL to token slot
     if (resourceUrl === 'https://graph.microsoft.com') {
@@ -423,7 +431,8 @@ async function acquireTokenForResource(
   scopes: string[],
   shortResource: string,
   scopeList: string,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  silentOnly?: boolean
 ): Promise<string> {
   const accounts = await pca.getTokenCache().getAllAccounts();
 
@@ -436,6 +445,12 @@ async function acquireTokenForResource(
     } catch {
       // Silent failed — fall through to interactive
     }
+  }
+
+  if (silentOnly) {
+    throw new Error(
+      `Not signed in for ${shortResource}. Run 'flowforger run <flow> --auth' once in a terminal to sign in, then retry.`
+    );
   }
 
   // Interactive: device code flow

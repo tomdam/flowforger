@@ -8,21 +8,26 @@ class SharePoint_Get_Files_Properties_Only_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let libraryId = "aaaaaaaa-1111-2222-3333-444444444444";
+    let folderPath = "/sites/MySite/Shared Documents";
+
     await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetAllFilesInFolder", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      listId: "{LIBRARY-GUID}",
-      folderPath: "/sites/yoursite/Shared Documents",
+      dataset: ctx.variables("siteUrl"),
+      listId: ctx.variables("libraryId"),
+      folderPath: ctx.variables("folderPath"),
       top: 100
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetFilesPropertiesOnly("GetFilesWithFilter", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      listId: "{LIBRARY-GUID}",
+      dataset: ctx.variables("siteUrl"),
+      listId: ctx.variables("libraryId"),
       filter: "FileLeafRef eq 'report.docx'",
       orderby: "Modified desc",
       top: 10
     });
-    /** @runAfter trigger */
     await ctx.compose("ShowFileCount", {
       allFilesCount: ctx.outputs('GetAllFilesInFolder')?.['value'].length,
       filteredCount: ctx.outputs('GetFilesWithFilter')?.['value'].length

@@ -1,0 +1,41 @@
+{
+  "name": "@flowforger/debug-node",
+  "version": "0.1.0",
+  "description": "FlowForger Node-side debug host — fs-based child-flow resolution and connector construction, shared by the VS Code extension, the CLI, and the MCP server",
+  "license": "Apache-2.0",
+  "author": "Damjan Tomic",
+  "homepage": "https://flowforger.net",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tomdam/flowforger.git",
+    "directory": "packages/debug-node"
+  },
+  "publishConfig": { "access": "public" },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
+  },
+  "dependencies": {
+    "@flowforger/ir": "^0.1.0",
+    "@flowforger/engine": "^0.1.0",
+    "@flowforger/dsl-native": "^0.1.0",
+    "@flowforger/debug-core": "^0.1.0",
+    "@flowforger/connectors-http": "^0.1.0",
+    "@flowforger/connectors-sharepoint": "^0.1.0",
+    "@flowforger/connectors-dataverse": "^0.1.0",
+    "@flowforger/connectors-office365": "^0.1.0",
+    "@flowforger/connectors-office365users": "^0.1.0",
+    "@flowforger/connectors-office365groups": "^0.1.0",
+    "@flowforger/connectors-wordonline": "^0.1.0",
+    "@flowforger/connectors-excelonline": "^0.1.0",
+    "@flowforger/connectors-teams": "^0.1.0",
+    "@flowforger/connectors-onedrive": "^0.1.0"
+  },
+  "devDependencies": { "tsx": "^4.21.0" }
+}

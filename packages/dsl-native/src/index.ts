@@ -6,7 +6,8 @@
  */
 
 // Main transformer
-export { transformFile, transformCode, TransformOptions, TransformResult } from './transformer/index.js';
+export { transformFile, transformCode } from './transformer/index.js';
+export type { TransformOptions, TransformResult } from './transformer/index.js';
 
 // Decorators
 export {
@@ -16,6 +17,8 @@ export {
   RecurrenceTrigger,
   ConnectorTrigger,
   Action,
+} from './decorators.js';
+export type {
   HttpTriggerOptions,
   ManualTriggerOptions,
   RecurrenceTriggerOptions,
@@ -23,7 +26,7 @@ export {
 } from './decorators.js';
 
 // Context types
-export {
+export type {
   FlowContext,
   FlowConfig,
   FlowMetadataConfig,
@@ -49,15 +52,18 @@ export {
 export type { TransformContext } from './transformer/expression-transformer.js';
 
 // Expression scope + DSL expression evaluation support (debug console)
-export { buildExpressionScope, dslExpressionToPA, evaluateDebugInput } from './expression-scope.js';
+export { buildExpressionScope, dslExpressionToPA, evaluateDebugInput, dslStatementToNodes } from './expression-scope.js';
 export type { ExpressionScope, DebugEvalOutcome, DebugEvalContext } from './expression-scope.js';
 
 // Utilities
 export { resetIdCounter, genId } from './utils/id-generator.js';
-export { inferVariableType, PAVariableType } from './utils/type-inference.js';
+export { inferVariableType } from './utils/type-inference.js';
+export type { PAVariableType } from './utils/type-inference.js';
+export { setFlowWorkflowIdInSource } from './workflow-id-writer.js';
 
 // Generator (IR -> Native DSL)
-export { generateNativeDslFromIR, GeneratorOptions } from './generator.js';
+export { generateNativeDslFromIR } from './generator.js';
+export type { GeneratorOptions } from './generator.js';
 
 // Generator with Source Map (IR -> Native DSL + line mapping)
 export { generateNativeDslWithSourceMap, type DslWithSourceMap, type SourceMapEntry } from './generator-sourcemap.js';
@@ -66,7 +72,8 @@ export { generateNativeDslWithSourceMap, type DslWithSourceMap, type SourceMapEn
 export { buildSourceMapFromDsl, type DslSourceMap } from './source-map-builder.js';
 
 // Parser (Logic Apps JSON -> IR)
-export { parseLogicAppsToIR, resetParserIdCounter, ParseOptions } from './parser-logicapps.js';
+export { parseLogicAppsToIR, resetParserIdCounter } from './parser-logicapps.js';
+export type { ParseOptions } from './parser-logicapps.js';
 
 // Expression Parser (PA expressions -> TypeScript)
 export {
@@ -76,8 +83,8 @@ export {
   parseStringValue,
   parseStringToTemplateLiteral,
   isMixedExpressionString,
-  ParseResult,
 } from './generator/expression-parser.js';
+export type { ParseResult } from './generator/expression-parser.js';
 
 // OData Query Builder
 export { parseODataFilter, isODataParameter } from './generator/odata-parser.js';
@@ -94,6 +101,14 @@ export { monacoTypeDefinitions, dslExampleSnippets } from './monaco-types.js';
 export {
   optimizeDsl,
   optimizeIR,
+  createEmptyReport,
+  addChange,
+  addWarning,
+  formatReportSummary,
+  applyHardcodedValueExtractions,
+  applyConnectionRefConversions,
+} from './optimizer/index.js';
+export type {
   OptimizeOptions,
   OptimizeResult,
   OptimizationReport,
@@ -101,12 +116,6 @@ export {
   OptimizationWarning,
   OptimizationSummary,
   OptimizationType,
-  createEmptyReport,
-  addChange,
-  addWarning,
-  formatReportSummary,
-  applyHardcodedValueExtractions,
-  applyConnectionRefConversions,
 } from './optimizer/index.js';
 
 export type {

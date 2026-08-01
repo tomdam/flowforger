@@ -2,6 +2,13 @@
 
 One flow per Dataverse connector operation area, all using `ctx.connectors.dataverse`.
 
+## Configuring the examples
+
+Each example declares its tenant-specific values in a configuration block at the top
+of `run()` — edit those and the flow is ready to run. See
+[Configuring the examples](../README.md#configuring-the-examples) for what each value
+means, where to find it, and which mechanism to use in a production flow.
+
 ## Files
 
 | File | Demonstrates |

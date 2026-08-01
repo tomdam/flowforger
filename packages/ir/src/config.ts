@@ -120,6 +120,15 @@ export interface GeneratorConfig {
    * @default 'lineComment'
    */
   descriptionStyle?: 'jsdoc' | 'lineComment';
+
+  /**
+   * Skip emitting the constructor when all of its content is default
+   * boilerplate that the Logic Apps emitter re-injects on compile:
+   * standard schema metadata, default $connections/$authentication
+   * parameters, and empty connection references.
+   * @default false
+   */
+  skipDefaultConstructor?: boolean;
 }
 
 // ============================================================================
@@ -358,6 +367,7 @@ export const DEFAULT_GENERATOR_CONFIG: Required<GeneratorConfig> = {
   includeJsDocAnnotations: true,
   expressionFormat: 'function',
   descriptionStyle: 'lineComment',
+  skipDefaultConstructor: false,
 };
 
 /**

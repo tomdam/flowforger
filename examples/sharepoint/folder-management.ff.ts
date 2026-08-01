@@ -8,28 +8,32 @@ class SharePoint_Folder_Management_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let folderPath = "/sites/MySite/Shared Documents";
+    let projectsFolderPath = "/sites/MySite/Shared Documents/Projects";
+    let archiveFolderPath = "/sites/MySite/Shared Documents/Archive/Projects";
+
     await ctx.connectors.sharepoint.ListRootFolder("ListRootFolderContents", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      folderPath: "/sites/yoursite/Shared Documents"
+      dataset: ctx.variables("siteUrl"),
+      folderPath: ctx.variables("folderPath")
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetFolderMetadataByPath("GetFolderMetadataByPath", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      path: "/sites/yoursite/Shared Documents/Projects"
+      dataset: ctx.variables("siteUrl"),
+      path: ctx.variables("projectsFolderPath")
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.ListFolder("ListProjectsFolder", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       folderId: ctx.outputs('GetFolderMetadataByPath')?.['UniqueId']
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CopyFolder("CopyFolderToArchive", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       folderId: ctx.outputs('GetFolderMetadataByPath')?.['UniqueId'],
-      destSiteUrl: "https://yourtenant.sharepoint.com/sites/yoursite",
-      destFolderPath: "/sites/yoursite/Shared Documents/Archive/Projects"
+      destSiteUrl: ctx.variables("siteUrl"),
+      destFolderPath: ctx.variables("archiveFolderPath")
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Folder management completed",
       rootFileCount: ctx.outputs('ListRootFolderContents')?.['files'].length,

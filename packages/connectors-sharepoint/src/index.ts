@@ -20,6 +20,27 @@ const SP_HEADERS = {
 // Re-export HttpError for consumers
 export { HttpError };
 
+/**
+ * Power Automate cloud operationId → the name this connector implements.
+ *
+ * Flows authored in the maker portal (and DSL reverse-engineered from their
+ * clientdata.json) carry the cloud operationIds, which differ from the friendlier
+ * names FlowForger exposes. Both spellings must execute locally so a flow pulled
+ * from Dataverse can be debugged without rewriting its action names.
+ */
+const OPERATION_ALIASES: Record<string, string> = {
+  GetFileItems: 'GetFilesPropertiesOnly', // Get files (properties only)
+  GetFileItem: 'GetFileProperties', // Get file properties
+  PatchFileItem: 'UpdateFileProperties', // Update file properties
+  CreateAttachment: 'AddAttachment', // Add attachment
+  GetItemAttachments: 'GetAttachments', // Get attachments
+  CopyFileAsync: 'CopyFile',
+  MoveFileAsync: 'MoveFile',
+  CopyFolderAsync: 'CopyFolder',
+  MoveFolderAsync: 'MoveFolder',
+  UnshareItem: 'StopSharing', // Stop sharing (unshare a link)
+};
+
 type LogFunction = (entry: Record<string, unknown>) => void;
 
 /** Cloud connector wrapper for choice/lookup values in item outputs. */
@@ -173,8 +194,11 @@ export class SharePointConnector implements BaseConnector {
 
   // ============= Main Invoke =============
 
-  async invoke(operation: string, inputs: unknown, ctx: RunContext): Promise<unknown> {
-    ctx.log?.({ type: 'sp.invoke', operation, rawInputs: inputs });
+  async invoke(rawOperation: string, inputs: unknown, ctx: RunContext): Promise<unknown> {
+    // Resolve cloud operationIds to the local name before normalization *and*
+    // dispatch, so per-operation input mapping sees the canonical name too.
+    const operation = OPERATION_ALIASES[rawOperation] ?? rawOperation;
+    ctx.log?.({ type: 'sp.invoke', operation, rawOperation, rawInputs: inputs });
 
     const normalizedInputs = this.normalizeInputs(operation, inputs as Record<string, unknown>);
     ctx.log?.({ type: 'sp.normalized', normalizedInputs });
@@ -272,7 +296,7 @@ export class SharePointConnector implements BaseConnector {
       case 'HttpRequest':
         return this.sendHttpRequest(normalizedInputs, ctx);
       default:
-        throw new Error(`SharePointConnector: unknown operation '${operation}'`);
+        throw new Error(`SharePointConnector: unknown operation '${rawOperation}'`);
     }
   }
 
@@ -294,7 +318,11 @@ export class SharePointConnector implements BaseConnector {
     const listItemOps = ['GetItem', 'GetItemById', 'UpdateItem', 'PatchItem', 'DeleteItem',
       'GetFileProperties', 'UpdateFileProperties', 'PatchFileItem',
       'AddAttachment', 'GetAttachments', 'GetAttachmentContent', 'DeleteAttachment',
-      'GetItemChanges', 'SetContentApprovalStatus', 'GetContentApprovalStatus'];
+      'GetItemChanges', 'SetContentApprovalStatus', 'GetContentApprovalStatus',
+      // StopSharing (cloud: UnshareItem) addresses the item via GetFileById,
+      // but like the other item-addressed ops above, the cloud parameter is
+      // 'id' and must land in itemId, not fileId.
+      'StopSharing'];
     if (inputs.id && !inputs.itemId && listItemOps.includes(operation)) {
       normalized.itemId = inputs.id;
     } else if (inputs.id && !inputs.fileId) {
@@ -324,8 +352,10 @@ export class SharePointConnector implements BaseConnector {
       if (inputs['parameters/includeNestedItems'] !== undefined) normalized.includeNestedItems = inputs['parameters/includeNestedItems'];
     }
 
-    // For create/update operations, transform item/* to fields object
-    if (['PostItem', 'CreateItem', 'PatchItem', 'UpdateItem'].includes(operation)) {
+    // For create/update operations, transform item/* to fields object.
+    // UpdateFileProperties is here because the cloud's PatchFileItem carries its
+    // column values as item/* keys exactly like PatchItem does.
+    if (['PostItem', 'CreateItem', 'PatchItem', 'UpdateItem', 'UpdateFileProperties'].includes(operation)) {
       const existingFields = (inputs.fields || {}) as Record<string, unknown>;
       const itemFields = extractItemFields(inputs);
       normalized.fields = { ...existingFields, ...itemFields };

@@ -8,12 +8,18 @@ class SharePoint_Get_Approval_Status {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let libraryId = "aaaaaaaa-1111-2222-3333-444444444444";
+    let itemId = "5";
+
     await ctx.connectors.sharepoint.GetContentApprovalStatus("GetItemApprovalStatus", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
-      itemId: "5"
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("libraryId"),
+      itemId: ctx.variables("itemId")
     });
-    /** @runAfter trigger */
     await ctx.compose("DisplayApprovalInfo", {
       itemId: ctx.body('GetItemApprovalStatus').Id,
       title: ctx.body('GetItemApprovalStatus').Title,

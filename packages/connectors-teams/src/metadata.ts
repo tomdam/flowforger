@@ -94,7 +94,10 @@ export const teamsMetadata: ConnectorMetadata = connector(
     operation('PostMessageToConversation', 'Post a message to a channel or chat.', [
       param('actionName', 'string', 'Unique name for this action'),
       param('params', 'PostMessageToConversationParams', 'Operation parameters'),
-    ], { category: 'Messaging', examples: [`ctx.connectors.teams.PostMessageToConversation('Notify', {\n  poster: 'User',\n  location: 'Channel',\n  'body/recipient/groupId': 'team-guid',\n  'body/recipient/channelId': '19:channel-id@thread.tacv2',\n  'body/messageBody': '<p>Hello!</p>'\n});`] }),
+    ], { category: 'Messaging', examples: [
+      `ctx.connectors.teams.PostMessageToConversation('Notify', {\n  poster: 'User',\n  location: 'Channel',\n  'body/recipient/groupId': 'team-guid',\n  'body/recipient/channelId': '19:channel-id@thread.tacv2',\n  'body/messageBody': '<p>Hello!</p>'\n});`,
+      `// Flow bot chat: 'body/recipient' is the user (email / UPN / AAD id), not a chat id.\n// Locally this is emulated as a 1:1 chat with the recipient — the Flow bot identity\n// only exists once the flow is deployed.\nctx.connectors.teams.PostMessageToConversation('NotifyUser', {\n  poster: 'Flow bot',\n  location: 'Chat with Flow bot',\n  body: {\n    recipient: 'user@contoso.com',\n    messageBody: '<p>Hello!</p>'\n  }\n});`,
+    ] }),
 
     operation('PostCardToConversation', 'Post an adaptive card to a channel or chat.', [
       param('actionName', 'string', 'Unique name for this action'),
@@ -228,11 +231,13 @@ export const teamsScopes: Record<string, string[]> = {
   GetMessageDetails: ['ChannelMessage.Read.All', 'Chat.Read'], getMessageDetails: ['ChannelMessage.Read.All', 'Chat.Read'],
   ListRepliesToMessage: ['ChannelMessage.Read.All'], listRepliesToMessage: ['ChannelMessage.Read.All'],
   // Messaging - write
-  PostMessageToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'], postMessageToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'],
-  PostCardToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'], postCardToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'],
+  // Chat.Create + User.Read cover the local "Chat with Flow bot" emulation, which resolves the
+  // signed-in user and find-or-creates a 1:1 chat with the recipient (see TeamsConnector).
+  PostMessageToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'], postMessageToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'],
+  PostCardToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'], postCardToConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'],
   ReplyWithMessageToConversation: ['ChannelMessage.Send'], replyWithMessageToConversation: ['ChannelMessage.Send'],
   ReplyWithCardToConversation: ['ChannelMessage.Send'], replyWithCardToConversation: ['ChannelMessage.Send'],
-  UpdateCardInConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'], updateCardInConversation: ['ChannelMessage.Send', 'Chat.ReadWrite'],
+  UpdateCardInConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'], updateCardInConversation: ['ChannelMessage.Send', 'Chat.ReadWrite', 'Chat.Create', 'User.Read'],
   // Notifications
   PostFeedNotification: ['TeamsActivity.Send'], postFeedNotification: ['TeamsActivity.Send'],
   // Tags

@@ -40,7 +40,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npx tsx --test test/reference-detection.test.ts"
+    "test": "npx tsx --test test/reference-detection.test.ts test/find-references.test.ts test/loop-resolution.test.ts test/schema-completion.test.ts"
   },
   "dependencies": {
     "typescript": "^5.3.0",

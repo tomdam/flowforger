@@ -23,14 +23,14 @@ class ExpressionFunctionsDemo {
     await ctx.compose('GetTriggerData', ctx.triggerBody());
     await ctx.compose('GetParameter', ctx.parameters('myParam'));
 
-    /** @action CheckAge @type if */
+    /** @action CheckAge */
     if (ctx.eval(`@greater(body('GetUserData').user.age, 25)`)) {
       await ctx.compose('AgeMessage', ctx.eval(`@concat('User is older than 25: ', body('GetUserData').user.name)`));
     } else {
       await ctx.compose('AgeMessage2', ctx.eval(`@concat('User is 25 or younger: ', body('GetUserData').user.name)`));
     }
 
-    /** @action CheckSuccess @type if */
+    /** @action CheckSuccess */
     if (ctx.eval(`@equals(actions('GetUserData').status, 'Succeeded')`)) {
       await ctx.compose('SuccessMessage', `'GetUserData action succeeded!'`);
     }

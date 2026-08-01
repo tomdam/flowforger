@@ -40,7 +40,7 @@ Authoring flows in the Power Automate UI is fine for small things — but versio
 - **A local execution engine** so you can run and debug flows without a Power Platform environment
 - **A Logic Apps emitter** that produces real `clientdata.json` — same format the portal uses, deploy via Dataverse Web API
 - **A reverse-engineering path** — pull an existing flow and get readable TypeScript back
-- **A round trip** — `pull` a flow from Dataverse, edit it as code, `push` it back
+- **A round trip** — `pull` a flow from Dataverse, edit it as code, `push` it back. Flows you write from scratch push too: `push` creates them if they don't exist yet
 
 ## Quick start
 
@@ -77,7 +77,7 @@ node packages/cli/dist/index.js generate-dsl --in clientdata.json --out flow.ff.
 | `compile` | DSL / IR → Logic Apps `clientdata.json` |
 | `validate` | Schema-check a `.ff.ts`, IR, or Logic Apps JSON file |
 | `generate-dsl` | Reverse-engineer Logic Apps JSON → TypeScript DSL |
-| `pull` / `push` | Fetch flows from / deploy flows to a Dataverse environment |
+| `pull` / `push` | Fetch flows from / deploy flows to a Dataverse environment (`push` creates the flow if it doesn't exist yet) |
 | `activate` | Set a deployed flow's state/status |
 | `parity` | Round-trip check: JSON → DSL → JSON, diff the result |
 | `optimize` | Rewrite inefficient patterns (loop+append → Select, single-set variables → Compose) |

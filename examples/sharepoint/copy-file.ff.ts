@@ -18,13 +18,17 @@ class SharePoint_Copy_File_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.CopyFile("CopyFile", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       id: ctx.triggerBody()?.['fileId'],
-      destSiteUrl: "https://yourtenant.sharepoint.com/sites/yoursite",
+      destSiteUrl: ctx.variables("siteUrl"),
       destFolderPath: ctx.triggerBody()?.['destFolder']
     });
-    /** @runAfter trigger */
     await ctx.compose("ShowResult", {
       success: ctx.outputs('CopyFile')?.['ok'],
       destination: ctx.outputs('CopyFile')?.['destUrl']

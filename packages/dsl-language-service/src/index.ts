@@ -136,6 +136,7 @@ export {
   isInsideLoop,
   findAction,
   findVariable,
+  findLoop,
   isValidActionReference,
   isValidVariableReference,
   getAllActionNames,
@@ -168,8 +169,18 @@ export {
 // Providers - Reference Detection
 export {
   detectStringReference,
+  findStringReferencesInLine,
   type StringReference,
 } from './providers/reference-detection.js';
+
+// Providers - Find All References
+export {
+  findReferences,
+  type ReferenceResult,
+  type ReferenceLocation,
+  type ReferenceTarget,
+  type ReferenceKind,
+} from './providers/find-references.js';
 
 // Providers - Diagnostics
 export {
@@ -179,3 +190,15 @@ export {
   type Diagnostic,
   type DiagnosticsOptions,
 } from './providers/diagnostics.js';
+
+// Schema Completion - Dataverse/SharePoint schema-aware context detection
+export {
+  analyzeSchemaCompletionContext,
+  type SchemaProvider,
+  type TableSuggestion,
+  type ColumnSuggestion,
+  type TableRef,
+  type SchemaValueRef,
+  type SchemaCompletionContext,
+  type SchemaCompletionType,
+} from './schema-completion.js';

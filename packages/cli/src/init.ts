@@ -226,6 +226,7 @@ export function generateConfig(opts: InitOptions): Record<string, any> {
       generator: {
         argumentWhitespace: 'spaced',
         multilineExpressions: 'preserve',
+        skipDefaultConstructor: false,
       },
       emitter: {
         includeMetadata: false,

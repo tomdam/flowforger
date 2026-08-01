@@ -547,6 +547,12 @@ interface ODataExpression {
 
 /** OData query builder for type-safe filter expressions */
 interface ODataBuilder {
+  /**
+   * Tagged template for JavaScript-like filter expressions.
+   * Supports: ==, !=, <, >, <=, >=, &&, ||, !, parentheses.
+   * @example ctx.odata\`statecode == 0 && status != null\` // compiles to "statecode eq 0 and status ne null"
+   */
+  (strings: TemplateStringsArray, ...values: any[]): ODataExpression;
   /** Equal: field eq value */
   eq(field: string, value: any): ODataExpression;
   /** Not equal: field ne value */
@@ -693,14 +699,14 @@ interface FlowContext {
   /**
    * Get the body/output of a previous action. Use for HTTP and connector actions.
    * @param actionName Name of the action to reference
-   * @example const user = ctx.body('GetUser');
+   * @example await ctx.compose('UserName', ctx.body('GetUser')?.['name']);
    */
   body<T = any>(actionName: string): T;
   /**
    * Get the outputs of a previous action (includes headers, statusCode, etc.).
    * Use for Compose actions.
    * @param actionName Name of the action to reference
-   * @example const value = ctx.outputs('MyCompose');
+   * @example await ctx.response('Reply', 200, ctx.outputs('MyCompose'));
    */
   outputs<T = any>(actionName: string): T;
   /**
@@ -711,18 +717,18 @@ interface FlowContext {
   actions(actionName: string): ActionReference;
   /**
    * Get the trigger body (request payload for HTTP triggers).
-   * @example const id = ctx.triggerBody()?.['id'];
+   * @example await ctx.compose('OrderId', ctx.triggerBody()?.['id']);
    */
   triggerBody<T = any>(): T;
   /**
    * Get the trigger outputs (includes headers, queries, etc.).
-   * @example const q = ctx.triggerOutputs().queries['id'];
+   * @example await ctx.compose('QueryId', ctx.triggerOutputs().queries['id']);
    */
   triggerOutputs<T = any>(): T;
   /**
    * Get a variable value.
    * @param name Name of the variable
-   * @example const count = ctx.variables('counter');
+   * @example await ctx.compose('Summary', { count: ctx.variables('counter') });
    */
   variables<T = any>(name: string): T;
   /**
@@ -742,7 +748,7 @@ interface FlowContext {
    * HTTP request action.
    * @param name Unique name for this action
    * @param inputs Request options (method, url, headers, body, ...)
-   * @example const res = await ctx.http('GetData', { method: 'GET', url: 'https://api.example.com/items' });
+   * @example await ctx.http('GetData', { method: 'GET', url: 'https://api.example.com/items' }); // then reference via ctx.body('GetData')
    */
   http(name: string, inputs: HttpInputs): Promise<HttpResponse>;
   /**
@@ -797,7 +803,7 @@ interface FlowContext {
    * @param workflowReferenceName Child flow reference (defined in ctx.flow.childFlows)
    * @param body Optional payload passed to the child flow
    * @param headers Optional headers
-   * @example const result = await ctx.callWorkflow('RunChild', 'ProcessOrder', { orderId });
+   * @example await ctx.callWorkflow('RunChild', 'ProcessOrder', { orderId }); // then reference via ctx.body('RunChild')
    */
   callWorkflow(name: string, workflowReferenceName: string, body?: any, headers?: Record<string, string>): Promise<any>;
   /**
@@ -805,7 +811,7 @@ interface FlowContext {
    * @param name Unique name for this action
    * @param content JSON string or object to parse
    * @param schema Optional JSON schema for validation and typing
-   * @example const data = await ctx.parseJson('ParsePayload', ctx.triggerBody());
+   * @example await ctx.parseJson('ParsePayload', ctx.triggerBody()); // then reference via ctx.body('ParsePayload')
    */
   parseJson<T = any>(name: string, content: any, schema?: object): Promise<T>;
   /**
@@ -813,7 +819,7 @@ interface FlowContext {
    * @param name Unique name for this action
    * @param from Source array
    * @param joinWith Delimiter string
-   * @example const csv = await ctx.join('MakeCsv', emails, ';');
+   * @example await ctx.join('MakeCsv', emails, ';'); // then reference via ctx.body('MakeCsv')
    */
   join(name: string, from: any[], joinWith: string): Promise<string>;
   /**
@@ -821,7 +827,7 @@ interface FlowContext {
    * @param name Unique name for this action
    * @param from Source array
    * @param selectMap Mapping object (values may reference item())
-   * @example const names = await ctx.select('PickNames', users, { name: ctx.item()?.['displayName'] });
+   * @example await ctx.select('PickNames', users, { name: ctx.item()?.['displayName'] }); // then reference via ctx.body('PickNames')
    */
   select<T = any>(name: string, from: any[], selectMap: any): Promise<T[]>;
   /** Filter an array. 'where' accepts either a raw PA expression string (e.g. "@and(equals(item()?['type'], 'X'), ...)") or a TypeScript expression (e.g. ctx.item()?.['type'] === 'X' && ctx.item()?.['isEnabled']). */
@@ -833,7 +839,7 @@ interface FlowContext {
    * @param name Unique name for this action
    * @param from Source array of objects
    * @param columns Optional column definitions (header + value expression)
-   * @example const csv = await ctx.createCsvTable('ToCsv', orders);
+   * @example await ctx.createCsvTable('ToCsv', orders); // then reference via ctx.body('ToCsv')
    */
   createCsvTable(name: string, from: any[], columns?: Array<{ header: string; value: any }>): Promise<string>;
   /**
@@ -841,7 +847,7 @@ interface FlowContext {
    * @param name Unique name for this action
    * @param from Source array of objects
    * @param columns Optional column definitions (header + value expression)
-   * @example const html = await ctx.createHtmlTable('ToHtml', orders);
+   * @example await ctx.createHtmlTable('ToHtml', orders); // then reference via ctx.body('ToHtml')
    */
   createHtmlTable(name: string, from: any[], columns?: Array<{ header: string; value: any }>): Promise<string>;
   /** Append text to a string variable (objects are JSON-serialized, matching Logic Apps implicit coercion) */

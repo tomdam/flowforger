@@ -8,25 +8,29 @@ class SharePoint_Set_Approval_Status {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let libraryId = "aaaaaaaa-1111-2222-3333-444444444444";
+
     await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveDocument", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("libraryId"),
       itemId: "5",
       approvalStatus: "Approved",
       comments: "Document meets all quality standards and is approved for publication"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SetContentApprovalStatus("RejectDocumentWithComments", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("libraryId"),
       itemId: "6",
       approvalStatus: "Rejected",
       comments: "Document requires additional review. Please address formatting issues and resubmit."
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SetContentApprovalStatus("SetToPendingApproval", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("libraryId"),
       itemId: "7",
       approvalStatus: "Pending",
       comments: "Awaiting review from management team"

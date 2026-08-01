@@ -13,30 +13,27 @@ class SharePoint_Advanced_Discovery_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action InitializeSiteURL */
+    // This example takes its configuration from the trigger payload - the caller
+    // supplies the site and item to act on. The alternative is a flow parameter
+    // bound to an environment variable, for values fixed per environment.
     let siteUrl: string = ctx.triggerBody().siteUrl;
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SendHttpRequest("GetSiteMetadata", {
       dataset: ctx.variables('siteUrl'),
       uri: "/_api/web?$select=Title,Description,Created,ServerRelativeUrl",
       method: "GET"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetLists("GetAllLists", { dataset: ctx.variables('siteUrl') });
-    /** @runAfter trigger */
     await ctx.filterArray("Get document libraries", ctx.body('GetAllLists').value, "@and(equals(item().BaseType, 1), equals(item().Hidden, false))");
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.ResolvePerson("ResolveUser", {
       dataset: ctx.variables('siteUrl'),
       email: ctx.triggerBody().userEmail
     });
-    /** @action ProcessEachLibrary @type foreach @runAfter trigger */
+    /** @action ProcessEachLibrary */
     for (const item of ctx.body('Get document libraries')) {
       await ctx.connectors.sharepoint.GetListViews("GetLibraryViews", {
         dataset: ctx.variables('siteUrl'),
         table: ctx.items('ProcessEachLibrary').Id
       });
-      /** @runAfter first */
       await ctx.compose("LibraryInfo", {
         libraryName: ctx.items('ProcessEachLibrary').Title,
         libraryId: ctx.items('ProcessEachLibrary').Id,
@@ -45,7 +42,6 @@ class SharePoint_Advanced_Discovery_Workflow {
         created: ctx.items('ProcessEachLibrary').Created
       });
     }
-    /** @runAfter trigger */
     await ctx.compose("DiscoverySummary", {
       site: {
         title: ctx.body('GetSiteMetadata').body.Title,

@@ -45,7 +45,7 @@
     "build": "tsc -p tsconfig.json",
     "bundle": "node esbuild.config.mjs",
     "prepublishOnly": "tsc -b && node esbuild.config.mjs && node scripts/copy-skills.mjs",
-    "test": "node --eval \"console.log('ok')\""
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.1",
@@ -54,6 +54,7 @@
     "typescript": "^5.0.0"
   },
   "devDependencies": {
+    "tsx": "^4.21.0",
     "@flowforger/connectors-dataverse": "^0.1.0",
     "@flowforger/connectors-excelonline": "^0.1.0",
     "@flowforger/connectors-http": "^0.1.0",
@@ -65,11 +66,13 @@
     "@flowforger/connectors-teams": "^0.1.0",
     "@flowforger/connectors-wordonline": "^0.1.0",
     "@flowforger/dataverse-sdk": "^0.1.0",
+    "@flowforger/debug-node": "^0.1.0",
     "@flowforger/dsl-language-service": "^0.1.0",
     "@flowforger/dsl-native": "^0.1.0",
     "@flowforger/emitter-logicapps": "^0.1.0",
     "@flowforger/engine": "^0.1.0",
     "@flowforger/ir": "^0.1.0",
+    "@flowforger/mcp-server": "^0.1.0",
     "@flowforger/validator": "^0.1.0"
   }
 }

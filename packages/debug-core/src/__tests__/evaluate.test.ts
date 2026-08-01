@@ -1,10 +1,8 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'fs';
-import * as path from 'path';
-import { fileURLToPath } from 'node:url';
 import { transformCode, buildSourceMapFromDsl } from '@flowforger/dsl-native';
-import { FlowForgerDebugRunner } from '../debug-runner.js';
+import { DebugSession } from '../debug-session.js';
+import { createInMemoryHost } from './test-host.js';
 
 const DSL = `
 @Flow('EvalTest')
@@ -23,10 +21,6 @@ class EvalTest {
   }
 }
 `;
-
-// The runner reads the source file from disk to build the expression scope.
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.resolve(__dirname, 'fixtures', 'eval-test.ff.ts');
 
 function createHarness() {
   const stops: Array<{ reason: string; nodeId: string }> = [];
@@ -59,26 +53,17 @@ function createHarness() {
 }
 
 describe('debug runner DSL expression evaluation', () => {
-  before(() => {
-    fs.mkdirSync(path.dirname(FIXTURE), { recursive: true });
-    fs.writeFileSync(FIXTURE, DSL, 'utf-8');
-  });
-  after(() => {
-    fs.rmSync(path.dirname(FIXTURE), { recursive: true, force: true });
-  });
-
   it('evaluates DSL identifiers, ctx calls, and falls back to PA syntax', async () => {
     const ir = transformCode(DSL);
     const sourceMap = buildSourceMapFromDsl(DSL, ir);
     const harness = createHarness();
-    const runner = new FlowForgerDebugRunner(
-      ir,
-      sourceMap,
-      FIXTURE,
+    const runner = new DebugSession(
+      { key: 'eval-test.ff.ts', ir, sourceMap, dslCode: DSL },
+      createInMemoryHost(),
+      {},
       { items: [{ id: 7 }] },
       {},
       true /* stopOnEntry */,
-      {},
       harness.callbacks,
     );
 

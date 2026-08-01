@@ -7,6 +7,7 @@
     "declarationMap": true
   },
   "include": ["src"],
+  "exclude": ["src/__tests__/**"],
   "references": [
     { "path": "../ir" },
     { "path": "../engine" },
@@ -23,7 +24,9 @@
     { "path": "../connectors-teams" },
     { "path": "../connectors-onedrive" },
     { "path": "../dataverse-sdk" },
+    { "path": "../debug-node" },
     { "path": "../dsl-native" },
-    { "path": "../dsl-language-service" }
+    { "path": "../dsl-language-service" },
+    { "path": "../mcp-server" }
   ]
 }

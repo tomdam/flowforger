@@ -18,12 +18,14 @@ class SharePoint_Approval_Integration_with_Power_Automate_Approvals {
 
   @Action()
   async run(ctx: FlowContext) {
+    // This example takes its configuration from the trigger payload - the caller
+    // supplies the site and item to act on. The alternative is a flow parameter
+    // bound to an environment variable, for values fixed per environment.
     await ctx.connectors.sharepoint.GetContentApprovalStatus("GetDocumentDetails", {
       dataset: ctx.triggerBody().siteUrl,
       table: ctx.triggerBody().libraryId,
       itemId: ctx.triggerBody().itemId
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SetContentApprovalStatus("SetToPendingApproval", {
       dataset: ctx.triggerBody().siteUrl,
       table: ctx.triggerBody().libraryId,
@@ -31,7 +33,6 @@ class SharePoint_Approval_Integration_with_Power_Automate_Approvals {
       approvalStatus: "Pending",
       comments: "Pending approval from designated approver"
     });
-    /** @runAfter trigger */
     await ctx.connectorWebhook("StartApprovalRequest", "approvals", "StartAndWaitForAnApproval", {
       approvalType: "Basic",
       WebhookApprovalCreationInput: {
@@ -45,7 +46,7 @@ Last Modified: ${ctx.body('GetDocumentDetails').Modified}`,
         enableReassignment: true
       }
     });
-    /** @action CheckApprovalResponse @type if @runAfter trigger */
+    /** @action CheckApprovalResponse */
     if ((ctx.body('StartApprovalRequest').outcome === 'Approve')) {
       await ctx.connectors.sharepoint.SetContentApprovalStatus("ApproveInSharePoint", {
         dataset: ctx.triggerBody().siteUrl,
@@ -63,13 +64,11 @@ Last Modified: ${ctx.body('GetDocumentDetails').Modified}`,
         comments: `Rejected by ${ctx.body('StartApprovalRequest').responses[0].approver.displayName} - ${ctx.body('StartApprovalRequest').responses[0].comments}`
       });
     }
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetContentApprovalStatus("GetFinalStatus", {
       dataset: ctx.triggerBody().siteUrl,
       table: ctx.triggerBody().libraryId,
       itemId: ctx.triggerBody().itemId
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       approvalCompleted: ctx.utcNow(),
       document: ctx.body('GetDocumentDetails').Title,

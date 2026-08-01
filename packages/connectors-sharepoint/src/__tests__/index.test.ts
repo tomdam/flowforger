@@ -295,3 +295,99 @@ describe('SharePointConnector lookup/person expansion', () => {
     assert.deepEqual(result.value[0].File, { Name: 'a.docx' });
   });
 });
+
+describe('SharePointConnector cloud operationId aliases', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    routes = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      fetchCalls.push({ url, method: opts?.method || 'GET' });
+      const route = routes.find((r) => url.includes(r.match));
+      if (!route) throw new Error(`No mocked route for ${url}`);
+      return jsonResponse(route.body, route.status);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  /** Cloud operationId → a URL fragment only the right handler produces. */
+  const cases: Array<{ op: string; inputs: Record<string, unknown>; expectUrl: string }> = [
+    // "Get files (properties only)" — the maker-portal id for GetFilesPropertiesOnly.
+    { op: 'GetFileItems', inputs: { dataset: SITE, table: LIST }, expectUrl: `lists(guid'${LIST}')/items` },
+    // "Get file properties" — single item, so the id must reach the itemId slot.
+    { op: 'GetFileItem', inputs: { dataset: SITE, table: LIST, id: 7 }, expectUrl: `lists(guid'${LIST}')/items(7)` },
+    // "Get attachments" — id must normalize to itemId, not fileId.
+    {
+      op: 'GetItemAttachments',
+      inputs: { dataset: SITE, table: LIST, id: 3 },
+      expectUrl: `lists(guid'${LIST}')/items(3)/AttachmentFiles`,
+    },
+    // "Stop sharing" — the maker-portal id for StopSharing; addressed via
+    // GetFileById, so id must normalize to itemId here too, not fileId.
+    {
+      op: 'UnshareItem',
+      inputs: { dataset: SITE, id: 5 },
+      expectUrl: `GetFileById('5')/ListItemAllFields/UnshareLink`,
+    },
+  ];
+
+  for (const { op, inputs, expectUrl } of cases) {
+    it(`dispatches ${op} to its local handler`, async () => {
+      routes = [
+        { match: '/fields?', body: { value: [] } },
+        { match: '/', body: { value: [], Id: 1 } },
+      ];
+
+      await connector.invoke(op, inputs, ctx);
+
+      const urls = fetchCalls.map((c) => decodeURIComponent(c.url));
+      assert.ok(
+        urls.some((u) => u.includes(expectUrl)),
+        `${op} never hit ${expectUrl}; called:\n${urls.join('\n')}`,
+      );
+    });
+  }
+
+  it('reports the name the caller used for a genuinely unknown operation', async () => {
+    await assert.rejects(
+      () => connector.invoke('NotARealOperation', { dataset: SITE, table: LIST }, ctx),
+      /unknown operation 'NotARealOperation'/,
+    );
+  });
+});
+
+describe('SharePointConnector cloud item/* payloads', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    routes = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      fetchCalls.push({ url, method: opts?.method || 'GET' });
+      const route = routes.find((r) => url.includes(r.match));
+      if (!route) throw new Error(`No mocked route for ${url}`);
+      return jsonResponse(route.body, route.status);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('accepts item/* column values on PatchFileItem', async () => {
+    routes = [{ match: '/', body: {} }];
+
+    // Exactly the shape the maker portal emits for "Update file properties".
+    const result: any = await connector.invoke(
+      'PatchFileItem',
+      { dataset: SITE, table: LIST, id: 9, 'item/Title': 'New title', 'item/Status': 'Approved' },
+      ctx,
+    );
+
+    assert.equal(result.ok, true);
+    const call = fetchCalls.find((c) => c.url.includes('items(9)'));
+    assert.ok(call, `never patched items(9); called: ${fetchCalls.map((c) => c.url).join(', ')}`);
+  });
+});

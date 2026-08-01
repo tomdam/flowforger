@@ -4,6 +4,12 @@ import { runWithConcurrency, type StopSignal } from './concurrency.js';
 
 export interface ActionOutput {
   status: StepResult['status'];
+  /**
+   * Post-expression-evaluation payload the action was invoked with. Recorded
+   * only for the kinds where it isn't already visible in `outputs`: connector
+   * actions, HTTP actions, and child-flow calls. Undefined elsewhere.
+   */
+  inputs?: any;
   outputs?: any;
   error?: any;
 }
@@ -125,6 +131,8 @@ export interface TraceEntry {
   nodeId: string;
   name: string;
   status: StepResult['status'];
+  /** Resolved invocation payload — see ActionOutput.inputs for which kinds set it. */
+  inputs?: any;
   outputs?: any;
   error?: any;
   iterations?: IterationTraceEntry[];
@@ -154,6 +162,43 @@ export interface FileArtifact {
   contentType: string;
   content: string;
   encoding: 'utf8' | 'base64';
+}
+
+/**
+ * Evaluate a node's `runAfter` against the statuses recorded so far.
+ *
+ * Multiple dependencies are **ANDed**, matching Logic Apps: the action runs
+ * only once *every* listed dependency has finished in one of its listed
+ * statuses. A dependency with no status yet has not finished, so it blocks.
+ *
+ * This is why `runAfter: { Try: ['Succeeded'], Catch: ['Succeeded'] }` never
+ * runs — on the success path Catch is Skipped, on the failure path Try is
+ * Failed. Covering both branches of a try/catch takes ONE dependency listing
+ * every status it can hold (`{ Catch: ['Succeeded', 'Skipped'] }`).
+ */
+function runAfterSatisfied(
+  runAfter: Record<string, StepResult['status'][]> | undefined,
+  lookupStatus: (name: string) => StepResult['status'] | undefined,
+): boolean {
+  if (!runAfter || Object.keys(runAfter).length === 0) return true;
+  for (const [dependencyName, acceptedStatuses] of Object.entries(runAfter)) {
+    const dependencyStatus = lookupStatus(dependencyName);
+    if (!dependencyStatus || !acceptedStatuses.includes(dependencyStatus)) return false;
+  }
+  return true;
+}
+
+/**
+ * Names of dependencies whose `Failed` status this node explicitly accepts —
+ * i.e. the failures this node is the handler for. Used to decide whether a
+ * failure was caught (run continues, overall status can still be Succeeded)
+ * or left dangling (run is Failed).
+ */
+function handledFailures(runAfter: Record<string, StepResult['status'][]> | undefined): string[] {
+  if (!runAfter) return [];
+  return Object.entries(runAfter)
+    .filter(([, statuses]) => statuses.includes('Failed'))
+    .map(([name]) => name);
 }
 
 const CONTENT_TYPE_EXT: Record<string, string> = {
@@ -230,6 +275,10 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
   // Track action execution statuses by action name for runAfter evaluation
   const actionStatuses = new Map<string, StepResult['status']>();
 
+  // Top-level nodes that failed and have not (yet) been caught by a later node
+  // whose runAfter accepts their `Failed` status.
+  const unhandledFailures = new Set<string>();
+
   // Merge parameter overrides into flow parameters (update defaultValue for each override)
   const parameters = { ...(flow.parameters || {}) };
   if (parameterOverrides) {
@@ -270,38 +319,16 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
   actionStatuses.set(trigger.name, 'Succeeded');
   ctx.actions.set(trigger.name, { status: 'Succeeded', outputs: input });
 
-  // Helper function to record action result
-  function recordActionResult(name: string, status: StepResult['status'], outputs?: any, error?: any) {
+  // Helper function to record action result. `inputs` is omitted rather than
+  // set to undefined so records for kinds that capture none keep their old shape.
+  function recordActionResult(name: string, status: StepResult['status'], outputs?: any, error?: any, inputs?: any) {
     actionStatuses.set(name, status);
-    ctx.actions.set(name, { status, outputs, error });
+    ctx.actions.set(name, { status, ...(inputs !== undefined ? { inputs } : {}), outputs, error });
   }
 
   // Helper function to check if runAfter conditions are met
   function checkRunAfter(node: any): boolean {
-    const runAfter = node.runAfter as Record<string, StepResult['status'][]> | undefined;
-
-    // If no runAfter specified, action can run
-    if (!runAfter || Object.keys(runAfter).length === 0) {
-      return true;
-    }
-
-    // Check each dependency
-    for (const [dependencyName, acceptedStatuses] of Object.entries(runAfter)) {
-      const dependencyStatus = actionStatuses.get(dependencyName);
-
-      // If dependency hasn't run yet, we can't execute
-      if (!dependencyStatus) {
-        return false;
-      }
-
-      // If dependency status is in accepted statuses, condition is met
-      if (acceptedStatuses.includes(dependencyStatus)) {
-        return true;
-      }
-    }
-
-    // None of the dependencies matched the required statuses
-    return false;
+    return runAfterSatisfied(node.runAfter, name => actionStatuses.get(name));
   }
 
   // Execute all nodes sequentially, delegating to executeNode for each
@@ -315,6 +342,9 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
       continue;
     }
 
+    // This node runs *because of* an earlier failure — that failure is caught.
+    for (const handled of handledFailures(node.runAfter)) unhandledFailures.delete(handled);
+
     const result = await executeNode(node as Node, ctx, options);
 
     // For scope/if/switch, child trace entries should appear before the parent in the trace
@@ -323,7 +353,7 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
       for (const childEntry of result._childTrace) {
         trace.push(childEntry);
         // Also record child action results for runAfter tracking
-        recordActionResult(childEntry.name, childEntry.status, childEntry.outputs, childEntry.error);
+        recordActionResult(childEntry.name, childEntry.status, childEntry.outputs, childEntry.error, childEntry.inputs);
       }
     }
 
@@ -332,6 +362,7 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
       nodeId: node.id,
       name: node.name,
       status: result.status,
+      ...(result.inputs !== undefined ? { inputs: result.inputs } : {}),
       outputs: result.outputs,
       error: result.error,
     };
@@ -341,20 +372,27 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
     trace.push(entry);
 
     // Record action result for runAfter tracking
-    recordActionResult(node.name, result.status, result.outputs, result.error);
+    recordActionResult(node.name, result.status, result.outputs, result.error, result.inputs);
 
     // Check for terminate: if the result signals termination, stop processing
     if (result._terminate) {
       return { status: result._terminate as StepResult['status'], trace, artifacts: ctx.artifacts };
     }
 
-    // Propagate failure (either direct failure or child failure within scope/if/switch)
+    // A failure does not end the run on its own: a later node whose runAfter
+    // accepts it (a catch scope) still has to get its turn, and nodes that
+    // only accept Succeeded are skipped by checkRunAfter above. The run is
+    // Failed only if some failure is still uncaught when the nodes run out.
     if (result.status === 'Failed' || result._childFailed) {
-      return { status: 'Failed', trace, artifacts: ctx.artifacts };
+      unhandledFailures.add(node.name);
     }
   }
 
-  return { status: 'Succeeded', trace, artifacts: ctx.artifacts };
+  return {
+    status: unhandledFailures.size > 0 ? 'Failed' : 'Succeeded',
+    trace,
+    artifacts: ctx.artifacts,
+  };
 }
 
 /**
@@ -364,6 +402,8 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
  */
 export interface ExecuteNodeResult {
   status: StepResult['status'];
+  /** Resolved invocation payload — see ActionOutput.inputs for which kinds set it. */
+  inputs?: any;
   outputs?: any;
   error?: any;
   variables: Record<string, any>;
@@ -374,6 +414,15 @@ export interface ExecuteNodeResult {
   _childTrace?: TraceEntry[];
   /** @internal Indicates a child node failed, requiring failure propagation even when this node's status is 'Succeeded' */
   _childFailed?: boolean;
+}
+
+/**
+ * Stamp the resolved invocation payload onto the in-flight action record so the
+ * `action()` expression can surface `action().inputs`. Called from the same
+ * three branches that put `inputs` on the ExecuteNodeResult.
+ */
+function recordCurrentActionInputs(ctx: RunContext, inputs: any): void {
+  if (ctx.currentAction) ctx.currentAction.inputs = inputs;
 }
 
 export async function executeNode(
@@ -395,6 +444,9 @@ export async function executeNode(
     parentScopeName?: string,
   ): Promise<{ status: StepResult['status']; terminated?: string }> {
     const statuses = childActionStatuses || new Map<string, StepResult['status']>();
+    // Children that failed and have not (yet) been caught by a later sibling
+    // whose runAfter accepts their `Failed` status.
+    const unhandledFailures = new Set<string>();
     // Collector for `result(scopedActionName)` lookup. Only top-level direct
     // children of the scope are recorded — nested scope's children belong to
     // their own collector, not this one.
@@ -410,23 +462,16 @@ export async function executeNode(
 
       // Check runAfter for child nodes
       const runAfter = childNode.runAfter as Record<string, StepResult['status'][]> | undefined;
-      if (runAfter && Object.keys(runAfter).length > 0) {
-        let canRun = false;
-        for (const [depName, acceptedStatuses] of Object.entries(runAfter)) {
-          const depStatus = statuses.get(depName) || (ctx.actions.get(depName)?.status);
-          if (depStatus && acceptedStatuses.includes(depStatus)) {
-            canRun = true;
-            break;
-          }
-        }
-        if (!canRun) {
-          childTrace.push({ nodeId: childNode.id, name: childNode.name, status: 'Skipped' });
-          statuses.set(childNode.name, 'Skipped');
-          ctx.actions.set(childNode.name, { status: 'Skipped' });
-          recordChildResult(childNode.name, { name: childNode.name, status: 'Skipped' });
-          continue;
-        }
+      if (!runAfterSatisfied(runAfter, name => statuses.get(name) || ctx.actions.get(name)?.status)) {
+        childTrace.push({ nodeId: childNode.id, name: childNode.name, status: 'Skipped' });
+        statuses.set(childNode.name, 'Skipped');
+        ctx.actions.set(childNode.name, { status: 'Skipped' });
+        recordChildResult(childNode.name, { name: childNode.name, status: 'Skipped' });
+        continue;
       }
+
+      // This child runs *because of* a sibling's failure — that failure is caught.
+      for (const handled of handledFailures(runAfter)) unhandledFailures.delete(handled);
 
       // Call debug hook before child execution
       if (options.onBeforeChildExecute) {
@@ -442,12 +487,14 @@ export async function executeNode(
         // Record in ctx.actions
         ctx.actions.set(childNode.name, {
           status: childResult.status,
+          ...(childResult.inputs !== undefined ? { inputs: childResult.inputs } : {}),
           outputs: childResult.outputs,
           error: childResult.error,
         });
         statuses.set(childNode.name, childResult.status);
         recordChildResult(childNode.name, {
           name: childNode.name,
+          ...(childResult.inputs !== undefined ? { inputs: childResult.inputs } : {}),
           outputs: childResult.outputs,
           status: childResult.status,
           error: childResult.error,
@@ -469,6 +516,7 @@ export async function executeNode(
           nodeId: childNode.id,
           name: childNode.name,
           status: childResult.status,
+          ...(childResult.inputs !== undefined ? { inputs: childResult.inputs } : {}),
           outputs: childResult.outputs,
           error: childResult.error,
         };
@@ -487,13 +535,12 @@ export async function executeNode(
           return { status: childResult.status, terminated: childResult._terminate };
         }
 
-        // Check for child failure propagation (scope/if/switch with failed children)
-        if (childResult._childFailed) {
-          return { status: 'Failed' };
-        }
-
-        if (childResult.status === 'Failed') {
-          return { status: 'Failed' };
+        // A failed child does not abort its siblings: later siblings whose
+        // runAfter accepts the failure (a catch scope) still need to run, and
+        // those that only accept Succeeded are skipped by the check above.
+        // The scope is Failed only if nothing downstream caught the failure.
+        if (childResult._childFailed || childResult.status === 'Failed') {
+          unhandledFailures.add(childNode.name);
         }
       } catch (err: any) {
         childTrace.push({
@@ -505,10 +552,10 @@ export async function executeNode(
         statuses.set(childNode.name, 'Failed');
         ctx.actions.set(childNode.name, { status: 'Failed', error: err });
         recordChildResult(childNode.name, { name: childNode.name, status: 'Failed', error: err });
-        return { status: 'Failed' };
+        unhandledFailures.add(childNode.name);
       }
     }
-    return { status: 'Succeeded' };
+    return { status: unhandledFailures.size > 0 ? 'Failed' : 'Succeeded' };
   }
 
   try {
@@ -546,14 +593,20 @@ export async function executeNode(
         let attempts = 0;
         const policy = action.retryPolicy || { type: 'none' as const };
         const max = policy.type === 'none' ? 1 : (policy.count ?? 3);
+        // Inputs of the most recent attempt — retries re-evaluate, so a failure
+        // reports what the last attempt actually sent.
+        let lastInputs: any;
         while (attempts < max) {
           try {
             // Evaluate expressions in inputs (e.g. template strings with parameters, variables, etc.)
             const evaluatedInputs = evaluateParams(action.inputs, ctx);
+            lastInputs = evaluatedInputs;
+            recordCurrentActionInputs(ctx, evaluatedInputs);
             // HTTP connector returns { statusCode, headers, body } which matches Power Automate's outputs() structure
             const outputs = await http.invoke('request', evaluatedInputs, ctx);
             return {
               status: 'Succeeded',
+              inputs: evaluatedInputs,
               outputs,
               variables: { ...ctx.variables },
             };
@@ -562,6 +615,7 @@ export async function executeNode(
             if (attempts >= max) {
               return {
                 status: 'Failed',
+                inputs: lastInputs,
                 error: err,
                 variables: { ...ctx.variables },
               };
@@ -578,6 +632,7 @@ export async function executeNode(
         // Should not reach here, but just in case
         return {
           status: 'Failed',
+          inputs: lastInputs,
           error: new Error('HTTP request failed after retries'),
           variables: { ...ctx.variables },
         };
@@ -905,11 +960,18 @@ export async function executeNode(
           body = evaluatedBody;
         }
 
+        // Resolved invocation payload, shaped like the Logic Apps workflow
+        // action's inputs so it reads the same as a deployed run.
+        const resolvedInputs = { workflowReferenceName: workflowRef, body };
+        recordCurrentActionInputs(ctx, resolvedInputs);
+
         // Allow debug runner to intercept workflow execution
         if (options.onBeforeWorkflowExecute) {
           const hookResult = await options.onBeforeWorkflowExecute(action, workflowRef, body);
           if (hookResult.handled) {
-            return hookResult.result;
+            // The debug session runs the child itself; it has no view of the
+            // resolved body, so stamp it on the way out.
+            return { ...hookResult.result, inputs: resolvedInputs };
           }
         }
 
@@ -943,7 +1005,11 @@ export async function executeNode(
 
               // Store just the body as action outputs to match Power Automate behavior
               // So body('WorkflowAction') returns the child flow's response directly
-              ctx.actions.set(action.name, { status: childResult.status, outputs: childFlowBody });
+              ctx.actions.set(action.name, {
+                status: childResult.status,
+                inputs: resolvedInputs,
+                outputs: childFlowBody,
+              });
 
               // If child workflow failed, propagate failure
               if (childResult.status === 'Failed') {
@@ -954,6 +1020,7 @@ export async function executeNode(
 
               return {
                 status: childResult.status,
+                inputs: resolvedInputs,
                 outputs: traceResult,
                 variables: { ...ctx.variables },
               };
@@ -971,10 +1038,11 @@ export async function executeNode(
                 warning: 'Child workflow not found, strict mode disabled'
               };
 
-              ctx.actions.set(action.name, { status: 'Succeeded', outputs: result });
+              ctx.actions.set(action.name, { status: 'Succeeded', inputs: resolvedInputs, outputs: result });
 
               return {
                 status: 'Succeeded',
+                inputs: resolvedInputs,
                 outputs: result,
                 variables: { ...ctx.variables },
               };
@@ -995,6 +1063,7 @@ export async function executeNode(
 
             return {
               status: 'Failed',
+              inputs: resolvedInputs,
               outputs: result,
               error,
               variables: { ...ctx.variables },
@@ -1008,10 +1077,11 @@ export async function executeNode(
             status: 'Called (mock)'
           };
 
-          ctx.actions.set(action.name, { status: 'Succeeded', outputs: result });
+          ctx.actions.set(action.name, { status: 'Succeeded', inputs: resolvedInputs, outputs: result });
 
           return {
             status: 'Succeeded',
+            inputs: resolvedInputs,
             outputs: result,
             variables: { ...ctx.variables },
           };
@@ -1039,24 +1109,29 @@ export async function executeNode(
         };
       }
 
+      // Declared outside the try so a failed invoke still reports what was sent.
+      let evaluatedParams: any;
       try {
         // Evaluate expressions in parameters before invoking
-        const evaluatedParams = evaluateParams(connAction.params, ctx);
+        evaluatedParams = evaluateParams(connAction.params, ctx);
+        recordCurrentActionInputs(ctx, evaluatedParams);
         const rawOutput = await conn.invoke(connAction.operation, evaluatedParams, ctx);
         // For webcontents connector and SharePoint HTTP requests, return the output directly without wrapping
         // (these already return structured responses with statusCode, headers, body)
         // For other connectors, wrap in 'body' property to match Power Automate behavior
         const isHttpRequest = connectorName === 'sharepoint' && (connAction.operation === 'SendHttpRequest' || connAction.operation === 'HttpRequest');
         const outputs = (connectorName === 'webcontents' || isHttpRequest) ? rawOutput : { body: rawOutput };
-        ctx.actions.set(connAction.name, { status: 'Succeeded', outputs });
+        ctx.actions.set(connAction.name, { status: 'Succeeded', inputs: evaluatedParams, outputs });
         return {
           status: 'Succeeded',
+          inputs: evaluatedParams,
           outputs,
           variables: { ...ctx.variables },
         };
       } catch (err: any) {
         return {
           status: 'Failed',
+          inputs: evaluatedParams,
           error: err,
           variables: { ...ctx.variables },
         };
@@ -1101,11 +1176,13 @@ export async function executeNode(
       const childTrace: TraceEntry[] = [];
       const result = await runChildNodes(scopeNode.actions || [], childTrace, undefined, node.name);
 
-      // Scope itself always records as 'Succeeded', but propagates child failure
-      ctx.actions.set(node.name, { status: 'Succeeded', outputs: { scopeStatus: result.status } });
+      // The scope takes its children's status: a scope with an uncaught child
+      // failure is Failed, which is what a catch scope's
+      // `runAfter: { TryBlock: ['Failed'] }` keys off.
+      ctx.actions.set(node.name, { status: result.status, outputs: { scopeStatus: result.status } });
 
       return {
-        status: 'Succeeded',
+        status: result.status,
         outputs: { scopeStatus: result.status },
         variables: { ...ctx.variables },
         _terminate: result.terminated,
@@ -1137,10 +1214,10 @@ export async function executeNode(
         }
 
         const outputs = { conditionResult: pass, branchTaken: pass ? 'actions' : 'elseActions' };
-        ctx.actions.set(node.name, { status: 'Succeeded', outputs });
+        ctx.actions.set(node.name, { status: nestedStatus, outputs });
 
         return {
-          status: 'Succeeded',
+          status: nestedStatus,
           outputs,
           variables: { ...ctx.variables },
           _terminate: terminateSignal,
@@ -1232,20 +1309,10 @@ export async function executeNode(
 
                 // Check runAfter for child nodes
                 const runAfter = childNode.runAfter as Record<string, StepResult['status'][]> | undefined;
-                if (runAfter && Object.keys(runAfter).length > 0) {
-                  let canRun = false;
-                  for (const [depName, acceptedStatuses] of Object.entries(runAfter)) {
-                    const depStatus = iterCtx.actions.get(depName)?.status;
-                    if (depStatus && acceptedStatuses.includes(depStatus)) {
-                      canRun = true;
-                      break;
-                    }
-                  }
-                  if (!canRun) {
-                    iterationActions.push({ nodeId: childNode.id, name: childNode.name, status: 'Skipped' });
-                    iterCtx.actions.set(childNode.name, { status: 'Skipped' });
-                    continue;
-                  }
+                if (!runAfterSatisfied(runAfter, name => iterCtx.actions.get(name)?.status)) {
+                  iterationActions.push({ nodeId: childNode.id, name: childNode.name, status: 'Skipped' });
+                  iterCtx.actions.set(childNode.name, { status: 'Skipped' });
+                  continue;
                 }
 
                 // Call debug hook before child execution
@@ -1566,10 +1633,10 @@ export async function executeNode(
         }
 
         const outputs = { matched, matchedCase: matchedCaseName, value: exprValue };
-        ctx.actions.set(node.name, { status: 'Succeeded', outputs });
+        ctx.actions.set(node.name, { status: nestedStatus, outputs });
 
         return {
-          status: 'Succeeded',
+          status: nestedStatus,
           outputs,
           variables: { ...ctx.variables },
           _terminate: terminateSignal,

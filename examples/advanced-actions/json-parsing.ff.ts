@@ -12,22 +12,20 @@ class JsonParsing {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize_validRecords */
     let validRecords: any[] = [];
 
-    /** @action Initialize_errorMessages */
     let errorMessages: any[] = [];
 
     // The trigger body contains raw JSON strings that need parsing
     await ctx.compose('RawPayloads', ctx.triggerBody()?.['payloads']);
 
-    /** @action ParseEachPayload @type foreach */
+    /** @action ParseEachPayload */
     for (const rawItem of ctx.outputs('RawPayloads') ?? []) {
       // Parse the JSON string into an object
       await ctx.compose('ParsedData', ctx.json(rawItem?.['jsonString']));
 
       // Validate required fields exist
-      /** @action ValidateFields @type if */
+      /** @action ValidateFields */
       if (ctx.not(ctx.empty(ctx.outputs('ParsedData')?.['name']))) {
         // Extract and transform the parsed record
         await ctx.compose('TransformedRecord', {
@@ -38,14 +36,13 @@ class JsonParsing {
         });
 
         // Check age-based category
-        /** @action CheckAge @type if */
+        /** @action CheckAge */
         if (ctx.greaterOrEquals(ctx.outputs('ParsedData')?.['age'], 18)) {
           await ctx.compose('AgeCategory', 'adult');
         } else {
           await ctx.compose('AgeCategoryMinor', 'minor');
         }
 
-        /** @action AppendValid */
         validRecords = ctx.eval(`@union(variables('validRecords'), createArray(outputs('TransformedRecord')))`);
       } else {
         // Record is invalid — capture error
@@ -54,7 +51,6 @@ class JsonParsing {
           reason: 'Missing required field: name'
         });
 
-        /** @action AppendError */
         errorMessages = ctx.eval(`@union(variables('errorMessages'), createArray(outputs('ErrorEntry')))`);
       }
     }
@@ -67,7 +63,7 @@ class JsonParsing {
     });
 
     // Decide response status based on errors
-    /** @action CheckForErrors @type if */
+    /** @action CheckForErrors */
     if (ctx.greater(ctx.length(ctx.variables('errorMessages')), 0)) {
       await ctx.response('PartialResponse', 207, {
         summary: ctx.outputs('Summary'),

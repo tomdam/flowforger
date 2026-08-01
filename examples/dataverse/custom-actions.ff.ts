@@ -13,16 +13,21 @@ class DvCustomActions {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration - edit to point at records in your own environment.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters('...')), or values passed in via the trigger payload.
+    let opportunityId = '00000000-0000-0000-0000-000000000001';
+
     await ctx.connectors.dataverse.PerformBoundAction('CalculatePriceAction', {
       entityName: 'opportunities',
-      recordId: '00000000-0000-0000-0000-000000000001',
+      recordId: ctx.variables('opportunityId'),
       actionName: 'CalculatePrice',
       DiscountPercentage: 10,
     });
 
     await ctx.connectors.dataverse.PerformBoundAction('WinOpportunityAction', {
       entityName: 'opportunities',
-      recordId: '00000000-0000-0000-0000-000000000001',
+      recordId: ctx.variables('opportunityId'),
       actionName: 'WinOpportunity',
       Status: 3,
       OpportunityClose: {

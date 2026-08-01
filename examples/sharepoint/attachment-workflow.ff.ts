@@ -15,56 +15,55 @@ class SharePoint_Attachment_Workflow {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.AddAttachment("AddFirstAttachment", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId'],
       fileName: "document1.txt",
       content: "This is the first attachment content"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.AddAttachment("AddSecondAttachment", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId'],
       fileName: "document2.txt",
       content: "This is the second attachment content"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetAttachments("GetAllAttachments", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
-    /** @action ForEachAttachment @type foreach @runAfter trigger */
+    /** @action ForEachAttachment */
     for (const item of ctx.outputs('GetAllAttachments')?.['value']) {
       await ctx.connectors.sharepoint.GetAttachmentContent("GetAttachmentContent", {
-        dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+        dataset: ctx.variables("siteUrl"),
         listId: ctx.triggerBody()?.['listId'],
         itemId: ctx.triggerBody()?.['itemId'],
         attachmentId: ctx.items('ForEachAttachment')?.['FileName']
       });
-      /** @runAfter first */
       await ctx.compose("AttachmentInfo", {
         fileName: ctx.items('ForEachAttachment')?.['FileName'],
         contentType: ctx.outputs('GetAttachmentContent')?.['$contentType'],
         contentSize: ctx.outputs('GetAttachmentContent')?.['$content'].length
       });
     }
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.DeleteAttachment("DeleteFirstAttachment", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId'],
       attachmentId: "document1.txt"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.GetAttachments("GetRemainingAttachments", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       message: "Attachment workflow completed",
       initialAttachments: 2,

@@ -8,20 +8,23 @@ class SharePoint_Send_HTTP_Request {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.SendHttpRequest("GetSiteInformation", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
+      dataset: ctx.variables("siteUrl"),
       uri: "/_api/web?$select=Title,Url,Created,Language",
       method: "GET"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SendHttpRequest("GetCurrentUser", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
+      dataset: ctx.variables("siteUrl"),
       uri: "/_api/web/currentuser",
       method: "GET"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.SendHttpRequest("CreateCustomListItem", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
+      dataset: ctx.variables("siteUrl"),
       uri: "/_api/web/lists/getbytitle('Custom List')/items",
       method: "POST",
       headers: { "Content-Type": "application/json;odata=nometadata" },
@@ -31,7 +34,6 @@ class SharePoint_Send_HTTP_Request {
         CustomField: "Custom value"
       }
     });
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       siteInfo: ctx.body('GetSiteInformation').body,
       currentUser: ctx.body('GetCurrentUser').body,

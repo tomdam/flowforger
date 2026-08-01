@@ -19,7 +19,12 @@ export class DataverseClient {
     this.token = opts.token;
   }
 
-  private async request(path: string, init: RequestInit = {}) {
+  /**
+   * Perform a Dataverse request and return the raw Response.
+   * Callers that need response headers (e.g. `OData-EntityId` after a create)
+   * use this; everything else goes through `request`.
+   */
+  private async rawRequest(path: string, init: RequestInit = {}): Promise<Response> {
     const res = await fetch(`${this.baseApi}${path}`, {
       ...init,
       headers: {
@@ -35,6 +40,11 @@ export class DataverseClient {
       const text = await res.text();
       throw new Error(`Dataverse ${res.status}: ${text}`);
     }
+    return res;
+  }
+
+  private async request(path: string, init: RequestInit = {}) {
+    const res = await this.rawRequest(path, init);
     if (res.status === 204) return null;
     return res.json();
   }
@@ -51,10 +61,30 @@ export class DataverseClient {
   }
 
   async getFlowByName(name: string) {
+    const { match } = await this.findFlowByName(name);
+    return match;
+  }
+
+  /**
+   * Look up a flow by name, and report whether more than one flow shares that
+   * name. Dataverse permits duplicate flow names — a plain "first match" lookup
+   * (as `getFlowByName` does for `pull`) can silently pick the wrong one, which
+   * is unrecoverable once `push` PATCHes over it. Callers doing anything
+   * destructive (like `push`) should check `ambiguous` and refuse rather than
+   * guess.
+   *
+   * Fetches `$top=2` — enough to detect a duplicate without paging through the
+   * whole environment.
+   */
+  async findFlowByName(
+    name: string,
+  ): Promise<{ match: { workflowid: string; name: string; description?: string; category: number; statecode: number; clientdata: string } | null; ambiguous: boolean }> {
     const select = '$select=workflowid,name,description,category,statecode,clientdata';
-    const filter = `$filter=category eq 5 and name eq '${name.replace(/'/g, "''")}'`;
-    const result = await this.request(`/workflows?${select}&${filter}&$top=1`);
-    return result?.value?.[0] || null;
+    const encodedName = encodeURIComponent(name.replace(/'/g, "''"));
+    const filter = `$filter=category eq 5 and name eq '${encodedName}'`;
+    const result = await this.request(`/workflows?${select}&${filter}&$top=2`);
+    const values = result?.value || [];
+    return { match: values[0] || null, ambiguous: values.length > 1 };
   }
 
   async patchFlow(workflowId: string, payload: Partial<{ clientdata: string; statecode: number; statuscode: number }>) {
@@ -63,6 +93,51 @@ export class DataverseClient {
       headers: { 'If-Match': '*' },
       body: JSON.stringify(payload),
     });
+  }
+
+  /**
+   * Create a new modern cloud flow (category 5) in Draft state.
+   *
+   * Dataverse returns 204 with the new record's URI in the `OData-EntityId`
+   * header rather than a body, so this reads the GUID from there — which works
+   * regardless of `Prefer: return=representation` support.
+   *
+   * Pass `solutionUniqueName` to create the flow inside a specific solution;
+   * otherwise it lands in the environment's default solution.
+   */
+  async createFlow(
+    payload: { name: string; clientdata: string; description?: string },
+    opts: { solutionUniqueName?: string } = {},
+  ): Promise<{ workflowid: string }> {
+    const body: Record<string, unknown> = {
+      name: payload.name,
+      category: 5,       // modern cloud flow
+      type: 1,           // definition (not a template or activation)
+      primaryentity: 'none', // required by the platform for modern flows
+      clientdata: payload.clientdata,
+      statecode: 0,      // Draft — never auto-activate
+    };
+    if (payload.description) body.description = payload.description;
+
+    const headers: Record<string, string> = {};
+    if (opts.solutionUniqueName) {
+      headers['MSCRM.SolutionUniqueName'] = opts.solutionUniqueName;
+    }
+
+    const res = await this.rawRequest('/workflows', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    const entityId = res.headers.get('OData-EntityId') || '';
+    const match = /workflows\(([0-9a-fA-F-]{36})\)/.exec(entityId);
+    if (!match) {
+      throw new Error(
+        `Dataverse created the flow but returned no workflow id (OData-EntityId: '${entityId}')`
+      );
+    }
+    return { workflowid: match[1] };
   }
 
   /**
@@ -80,7 +155,8 @@ export class DataverseClient {
    * Get a solution by its unique name. Returns null if not found.
    */
   async getSolutionByUniqueName(uniqueName: string) {
-    const filter = `$filter=uniquename eq '${uniqueName.replace(/'/g, "''")}'`;
+    const encodedUniqueName = encodeURIComponent(uniqueName.replace(/'/g, "''"));
+    const filter = `$filter=uniquename eq '${encodedUniqueName}'`;
     const result = await this.request(`/solutions?${filter}&$select=solutionid,uniquename,friendlyname&$top=1`);
     return result?.value?.[0] || null;
   }

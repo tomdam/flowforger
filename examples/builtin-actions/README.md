@@ -15,7 +15,7 @@ A single flow exercising FlowForger's built-in (connector-free) actions.
 - **Control flow**: if/else with an HTTP response per branch
 - **Delay**: `ctx.delay()`
 
-Also demonstrates the JSDoc `@action` annotation for naming variable and control-flow actions (method-style actions like `ctx.compose()` take their name as the first argument instead).
+Variable statements carry no JSDoc here, so the transformer auto-names them (`Initialize_counter`, `Set_counter`, `Increment_counter`, `Append_to_items`, …). Add `/** @action MyName */` above a statement only when you want a different name — method-style actions like `ctx.compose()` take their name as the first argument instead.
 
 ## Running
 

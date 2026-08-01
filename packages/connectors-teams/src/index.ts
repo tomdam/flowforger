@@ -127,20 +127,149 @@ export class TeamsConnector extends BaseHttpClient implements BaseConnector {
 
   // ============= Messaging Helpers =============
 
-  private resolveConversationTarget(p: Record<string, unknown>): { path: string; isChannel: boolean } {
+  /** Cached identity of the signed-in user, used to emulate Flow bot chats. */
+  private me?: { id: string; identifiers: string[] };
+
+  private chatMessagesPath(chatId: string): string {
+    return `/chats/${encodeURIComponent(chatId)}/messages`;
+  }
+
+  /**
+   * Read the scalar `body/recipient` Power Automate sends for chat locations.
+   * Returns [] when the recipient is an object (the channel form, `body/recipient/groupId` etc.).
+   */
+  private getScalarRecipients(p: Record<string, unknown>): string[] {
+    const recipient = getParam<unknown>(p, ['body/recipient', 'recipient']);
+    if (typeof recipient === 'string' || Array.isArray(recipient)) {
+      return parseStringList(recipient as string | string[]);
+    }
+    return [];
+  }
+
+  private async getMe(ctx: RunContext): Promise<{ id: string; identifiers: string[] }> {
+    if (!this.me) {
+      const me = await this.get<{ id: string; userPrincipalName?: string; mail?: string }>('/me', ctx.log, {
+        query: { $select: 'id,userPrincipalName,mail' },
+      });
+      this.me = {
+        id: me.id,
+        identifiers: [me.id, me.userPrincipalName, me.mail]
+          .filter((v): v is string => Boolean(v))
+          .map((v) => v.toLowerCase()),
+      };
+    }
+    return this.me;
+  }
+
+  /**
+   * Emulate a "Chat with Flow bot" target locally.
+   *
+   * Deployed, Power Automate posts into the recipient's Workflows (Flow bot) chat. That
+   * identity is not reachable with a delegated Graph token, so locally the message goes to
+   * the one-on-one chat between the signed-in user and the recipient instead. Creating a
+   * one-on-one chat is idempotent in Graph — an existing chat is returned as-is.
+   */
+  private async resolveFlowBotChatId(recipient: string, ctx: RunContext): Promise<string> {
+    if (/['"\\]/.test(recipient)) {
+      throw new Error(
+        `TeamsConnector: invalid recipient '${recipient}' for a Flow bot chat — expected a user email, UPN, or AAD object id`,
+      );
+    }
+
+    const me = await this.getMe(ctx);
+    if (me.identifiers.includes(recipient.toLowerCase())) {
+      throw new Error(
+        `TeamsConnector: cannot emulate a Flow bot chat with yourself locally — Microsoft Graph cannot create a ` +
+          `one-on-one chat with the signed-in user (${recipient}). Deployed to Power Automate this posts in the ` +
+          `Workflows bot chat; locally, use a different recipient or post to a channel.`,
+      );
+    }
+
+    const chat = await this.post<{ id: string }>('/chats', ctx.log, {
+      body: {
+        chatType: 'oneOnOne',
+        members: [me.id, recipient].map((principal) => ({
+          '@odata.type': '#microsoft.graph.aadUserConversationMember',
+          roles: ['owner'],
+          'user@odata.bind': `https://graph.microsoft.com/v1.0/users('${principal}')`,
+        })),
+      },
+    });
+
+    ctx.log?.({
+      type: 'teams.flowBotChat.emulated',
+      recipient,
+      chatId: chat.id,
+      note: 'Flow bot cannot be impersonated locally; posting to the 1:1 chat with the recipient instead',
+    });
+    return chat.id;
+  }
+
+  /**
+   * Resolve the message target(s) for a conversation post.
+   *
+   * Power Automate parameter shapes:
+   *   - Channel:              `body/recipient/groupId` + `body/recipient/channelId`
+   *   - Group chat:           scalar `body/recipient` holding a chat id (`19:...@thread.v2`)
+   *   - Chat with Flow bot:   scalar `body/recipient` holding a user email / UPN / AAD id
+   *                           (semicolon-separated for multiple recipients)
+   */
+  private async resolveConversationTargets(
+    p: Record<string, unknown>,
+    ctx: RunContext,
+  ): Promise<{ paths: string[]; isChannel: boolean }> {
     const location = getParam<string>(p, ['location', 'body/location']);
     const groupId = getParam<string>(p, ['body/recipient/groupId', 'groupId']);
     const channelId = getParam<string>(p, ['body/recipient/channelId', 'channelId']);
-    const chatId = getParam<string>(p, ['body/recipient/chatId', 'chatId']);
+    const explicitChatId = getParam<string>(p, ['body/recipient/chatId', 'chatId']);
+    const recipients = this.getScalarRecipients(p);
 
-    if (location === 'Chat with Flow bot' || location === 'Group chat') {
-      if (!chatId) throw new Error('TeamsConnector: chatId is required for chat messages');
-      return { path: `/chats/${encodeURIComponent(chatId)}/messages`, isChannel: false };
+    if (location === 'Chat with Flow bot') {
+      if (explicitChatId) return { paths: [this.chatMessagesPath(explicitChatId)], isChannel: false };
+      if (recipients.length === 0) {
+        throw new Error(
+          `TeamsConnector: recipient is required for 'Chat with Flow bot' messages — expected a user email, ` +
+            `UPN, or AAD object id in 'body/recipient'`,
+        );
+      }
+      const paths: string[] = [];
+      for (const recipient of recipients) {
+        paths.push(this.chatMessagesPath(await this.resolveFlowBotChatId(recipient, ctx)));
+      }
+      return { paths, isChannel: false };
+    }
+
+    if (location === 'Group chat') {
+      const chatId = explicitChatId || recipients[0];
+      if (!chatId) {
+        throw new Error(
+          `TeamsConnector: chat id is required for 'Group chat' messages — expected a chat id like ` +
+            `'19:...@thread.v2' in 'body/recipient'`,
+        );
+      }
+      return { paths: [this.chatMessagesPath(chatId)], isChannel: false };
+    }
+
+    if (explicitChatId && !groupId) {
+      return { paths: [this.chatMessagesPath(explicitChatId)], isChannel: false };
     }
 
     if (!groupId) throw new Error('TeamsConnector: groupId is required for channel messages');
     if (!channelId) throw new Error('TeamsConnector: channelId is required for channel messages');
-    return { path: `/teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/messages`, isChannel: true };
+    return {
+      paths: [`/teams/${encodeURIComponent(groupId)}/channels/${encodeURIComponent(channelId)}/messages`],
+      isChannel: true,
+    };
+  }
+
+  /** Post the same message to every resolved target, returning the first response. */
+  private async postToTargets(paths: string[], body: object, ctx: RunContext): Promise<unknown> {
+    let first: unknown;
+    for (const path of paths) {
+      const response = await this.post(path, ctx.log, { body });
+      if (first === undefined) first = response;
+    }
+    return first;
   }
 
   private makeAdaptiveCardAttachment(cardBody: unknown): object {
@@ -329,29 +458,25 @@ export class TeamsConnector extends BaseHttpClient implements BaseConnector {
   // ============= Messaging =============
 
   private async postMessageToConversation(p: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
-    const { path } = this.resolveConversationTarget(p);
+    const { paths } = await this.resolveConversationTargets(p, ctx);
     const messageBody = getParam<string>(p, ['body/messageBody', 'messageBody', 'content']);
     const subject = getParam<string>(p, ['body/messageSubject', 'subject']);
 
-    return this.post(path, ctx.log, {
-      body: {
-        body: { contentType: 'html', content: messageBody || '' },
-        ...(subject && { subject }),
-      },
-    });
+    return this.postToTargets(paths, {
+      body: { contentType: 'html', content: messageBody || '' },
+      ...(subject && { subject }),
+    }, ctx);
   }
 
   private async postCardToConversation(p: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
-    const { path } = this.resolveConversationTarget(p);
+    const { paths } = await this.resolveConversationTargets(p, ctx);
     const cardBody = getParam<unknown>(p, ['body/messageBody', 'messageBody']);
     const attachment = this.makeAdaptiveCardAttachment(cardBody);
 
-    return this.post(path, ctx.log, {
-      body: {
-        body: { contentType: 'html', content: `<attachment id="${(attachment as any).id}"></attachment>` },
-        attachments: [attachment],
-      },
-    });
+    return this.postToTargets(paths, {
+      body: { contentType: 'html', content: `<attachment id="${(attachment as any).id}"></attachment>` },
+      attachments: [attachment],
+    }, ctx);
   }
 
   private async replyWithMessageToConversation(p: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -393,11 +518,22 @@ export class TeamsConnector extends BaseHttpClient implements BaseConnector {
   }
 
   private async updateCardInConversation(p: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    const location = getParam<string>(p, ['location', 'body/location']);
     const groupId = getParam<string>(p, ['body/recipient/groupId', 'groupId']);
     const channelId = getParam<string>(p, ['body/recipient/channelId', 'channelId']);
-    const chatId = getParam<string>(p, ['body/recipient/chatId', 'chatId']);
+    let chatId = getParam<string>(p, ['body/recipient/chatId', 'chatId']);
     const msgId = getParam<string>(p, ['body/messageId', 'messageId']);
     if (!msgId) throw new Error('TeamsConnector.UpdateCardInConversation: messageId is required');
+
+    // Same scalar `body/recipient` shape as the post operations
+    if (!chatId) {
+      const recipient = this.getScalarRecipients(p)[0];
+      if (recipient && location === 'Chat with Flow bot') {
+        chatId = await this.resolveFlowBotChatId(recipient, ctx);
+      } else if (recipient && location === 'Group chat') {
+        chatId = recipient;
+      }
+    }
 
     const cardBody = getParam<unknown>(p, ['body/messageBody', 'messageBody']);
 

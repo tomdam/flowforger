@@ -15,17 +15,21 @@ class SharePoint_Get_Attachments_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
     await ctx.connectors.sharepoint.GetAttachments("GetAttachments", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.triggerBody()?.['listId'],
       itemId: ctx.triggerBody()?.['itemId']
     });
-    /** @runAfter trigger */
     await ctx.compose("ShowAttachmentList", {
       attachmentCount: ctx.outputs('GetAttachments')?.['value'].length,
       attachments: ctx.outputs('GetAttachments')?.['value']
     });
-    /** @action CheckIfHasAttachments @type if @runAfter trigger */
+    /** @action CheckIfHasAttachments */
     if ((ctx.outputs('GetAttachments')?.['value'].length > 0)) {
       await ctx.compose("FirstAttachment", ctx.first(ctx.outputs('GetAttachments')?.['value']));
     }

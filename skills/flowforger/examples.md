@@ -106,7 +106,7 @@ async run(ctx: FlowContext) {
 
 ## Example 3: Error Handling with Scopes (Try/Catch)
 
-> **CRITICAL:** A try/catch pattern **MUST** include a Finally scope (or explicit multi-dependency `@runAfter` on the next action). Without it, all actions after the catch block are skipped on the success path. See [Critical Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-explicit-multi-dependency-runafter).
+> **CRITICAL:** A try/catch pattern **MUST** include a Finally scope (or an `@runAfter` on the next action whose status list covers every path). Without it, all actions after the catch block are skipped on the success path. See [Critical Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-an-explicit-runafter-covering-both-paths).
 
 ```typescript
 async run(ctx: FlowContext) {

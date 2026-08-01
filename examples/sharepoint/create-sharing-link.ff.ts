@@ -8,24 +8,28 @@ class SharePoint_Create_Sharing_Link {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let fileId = "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b";
+
     await ctx.connectors.sharepoint.CreateSharingLink("CreateViewOnlySharingLink", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
+      dataset: ctx.variables("siteUrl"),
+      itemId: ctx.variables("fileId"),
       linkType: "view",
       scope: "anonymous"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CreateSharingLink("CreateEditLinkForOrganization", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
+      dataset: ctx.variables("siteUrl"),
+      itemId: ctx.variables("fileId"),
       linkType: "edit",
       scope: "organization",
       expirationDateTime: "2025-12-31T23:59:59Z"
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.CreateSharingLink("CreatePasswordProtectedLink", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      itemId: "b8c2e5f7-3456-4a7b-9012-3c4d5e6f7a8b",
+      dataset: ctx.variables("siteUrl"),
+      itemId: ctx.variables("fileId"),
       linkType: "view",
       scope: "anonymous",
       password: "your-link-password",

@@ -164,12 +164,15 @@ letter           = "a".."z" | "A".."Z" ;
      variable decl (let x=...) .. @action(optional; auto-named Initialize_<name>)
                                   @runAfter @runtimeConfig @description @metadata
                                   @trackedProperties @originalName @varType
-     variable mutation .......... @action(optional; auto-named Set_/Increment_/
-                                  Decrement_/Append_<name>) @runAfter @runtimeConfig
+     variable mutation .......... @action(optional; auto-named Set_<name> for x=...,
+                                  Increment_<name> for x+=n / x++, Decrement_<name>
+                                  for x-=n / x--, Append_to_<name> for arr.push(v),
+                                  Append_<name> for str+='...') @runAfter @runtimeConfig
                                   @description @metadata @trackedProperties
                                   @valueArrayForm @varNameCase
-                                  (NOTE: arr.push(), x++, x-- IGNORE @action — always
-                                   auto-named Append_/Increment_/Decrement_<name>)
+                                  (NOTE: the x++ / x-- forms IGNORE @action — always
+                                   auto-named Increment_/Decrement_<name>; write
+                                   x+=1 / x-=1 to name them. arr.push() honors @action.)
      if / foreach / switch /
      until / scope .............. @action(optional; auto-named) @type @runAfter
                                   @runtimeConfig @description @metadata @trackedProperties

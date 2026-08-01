@@ -83,14 +83,17 @@ Two separate facts:
    best). Variable declarations and control-flow statements have no name argument, so `@action`
    is the *only* way to name them.
 2. **`@action` is optional, not required.** When it is absent the transformer auto-derives a
-   name — `Initialize_<var>`, `Set_<var>`, `Increment_<var>`, `Decrement_<var>`, `Append_<var>`
-   for variables; `Condition` / `ForEach_<loopVar>` / `Switch` / `DoUntil` / `Case_<value>` for
-   control flow. Providing one is *recommended*, because the defaults are generic and collide
+   name — `Initialize_<var>` (`let x = …`), `Set_<var>` (`x = …`), `Increment_<var>`
+   (`x += n`, `x++`), `Decrement_<var>` (`x -= n`, `x--`), `Append_to_<var>` (`arr.push(v)`),
+   `Append_<var>` (`str += '…'`) for variables; `Condition` / `ForEach_<loopVar>` / `Switch` /
+   `DoUntil` / `Case_<value>` for control flow, with a `_2`, `_3`, … suffix on collision.
+   Providing one is *recommended*, because the defaults are generic and collide
    easily (two un-annotated `if`s both become `Condition`, violating R1 above),
    and a descriptive name is what later `ctx.outputs()`/`ctx.body()` references depend on.
 
-`arr.push()`, `x++`, and `x--` **ignore** `@action` entirely — they are always auto-named
-`Append_<var>` / `Increment_<var>` / `Decrement_<var>`. Rename the variable to change them.
+The `x++` and `x--` forms **ignore** `@action` entirely — they are always auto-named
+`Increment_<var>` / `Decrement_<var>`. Use `x += 1` / `x -= 1` to name them, or rename the
+variable. `arr.push()` is not affected: it honours `@action` like any other statement.
 
 ```ts
 await ctx.compose('Get_Data', { value: 1 });   // ✅ no JSDoc (the name is the first arg)

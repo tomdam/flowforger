@@ -8,12 +8,14 @@ class SharePoint_Get_All_Lists_and_Libraries {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetLists("GetAllListsAndLibraries", { dataset: "https://contoso.sharepoint.com/sites/MySite" });
-    /** @runAfter trigger */
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+
+    await ctx.connectors.sharepoint.GetLists("GetAllListsAndLibraries", { dataset: ctx.variables("siteUrl") });
     await ctx.filterArray("Filter to document libraries only", ctx.body('GetAllListsAndLibraries').value, "@equals(item().BaseType, 1)");
-    /** @runAfter trigger */
     await ctx.filterArray("Filter to visible lists only", ctx.body('GetAllListsAndLibraries').value, "@equals(item().Hidden, false)");
-    /** @runAfter trigger */
     await ctx.compose("Summary", {
       totalLists: ctx.body('GetAllListsAndLibraries').value.length,
       documentLibraries: ctx.body('Filter to document libraries only').length,

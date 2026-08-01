@@ -8,18 +8,22 @@ class SharePoint_Update_File_Properties_Example {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let filePath = "/sites/MySite/Shared Documents/report.docx";
+
     await ctx.connectors.sharepoint.GetFileMetadataByPath("GetFileMetadata", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
-      path: "/sites/yoursite/Shared Documents/report.docx"
+      dataset: ctx.variables("siteUrl"),
+      path: ctx.variables("filePath")
     });
-    /** @runAfter trigger */
     await ctx.connectors.sharepoint.UpdateFileProperties("UpdateFileProperties", {
-      dataset: "https://yourtenant.sharepoint.com/sites/yoursite",
+      dataset: ctx.variables("siteUrl"),
       listId: ctx.outputs('GetFileMetadata')?.['ListId'],
       itemId: ctx.outputs('GetFileMetadata')?.['ListItemAllFields']?.['Id'],
-      fields: { Title: "Updated Report Title", CustomColumn: "New Value" }
+      item: { Title: "Updated Report Title", CustomColumn: "New Value" }
     });
-    /** @runAfter trigger */
     await ctx.compose("ShowResult", {
       success: ctx.outputs('UpdateFileProperties')?.['ok'],
       message: "File properties updated successfully"

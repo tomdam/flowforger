@@ -23,14 +23,14 @@ class ControlFlowDemo {
       await ctx.http('InnerB', { method: 'GET', url: 'https://example.com' });
     }
 
-    /** @action CheckX @type if */
+    /** @action CheckX */
     if (ctx.eval(`@equals(variables('x'), 1)`)) {
       await ctx.http('ThenA', { method: 'GET', url: 'https://example.com' });
     } else {
       await ctx.http('ElseA', { method: 'GET', url: 'https://example.com' });
     }
 
-    /** @action LoopItems @type foreach */
+    /** @action LoopItems */
     for (const _item of ctx.variables('items') ?? []) {
       await ctx.http('PerItem', { method: 'GET', url: 'https://example.com' });
     }

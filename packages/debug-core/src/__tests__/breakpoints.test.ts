@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import * as path from 'path';
 import type { FlowIR } from '@flowforger/ir';
 import type { DslSourceMap } from '@flowforger/dsl-native';
-import { FlowForgerDebugRunner } from '../debug-runner.js';
+import { DebugSession } from '../debug-session.js';
+import { createInMemoryHost } from './test-host.js';
 
-const FILE = path.resolve(process.cwd(), 'test-flow.ff.ts');
+const FILE = 'test-flow.ff.ts';
 
 function makeFlow(): FlowIR {
   return {
@@ -78,19 +78,18 @@ function createHarness() {
 describe('debug runner breakpoints added mid-run', () => {
   it('hits a breakpoint added while paused at an earlier breakpoint', async () => {
     const harness = createHarness();
-    const runner = new FlowForgerDebugRunner(
-      makeFlow(),
-      makeSourceMap(),
-      FILE,
+    const runner = new DebugSession(
+      { key: FILE, ir: makeFlow(), sourceMap: makeSourceMap(), dslCode: null },
+      createInMemoryHost(),
+      {},                    // no connectors — compose actions don't need any
       {},
       {},
       false,
-      {},
       harness.callbacks,
     );
 
     // Breakpoint on ComposeA set before launch (adapter sends full list)
-    runner.setBreakpointsForFile(FILE, [{ nodeId: 'act_a', line: 10 }]);
+    runner.setBreakpointsForSource(FILE, [{ nodeId: 'act_a', line: 10 }]);
 
     const firstStop = harness.nextStop();
     void runner.start();
@@ -101,7 +100,7 @@ describe('debug runner breakpoints added mid-run', () => {
 
     // While paused, user adds a breakpoint on ComposeB. VS Code sends the
     // FULL breakpoint list for the file, which the adapter forwards verbatim.
-    runner.setBreakpointsForFile(FILE, [
+    runner.setBreakpointsForSource(FILE, [
       { nodeId: 'act_a', line: 10 },
       { nodeId: 'act_b', line: 11 },
     ]);
@@ -132,14 +131,13 @@ describe('debug runner breakpoints added mid-run', () => {
 
   it('hits a breakpoint added mid-run in a file that had none at launch', async () => {
     const harness = createHarness();
-    const runner = new FlowForgerDebugRunner(
-      makeFlow(),
-      makeSourceMap(),
-      FILE,
+    const runner = new DebugSession(
+      { key: FILE, ir: makeFlow(), sourceMap: makeSourceMap(), dslCode: null },
+      createInMemoryHost(),
+      {},                    // no connectors — compose actions don't need any
       {},
       {},
       true, // stopOnEntry — pause at first action with NO breakpoints registered
-      {},
       harness.callbacks,
     );
 
@@ -150,7 +148,7 @@ describe('debug runner breakpoints added mid-run', () => {
     assert.equal(stop1.nodeId, 'act_a');
 
     // File had no breakpoint entry at all when the loop captured the map
-    runner.setBreakpointsForFile(FILE, [{ nodeId: 'act_c', line: 12 }]);
+    runner.setBreakpointsForSource(FILE, [{ nodeId: 'act_c', line: 12 }]);
 
     const secondStop = harness.nextStop();
     runner.resume('continue');
@@ -167,6 +165,97 @@ describe('debug runner breakpoints added mid-run', () => {
     );
     if (outcome.kind === 'stopped') {
       assert.equal(outcome.stop.nodeId, 'act_c');
+    }
+
+    runner.resume('continue');
+    await harness.untilTerminated();
+  });
+});
+
+const CHILD_KEY = 'child-flow.ff.ts';
+
+/** Root flow whose second statement calls a child flow. */
+function makeParentFlow(): FlowIR {
+  return {
+    name: 'parent',
+    nodes: [
+      { id: 'trg_1', name: 'manual', type: 'trigger', inputs: { method: 'GET' } } as any,
+      { id: 'act_call', name: 'Call_child', type: 'action', kind: 'workflow',
+        inputs: { workflowReferenceName: CHILD_KEY, body: {} } } as any,
+      { id: 'act_after', name: 'ComposeAfter', type: 'action', kind: 'compose', inputs: { value: 'after' } } as any,
+    ],
+  };
+}
+
+/** Child flow with two statements. Node ids deliberately collide with nothing. */
+function makeChildFlow(): FlowIR {
+  return {
+    name: 'child',
+    nodes: [
+      { id: 'ctrg_1', name: 'childManual', type: 'trigger', inputs: { method: 'GET' } } as any,
+      { id: 'cact_1', name: 'ChildComposeOne', type: 'action', kind: 'compose', inputs: { value: '1' } } as any,
+      { id: 'cact_2', name: 'ChildComposeTwo', type: 'action', kind: 'compose', inputs: { value: '2' } } as any,
+    ],
+  };
+}
+
+describe('breakpoints registered for a child flow after its frame is pushed', () => {
+  it('pauses inside the running child frame', async () => {
+    const harness = createHarness();
+    const child = {
+      key: CHILD_KEY,
+      ir: makeChildFlow(),
+      sourceMap: null,
+      dslCode: null,
+    };
+    const runner = new DebugSession(
+      { key: FILE, ir: makeParentFlow(), sourceMap: makeSourceMap(), dslCode: null },
+      createInMemoryHost({ [CHILD_KEY]: child }),
+      {},
+      {},
+      {},
+      true, // stopOnEntry
+      harness.callbacks,
+    );
+
+    // Pause on entry (Call_child is the first executable statement).
+    const firstStop = harness.nextStop();
+    void runner.start();
+    const stop1 = await firstStop;
+    assert.equal(stop1.nodeId, 'act_call');
+
+    // Step into the child: pauses at the child's first statement, which means
+    // the child frame — and its live breakpoint map — already exist.
+    const childStop = harness.nextStop();
+    runner.setWantStepIn(true);
+    runner.resume('step');
+    const stop2 = await childStop;
+    assert.equal(stop2.nodeId, 'cact_1');
+    assert.equal(runner.getCallStackDepth(), 1, 'expected to be paused inside the child frame');
+
+    // Register a breakpoint for the CHILD's source only now — after the frame
+    // was pushed. This is the contract the web child-breakpoint feature rests
+    // on: getBreakpointsForKey hands out a live map that the frame holds by
+    // reference, so late additions are visible to the running child.
+    runner.setBreakpointsForSource(CHILD_KEY, [{ nodeId: 'cact_2', line: 0 }]);
+
+    const secondStop = harness.nextStop();
+    runner.setWantStepIn(false);
+    runner.resume('continue');
+
+    const outcome = await Promise.race([
+      secondStop.then((s) => ({ kind: 'stopped' as const, stop: s })),
+      harness.untilTerminated().then(() => ({ kind: 'terminated' as const })),
+    ]);
+
+    assert.equal(
+      outcome.kind,
+      'stopped',
+      'run finished without hitting the child breakpoint registered after the frame was pushed',
+    );
+    if (outcome.kind === 'stopped') {
+      assert.equal(outcome.stop.reason, 'breakpoint');
+      assert.equal(outcome.stop.nodeId, 'cact_2');
     }
 
     runner.resume('continue');

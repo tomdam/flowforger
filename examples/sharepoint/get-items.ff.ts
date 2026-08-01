@@ -9,7 +9,17 @@ class sp_get_items {
 
   @Action()
   async run(ctx: FlowContext) {
-    await ctx.connectors.sharepoint.GetItems("GetItems", { siteId: "<your-site-id>", listId: "<your-list-id>", top: 5 });
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let listId = "aaaaaaaa-1111-2222-3333-444444444444";
+
+    await ctx.connectors.sharepoint.GetItems("GetItems", {
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("listId"),
+      top: 5
+    });
   }
 
   constructor(ctx: FlowContext) {

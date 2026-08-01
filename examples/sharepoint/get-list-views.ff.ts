@@ -8,15 +8,18 @@ class SharePoint_Get_List_Views {
 
   @Action()
   async run(ctx: FlowContext) {
+    // Configuration for this example - edit to point at your own tenant.
+    // In a production flow, prefer a flow parameter bound to an environment
+    // variable (ctx.parameters("...")), or values passed in via the trigger payload.
+    let siteUrl = "https://contoso.sharepoint.com/sites/MySite";
+    let listId = "aaaaaaaa-1111-2222-3333-444444444444";
+
     await ctx.connectors.sharepoint.GetListViews("GetListViews", {
-      dataset: "https://contoso.sharepoint.com/sites/MySite",
-      table: "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}"
+      dataset: ctx.variables("siteUrl"),
+      table: ctx.variables("listId")
     });
-    /** @runAfter trigger */
     await ctx.filterArray("Get default view", ctx.body('GetListViews').value, "@equals(item().DefaultView, true)");
-    /** @runAfter trigger */
     await ctx.filterArray("Get visible views only", ctx.body('GetListViews').value, "@equals(item().Hidden, false)");
-    /** @runAfter trigger */
     await ctx.compose("ViewSummary", {
       totalViews: ctx.body('GetListViews').value.length,
       defaultView: ctx.first(ctx.body('Get default view')).Title,

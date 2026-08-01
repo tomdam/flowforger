@@ -17,10 +17,8 @@ class DailyNotificationFlow {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action InitCounter */
     let counter: number = 0;
 
-    /** @action InitMessages */
     let messages: any[] = [];
 
     await ctx.compose('CreateMessage', {
@@ -29,10 +27,8 @@ class DailyNotificationFlow {
       message: ctx.eval(`@concat("This is your daily notification #", string(add(variables("counter"), 1)))`),
     });
 
-    /** @action IncrementCounter */
     counter += 1;
 
-    /** @action AddToMessages */
     messages.push(ctx.eval(`@outputs("CreateMessage")`));
 
     await ctx.compose('LogNotification', ctx.eval(`@concat("Sent notification at ", string(utcNow()))`));

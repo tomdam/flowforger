@@ -66,7 +66,8 @@ flowforger compile hello-flow.ff.ts --emit logicapps --out clientdata.json
 ### 3. Deploy to Dataverse
 
 ```bash
-flowforger push --id <workflow-id> --file clientdata.json \
+# Creates the flow if it doesn't exist yet, updates it if it does
+flowforger push --file hello-flow.ff.ts \
   --url https://org.crm.dynamics.com --token <AAD_TOKEN>
 ```
 
@@ -211,15 +212,29 @@ Child workflows referenced via `Workflow` actions are resolved recursively by de
 
 ### `push`
 
-Deploy a workflow to Dataverse. Accepts `.ff.ts` (auto-compiled) or pre-compiled Logic Apps JSON.
+Deploy a workflow to Dataverse — updating it if it exists, creating it if it does not. Accepts `.ff.ts` (auto-compiled) or pre-compiled Logic Apps JSON.
+
+The target flow is resolved in this order: `--id`, then `workflowId` in the `@Flow({...})` decorator, then a lookup by flow name. A name match is updated; no match creates the flow as **Draft** (run `activate` to turn it on).
 
 ```bash
-# Push a DSL file directly (compiles to Logic Apps JSON automatically)
+# Create or update, whichever applies — no GUID needed
+flowforger push --file flow.ff.ts \
+  --url https://org.crm.dynamics.com --auth
+
+# Create straight into a solution
+flowforger push --file flow.ff.ts --solution MySolution \
+  --url https://org.crm.dynamics.com --auth
+
+# CI: fail if the flow is missing rather than creating one
+flowforger push --file flow.ff.ts --no-create \
+  --url https://org.crm.dynamics.com --auth
+
+# Update a known flow by id
 flowforger push --id <workflow-id> --file flow.ff.ts \
   --url https://org.crm.dynamics.com --auth
 
-# Push pre-compiled JSON
-flowforger push --id <workflow-id> --file clientdata.json \
+# Push pre-compiled JSON (needs --name for anything other than --id)
+flowforger push --file clientdata.json --name "My Flow" \
   --url https://org.crm.dynamics.com --auth
 
 # With explicit token instead of --auth
@@ -230,6 +245,10 @@ flowforger push --id <workflow-id> --file clientdata.json \
 flowforger push --id <workflow-id> --file flow.ff.ts \
   --url https://org.crm.dynamics.com --auth --config flowforger.config.json
 ```
+
+After a create from a `.ff.ts` source, the new GUID is written back into that file's `@Flow` decorator, so the next push targets it directly instead of looking it up by name.
+
+Name resolution is a convenience, not a substitute for an id. It refuses to act when two flows share a name (pass `--id` to disambiguate), it cannot see flows owned by others and not shared with you, and `push` never updates a flow's `name` — so renaming in `@Flow({...})` and pushing by name creates a duplicate rather than renaming the original.
 
 ### `activate`
 

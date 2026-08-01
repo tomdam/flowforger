@@ -12,10 +12,10 @@ Minimal demonstration of FlowForger's control-flow constructs and the JSDoc anno
 | Construct | Annotation | DSL syntax |
 |---|---|---|
 | Scope (grouped actions) | `@action ScopeOne @type scope` | bare `{ ... }` block |
-| If/Else | `@action CheckX @type if` | `if (...) { } else { }` |
-| For Each | `@action LoopItems @type foreach` | `for (const item of ...) { }` |
+| If/Else | `@action CheckX` | `if (...) { } else { }` |
+| For Each | `@action LoopItems` | `for (const item of ...) { }` |
 
-Note: `@type` is only required for **scope** (a bare block is ambiguous); if/foreach are recognized structurally, but naming them with `@action` keeps action names unique and referenceable.
+Note: `@type` is only required for **scope** (a bare block is ambiguous); if/foreach/switch/until are recognized structurally, so they carry `@action` alone. Naming them keeps action names unique and referenceable.
 
 ## Running
 

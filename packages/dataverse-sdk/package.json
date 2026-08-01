@@ -41,6 +41,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --eval \"console.log('ok')\""
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }

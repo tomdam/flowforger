@@ -12,12 +12,13 @@ export class ODataFilterExamples {
   @ManualTrigger()
   @Action()
   async run(ctx: FlowContext) {
-    // Builder syntax: compose filters from ctx.odata.* functions
+    // Builder syntax: compose filters from ctx.odata.* functions. statecode/statuscode
+    // are numeric fields (statuscode 1 = Active); dynamic values are emitted unquoted.
     await ctx.connectors.dataverse.ListRecords('GetRecordsBuilderSyntax', {
       entityName: 'accounts',
       '$filter': ctx.odata.and(
         ctx.odata.eq('statecode', 0),
-        ctx.odata.eq('statuscode', ctx.parameters('StatusValue')),
+        ctx.odata.eq('statuscode', ctx.parameters('StatusCode')),
         ctx.odata.gt('revenue', ctx.parameters('MinAmount'))
       ),
       '$top': 10,
@@ -30,10 +31,12 @@ export class ODataFilterExamples {
       '$top': 10,
     });
 
-    // Tagged template: interpolate flow parameters
+    // Tagged template: interpolate flow parameters. A dynamic *string* value must be
+    // wrapped in single quotes ('${...}') so it compiles to an OData string literal;
+    // a numeric value (revenue) is left unquoted.
     await ctx.connectors.dataverse.ListRecords('GetRecordsWithParams', {
       entityName: 'accounts',
-      '$filter': ctx.odata`statecode == 0 && statuscode == ${ctx.parameters('StatusValue')} && revenue > ${ctx.parameters('MinAmount')}`,
+      '$filter': ctx.odata`statecode == 0 && name == '${ctx.parameters('AccountName')}' && revenue > ${ctx.parameters('MinAmount')}`,
       '$top': 10,
     });
 
@@ -52,7 +55,7 @@ export class ODataFilterExamples {
     });
 
     // Fetch a record, then use its output in the next query's filter
-    const result = await ctx.connectors.dataverse.ListRecords('GetActiveAccounts', {
+    await ctx.connectors.dataverse.ListRecords('GetActiveAccounts', {
       entityName: 'accounts',
       '$filter': ctx.odata`statecode == 0`,
       '$top': 1,
@@ -60,14 +63,15 @@ export class ODataFilterExamples {
 
     await ctx.connectors.dataverse.ListRecords('GetRelatedRecords', {
       entityName: 'contacts',
-      '$filter': ctx.odata`_parentcustomerid_value == ${ctx.body('GetActiveAccounts')?['value']?.[0]?.['accountid']}`,
+      '$filter': ctx.odata`_parentcustomerid_value == ${ctx.body('GetActiveAccounts')?.['value']?.[0]?.['accountid']}`,
       '$top': 10,
     });
   }
 
   constructor(ctx: FlowContext) {
     ctx.flow.parameters = {
-      StatusValue: { type: 'String', defaultValue: 'Active' },
+      StatusCode: { type: 'Int', defaultValue: 1 },
+      AccountName: { type: 'String', defaultValue: 'Contoso' },
       MinAmount: { type: 'Int', defaultValue: 100 },
     };
 

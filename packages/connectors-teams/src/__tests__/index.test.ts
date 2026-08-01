@@ -919,14 +919,14 @@ describe('TeamsConnector', () => {
       );
     });
 
-    it('PostMessageToConversation (chat) throws when chatId missing', async () => {
+    it('PostMessageToConversation (chat) throws when recipient missing', async () => {
       await assert.rejects(
         () => connector.invoke('PostMessageToConversation', {
           location: 'Chat with Flow bot',
           messageBody: 'Hi',
         }, ctx),
         (err: Error) => {
-          assert.match(err.message, /chatId is required/);
+          assert.match(err.message, /recipient is required/);
           return true;
         },
       );
@@ -940,6 +940,204 @@ describe('TeamsConnector', () => {
         }, ctx),
         (err: Error) => {
           assert.match(err.message, /groupId is required/);
+          return true;
+        },
+      );
+    });
+  });
+
+  /* ================================================================ */
+  /*  6b. Scalar `body/recipient` (real Power Automate shape)         */
+  /* ================================================================ */
+
+  describe('scalar body/recipient resolution', () => {
+    /**
+     * Power Automate sends `body/recipient` as a scalar for both chat locations:
+     *   - 'Chat with Flow bot' -> a user email / UPN / AAD object id
+     *   - 'Group chat'         -> a chat id (19:...@thread.v2)
+     * The Flow bot itself cannot be impersonated with a delegated Graph token, so
+     * locally a Flow bot post is emulated through a 1:1 chat with the recipient.
+     */
+
+    /** Route responses by method + url substring; unmatched routes fail the test. */
+    function mockGraph(routes: Array<[string, RegExp, unknown]>): void {
+      (globalThis as any).fetch = async (url: string, opts: any) => {
+        const method = opts?.method || 'GET';
+        fetchCalls.push({
+          url,
+          method,
+          body: opts?.body ? JSON.parse(opts.body) : undefined,
+          headers: opts?.headers,
+        });
+        const hit = routes.find(([m, re]) => m === method && re.test(url));
+        if (!hit) throw new Error(`unexpected request: ${method} ${url}`);
+        return {
+          ok: true,
+          status: 200,
+          headers: new Map([['content-type', 'application/json']]),
+          text: async () => JSON.stringify(hit[2]),
+        };
+      };
+    }
+
+    const ME = { id: 'me-id', userPrincipalName: 'me@contoso.com', mail: 'me@contoso.com' };
+
+    function mockFlowBotChat(): void {
+      mockGraph([
+        ['GET', /\/me(\?|$)/, ME],
+        ['POST', /\/chats$/, { id: '19:oneonone@thread.v2' }],
+        ['POST', /\/chats\/[^/]+\/messages$/, { id: 'msg-1' }],
+      ]);
+    }
+
+    it('resolves a Flow bot chat recipient into a 1:1 chat and posts there', async () => {
+      mockFlowBotChat();
+
+      const result = await connector.invoke('PostMessageToConversation', {
+        poster: 'Flow bot',
+        location: 'Chat with Flow bot',
+        'body/recipient': 'user@contoso.com;',
+        'body/messageBody': '<strong>Neuer Auftrag zugewiesen</strong>',
+      }, ctx);
+
+      assert.equal(fetchCalls.length, 3);
+
+      // 1. who am I
+      assert.equal(fetchCalls[0].method, 'GET');
+      assert.ok(fetchCalls[0].url.includes('/me'));
+
+      // 2. find-or-create the 1:1 chat
+      assert.equal(fetchCalls[1].method, 'POST');
+      assert.ok(fetchCalls[1].url.endsWith('/chats'));
+      assert.equal(fetchCalls[1].body.chatType, 'oneOnOne');
+      const binds = fetchCalls[1].body.members.map((m: any) => m['user@odata.bind']);
+      assert.ok(binds.some((b: string) => b.includes("users('me-id')")));
+      assert.ok(binds.some((b: string) => b.includes("users('user@contoso.com')")));
+
+      // 3. the message itself
+      assert.equal(fetchCalls[2].method, 'POST');
+      assert.ok(fetchCalls[2].url.includes('/chats/19%3Aoneonone%40thread.v2/messages'));
+      assert.deepEqual(fetchCalls[2].body.body, {
+        contentType: 'html',
+        content: '<strong>Neuer Auftrag zugewiesen</strong>',
+      });
+      assert.deepEqual(result, { id: 'msg-1' });
+    });
+
+    it('posts an adaptive card to the resolved Flow bot chat', async () => {
+      mockFlowBotChat();
+      const card = { type: 'AdaptiveCard', body: [] };
+
+      await connector.invoke('PostCardToConversation', {
+        poster: 'Flow bot',
+        location: 'Chat with Flow bot',
+        'body/recipient': 'user@contoso.com',
+        'body/messageBody': card,
+      }, ctx);
+
+      const post = fetchCalls[fetchCalls.length - 1];
+      assert.ok(post.url.includes('/chats/19%3Aoneonone%40thread.v2/messages'));
+      assert.equal(post.body.attachments.length, 1);
+      assert.deepEqual(JSON.parse(post.body.attachments[0].content), card);
+    });
+
+    it('posts one message per semicolon-separated recipient', async () => {
+      mockFlowBotChat();
+
+      await connector.invoke('PostMessageToConversation', {
+        poster: 'Flow bot',
+        location: 'Chat with Flow bot',
+        'body/recipient': 'a@contoso.com;b@contoso.com',
+        'body/messageBody': 'Hi',
+      }, ctx);
+
+      const messagePosts = fetchCalls.filter((c) => /\/chats\/[^/]+\/messages/.test(c.url));
+      assert.equal(messagePosts.length, 2);
+      const chatCreates = fetchCalls.filter((c) => c.method === 'POST' && c.url.endsWith('/chats'));
+      assert.equal(chatCreates.length, 2);
+    });
+
+    it('reuses the resolved user id across recipients (one /me lookup)', async () => {
+      mockFlowBotChat();
+
+      await connector.invoke('PostMessageToConversation', {
+        poster: 'Flow bot',
+        location: 'Chat with Flow bot',
+        'body/recipient': 'a@contoso.com;b@contoso.com',
+        'body/messageBody': 'Hi',
+      }, ctx);
+
+      assert.equal(fetchCalls.filter((c) => /\/me\?/.test(c.url)).length, 1);
+    });
+
+    it('treats a scalar recipient as the chat id for Group chat', async () => {
+      mockGraph([['POST', /\/chats\/[^/]+\/messages$/, { id: 'msg-2' }]]);
+
+      await connector.invoke('PostMessageToConversation', {
+        poster: 'Flow bot',
+        location: 'Group chat',
+        'body/recipient': '19:group@thread.v2',
+        'body/messageBody': 'Hi',
+      }, ctx);
+
+      assert.equal(fetchCalls.length, 1);
+      assert.ok(lastCall().url.includes('/chats/19%3Agroup%40thread.v2/messages'));
+    });
+
+    it('still honours an explicit chatId', async () => {
+      await connector.invoke('PostMessageToConversation', {
+        'body/location': 'Chat with Flow bot',
+        'body/recipient/chatId': 'chat-99',
+        'body/messageBody': 'Hello',
+      }, ctx);
+
+      assert.equal(fetchCalls.length, 1);
+      assert.ok(lastCall().url.includes('/chats/chat-99/messages'));
+    });
+
+    it('explains why a Flow bot chat with yourself cannot be emulated', async () => {
+      mockGraph([['GET', /\/me(\?|$)/, ME]]);
+
+      await assert.rejects(
+        () => connector.invoke('PostMessageToConversation', {
+          poster: 'Flow bot',
+          location: 'Chat with Flow bot',
+          'body/recipient': 'ME@contoso.com',
+          'body/messageBody': 'Hi',
+        }, ctx),
+        (err: Error) => {
+          assert.match(err.message, /cannot .*chat with yourself|one-on-one chat with the signed-in user/i);
+          assert.match(err.message, /me@contoso\.com/i);
+          return true;
+        },
+      );
+    });
+
+    it('rejects a recipient containing a quote', async () => {
+      mockGraph([['GET', /\/me(\?|$)/, ME]]);
+
+      await assert.rejects(
+        () => connector.invoke('PostMessageToConversation', {
+          poster: 'Flow bot',
+          location: 'Chat with Flow bot',
+          'body/recipient': "bad'user@contoso.com",
+          'body/messageBody': 'Hi',
+        }, ctx),
+        (err: Error) => {
+          assert.match(err.message, /invalid recipient/i);
+          return true;
+        },
+      );
+    });
+
+    it('throws a Group chat specific error when the chat id is missing', async () => {
+      await assert.rejects(
+        () => connector.invoke('PostMessageToConversation', {
+          location: 'Group chat',
+          messageBody: 'Hi',
+        }, ctx),
+        (err: Error) => {
+          assert.match(err.message, /chat id is required/i);
           return true;
         },
       );

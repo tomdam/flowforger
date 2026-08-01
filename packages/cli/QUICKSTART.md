@@ -120,15 +120,30 @@ outputs, condition branches, loop iterations). Pipe the output or pass
 ```bash
 # Edit the .ff.ts file in your editor...
 
-# Push directly — compiles to Logic Apps JSON automatically
-flowforger push --id <workflow-id> --file my-flow.ff.ts \
+# Push directly — compiles to Logic Apps JSON automatically.
+# A pulled file already carries its workflowId, so no --id is needed.
+flowforger push --file my-flow.ff.ts \
   --url https://yourorg.crm.dynamics.com --auth
 
-# Or compile and push separately if you want to inspect the JSON first
+# Or compile and push separately if you want to inspect the JSON first.
+# JSON carries no workflowId, so identify the target with --id (or --name).
 flowforger compile my-flow.ff.ts --emit logicapps --out clientdata.json --config flowforger.config.json
 flowforger push --id <workflow-id> --file clientdata.json \
   --url https://yourorg.crm.dynamics.com --auth
 ```
+
+### Pushing a flow you wrote from scratch
+
+A `.ff.ts` you authored yourself has no `workflowId` — there's no flow in Dataverse yet. Push it anyway and it gets created:
+
+```bash
+flowforger push --file my-new-flow.ff.ts --solution MySolution \
+  --url https://yourorg.crm.dynamics.com --auth
+```
+
+The flow is created as **Draft** (run `flowforger activate` to turn it on), and its new GUID is written back into your file's `@Flow({...})` decorator — so every later push updates that same flow instead of creating another one. Drop `--solution` to let it land in the environment's default solution.
+
+In CI, add `--no-create` to any push that should fail rather than quietly create a flow.
 
 ## Summary of Files
 

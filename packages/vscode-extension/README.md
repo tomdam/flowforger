@@ -9,6 +9,8 @@ Build Power Automate and Logic Apps flows as TypeScript — with IntelliSense, l
 - **Hover Documentation**: Rich documentation for methods and decorators
 - **Snippets**: 20+ code snippets for common patterns
 - **Syntax Highlighting**: Special highlighting for FlowForger decorators and methods
+- **Edit & Continue**: While paused, edit the flow and press Restart (Ctrl+Shift+F5) — the run restarts under the hood, replaying recorded connector/HTTP responses (unchanged calls are never re-sent) and fast-forwarding back to the paused position or the first divergence. Restarting while not paused does a normal clean run.
+- **Set Next Statement**: While paused, right-click a line and choose "Jump to Cursor" to move the execution point — backward to re-execute with live connector calls, forward to skip. From a loop-iteration or branch-child pause, a backward jump restarts and replays up to the target instead (console variable edits are not preserved).
 
 ## File Extension
 

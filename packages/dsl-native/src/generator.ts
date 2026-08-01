@@ -215,16 +215,27 @@ function detectValueArrayForm(value: any): 'array' | 'createArrayString' | undef
   return undefined;
 }
 
+/**
+ * Descriptions authored in the maker UI carry CRLF (and, rarely, lone CR). They are
+ * embedded verbatim into comments, so without this the generated source ends up with
+ * mixed line endings — which editors silently normalize, making a freshly generated
+ * file compare unequal to what the editor holds.
+ */
+function normalizeEol(text: string): string {
+  return text.replace(/\r\n|\r/g, '\n');
+}
+
 // Helper: Build JSDoc comment with action name, optional type, runAfter, and originalName
 /**
  * Format a trigger description according to the current `descriptionStyle` setting.
  * Returns one or more lines (already without leading indent — the caller adds class-level indent).
  */
 function formatTriggerDescription(description: string): string[] {
+  const normalized = normalizeEol(description);
   if (currentGeneratorConfig.descriptionStyle === 'lineComment') {
-    return description.split('\n').map(l => `// ${l}`);
+    return normalized.split('\n').map(l => `// ${l}`);
   }
-  return [`/** @description ${description} */`];
+  return [`/** @description ${normalized} */`];
 }
 
 function buildJSDocComment(
@@ -265,7 +276,7 @@ function buildJSDocComment(
   // (handled at the bottom of this function), not inside the JSDoc parts list.
   const descriptionAsLineComment = currentGeneratorConfig.descriptionStyle === 'lineComment' && !!options.description;
   if (options.description && !descriptionAsLineComment) {
-    parts.push(`@description ${options.description}`);
+    parts.push(`@description ${normalizeEol(options.description)}`);
   }
 
   if (options.limit !== undefined) {
@@ -346,7 +357,7 @@ function buildJSDocComment(
   let lineCommentPrefix = '';
   if (descriptionAsLineComment) {
     const indent = options.indent ?? '';
-    const descLines = options.description!.split('\n');
+    const descLines = normalizeEol(options.description!).split('\n');
     lineCommentPrefix = descLines.map(l => `// ${l}`).join(`\n${indent}`);
   }
 
@@ -613,6 +624,45 @@ function buildVariableNameMap(nodes: Node[]): VariableNameMap {
   return map;
 }
 
+const DEFAULT_METADATA_VALUES: Record<string, string> = {
+  $schema: 'https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#',
+  contentVersion: '1.0.0.0',
+  schemaVersion: '1.0.0.0',
+};
+
+function isDefaultFlowParameter(name: string, param: any): boolean {
+  const expectedType = name === '$connections' ? 'Object' : name === '$authentication' ? 'SecureObject' : undefined;
+  if (!expectedType || !param || typeof param !== 'object') return false;
+  const keys = Object.keys(param);
+  return (
+    keys.length === 2 &&
+    param.type === expectedType &&
+    typeof param.defaultValue === 'object' &&
+    param.defaultValue !== null &&
+    Object.keys(param.defaultValue).length === 0
+  );
+}
+
+/**
+ * True when the constructor would contain only default boilerplate that the
+ * Logic Apps emitter re-injects on compile, so omitting it is round-trip safe.
+ */
+function isDefaultConstructorContent(ir: FlowIR): boolean {
+  if (ir.workflowMetadata || ir.outputs !== undefined || ir.staticResults || ir.childFlows) return false;
+  if (ir.connectionReferences && Object.keys(ir.connectionReferences).length > 0) return false;
+  if (ir.metadata) {
+    for (const [key, value] of Object.entries(ir.metadata)) {
+      if (DEFAULT_METADATA_VALUES[key] !== value) return false;
+    }
+  }
+  if (ir.parameters) {
+    for (const [name, param] of Object.entries(ir.parameters)) {
+      if (!isDefaultFlowParameter(name, param)) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Generate native DSL TypeScript code from FlowIR.
  */
@@ -649,7 +699,7 @@ export function generateNativeDslFromIR(ir: FlowIR, options: GeneratorOptions = 
   // Emit description as JSDoc comment above the class
   if (ir.description) {
     lines.push('/**');
-    for (const line of ir.description.split('\n')) {
+    for (const line of normalizeEol(ir.description).split('\n')) {
       if (line === '') {
         lines.push(' *');
       } else {
@@ -709,7 +759,8 @@ export function generateNativeDslFromIR(ir: FlowIR, options: GeneratorOptions = 
 
   // Generate constructor at the end if there are parameters, connectionReferences, metadata, workflowMetadata, outputs, or staticResults
   const hasConstructorContent = ir.parameters || ir.connectionReferences || ir.metadata || ir.workflowMetadata || ir.outputs || ir.staticResults || ir.childFlows;
-  if (hasConstructorContent) {
+  const skipConstructor = currentGeneratorConfig.skipDefaultConstructor && isDefaultConstructorContent(ir);
+  if (hasConstructorContent && !skipConstructor) {
     lines.push('');
     lines.push('  constructor(ctx: FlowContext) {');
     if (ir.metadata) {

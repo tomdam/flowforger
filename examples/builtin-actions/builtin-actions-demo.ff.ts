@@ -13,31 +13,22 @@ class BuiltinActionsDemo {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action InitCounter */
     let counter: number = 0;
 
-    /** @action InitItems */
     let items: any[] = [];
 
-    /** @action InitMessage */
     let message: string = 'Hello';
 
-    /** @action SetCounter */
     counter = 10;
 
-    /** @action IncrementCounter */
     counter += 5;
 
-    /** @action DecrementCounter */
     counter -= 3;
 
-    /** @action AppendItem1 */
     items.push('apple');
 
-    /** @action AppendItem2 */
     items.push('banana');
 
-    /** @action AppendItem3 */
     items.push('cherry');
 
     await ctx.appendToStringVariable('message', ' World!');
@@ -63,7 +54,7 @@ class BuiltinActionsDemo {
 
     await ctx.createHtmlTable('CreateHtmlFromData', ctx.eval(`@outputs('SelectUppercase')`));
 
-    /** @action CheckCounter @type if */
+    /** @action CheckCounter */
     if (ctx.eval(`@greater(variables('counter'), 10)`)) {
       await ctx.response('SuccessResponse', 200, {
         status: 'success',

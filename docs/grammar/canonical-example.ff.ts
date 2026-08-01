@@ -100,13 +100,14 @@ class CanonicalOrderFlow {
     /** @action For_each_line_item @type foreach */
     for (const item of ctx.body('Get_matching_records')?.['value'] ?? []) {
       // Append to an array variable with .push() ONLY — never spread/concat (rule R8).
-      // ctx.items('<loopName>') is the current iteration element. NOTE: .push() is
-      // ALWAYS auto-named `Append_<varName>` (here "Append_skuList") — an @action
-      // comment on a push is ignored by the transformer.
+      // ctx.items('<loopName>') is the current iteration element. Auto-named
+      // `Append_to_<varName>` (here "Append_to_skuList"); an @action comment on a
+      // push overrides that name.
       skuList.push(ctx.items('For_each_line_item')?.['Sku']);
 
       // Increment a numeric variable (grammar: increment_variable). Auto-named
-      // "Increment_processedCount"; @action would override it (honored for +=).
+      // "Increment_processedCount"; @action would override it (honored for +=,
+      // but NOT for the x++ form, which is always auto-named).
       processedCount += 1;
     }
 

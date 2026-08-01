@@ -210,7 +210,7 @@ For Move, replace `SP.MoveCopyUtil.CopyFile` with `SP.MoveCopyUtil.MoveFile`. Th
 **Trade-offs vs the connector op:**
 - Fastest path (1 round trip vs poll-until-done) — typical 8x speedup for small files.
 - You assemble absolute URLs yourself; the connector did this for you from the file ID.
-- Bypasses Power Automate's built-in retry/error UX — wrap in a try/catch scope ([Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-explicit-multi-dependency-runafter)) if the destination might collide or the source might be locked.
+- Bypasses Power Automate's built-in retry/error UX — wrap in a try/catch scope ([Rule 6](SKILL.md#6-trycatch-must-have-a-finally-scope-or-an-explicit-runafter-covering-both-paths)) if the destination might collide or the source might be locked.
 
 The FlowForger local engine implements `CopyFile` / `MoveFile` using exactly this REST endpoint — see `packages/connectors-sharepoint/src/index.ts` `copyFile()` for the reference shape (absolute URLs, `srcUrl`/`destUrl`/`options` body).
 
@@ -571,6 +571,49 @@ await ctx.connectorWebhook('WaitForResult', {
 
 ---
 
+## Teams Connector
+
+Access via `ctx.connectors.teams` | Connection: `shared_teams`
+
+### PostMessageToConversation / PostCardToConversation
+
+`body.recipient` means something different for each `location` — this is the shape Power Automate itself emits:
+
+```typescript
+// Chat with Flow bot -> recipient is the USER (email / UPN / AAD object id)
+await ctx.connectors.teams.PostMessageToConversation('NotifyUser', {
+  poster: 'Flow bot',
+  location: 'Chat with Flow bot',
+  body: {
+    recipient: ctx.outputs('GetContact')?.['body/emailaddress1'],
+    messageBody: '<strong>Neuer Auftrag zugewiesen</strong>'
+  }
+}, 'shared_teams');
+
+// Group chat -> recipient is the CHAT ID
+await ctx.connectors.teams.PostMessageToConversation('NotifyGroup', {
+  poster: 'Flow bot',
+  location: 'Group chat',
+  body: { recipient: '19:...@thread.v2', messageBody: '<p>Hi</p>' }
+}, 'shared_teams');
+
+// Channel -> recipient is an OBJECT with groupId + channelId
+await ctx.connectors.teams.PostMessageToConversation('NotifyChannel', {
+  poster: 'User',
+  location: 'Channel',
+  body: {
+    recipient: { groupId: 'team-guid', channelId: '19:...@thread.tacv2' },
+    messageBody: '<p>Hi</p>'
+  }
+}, 'shared_teams');
+```
+
+`messageBody` is HTML for `PostMessageToConversation` and an Adaptive Card (object or JSON string) for `PostCardToConversation`.
+
+> **Local runs / debug mode:** the Flow bot identity does not exist outside a deployed flow — a delegated Graph token cannot post as it. For `location: 'Chat with Flow bot'` the local engine emulates the post by find-or-creating the **1:1 chat between you and the recipient** and posting there, so the message arrives from your account instead of the "Workflows" bot. Multiple `;`-separated recipients each get their own message. A recipient equal to the signed-in user fails — Graph cannot create a chat with yourself. Deployed behaviour is unaffected.
+
+---
+
 ## Generic Connector (Any Connector)
 
 For connectors not explicitly typed, use bracket notation:
@@ -593,6 +636,7 @@ await ctx.connectors['teams'].PostMessageToConversation('PostToTeams', {
 | Excel Online | `shared_excelonlinebusiness` | `.../shared_excelonlinebusiness` |
 | Word Online | `shared_wordonlinebusiness` | `.../shared_wordonlinebusiness` |
 | Approvals | `shared_approvals` | `.../shared_approvals` |
+| Teams | `shared_teams` | `.../shared_teams` |
 
 All apiIds are prefixed with `/providers/Microsoft.PowerApps/apis/`.
 

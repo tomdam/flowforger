@@ -331,7 +331,28 @@ function exprToOData(expr: ParsedExpr, placeholderValues: string[]): string {
       if (value === null) return 'null';
       if (typeof value === 'boolean') return String(value);
       if (typeof value === 'number') return String(value);
-      if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+      if (typeof value === 'string') {
+        // A placeholder written *inside* quotes — e.g. ctx.odata`name == '${ctx.parameters('X')}'`
+        // — is tokenized as a quoted literal `${0}`. Substitute those placeholders while
+        // keeping the surrounding OData single quotes, so string-typed dynamic values compare
+        // correctly (`name eq '@{parameters('X')}'`). Escape only the literal segments; the
+        // substituted OData expression may legitimately contain its own single quotes.
+        const rebuilt = value
+          .split(/(\$\{\d+\})/)
+          .map((part: string) => {
+            const m = part.match(/^\$\{(\d+)\}$/);
+            if (m) {
+              const idx = parseInt(m[1], 10);
+              if (idx >= placeholderValues.length) {
+                throw new Error(`Placeholder \${${idx}} out of range`);
+              }
+              return placeholderValues[idx];
+            }
+            return part.replace(/'/g, "''");
+          })
+          .join('');
+        return `'${rebuilt}'`;
+      }
       return String(value);
     }
 

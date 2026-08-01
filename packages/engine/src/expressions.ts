@@ -543,7 +543,7 @@ export function evalExpression(expression: string, ctx: RunContext): any {
   let m: RegExpMatchArray | null;
 
   // Action reference functions (with property paths) - case-insensitive
-  m = e.match(/^@?actions\(['"](.+?)['"]\)((?:\.[A-Za-z_][\w]*)*)$/i);
+  m = e.match(/^@?actions\(['"](.+?)['"]\)(.*)$/i);
   if (m) {
     const actionName = m[1];
     const actionData = getActionData(ctx, actionName);
@@ -554,12 +554,8 @@ export function evalExpression(expression: string, ctx: RunContext): any {
       outputs: actionData.outputs,
       error: actionData.error
     };
-    const path = m[2] || '';
-    if (path) {
-      for (const seg of path.split('.').filter(Boolean)) {
-        val = val?.[seg];
-      }
-    }
+    const pathExpr = m[2] || '';
+    if (pathExpr) val = navigatePath(val, pathExpr);
     return val;
   }
 
@@ -621,7 +617,7 @@ export function evalExpression(expression: string, ctx: RunContext): any {
 
   // result('<scopedActionName>') — array of child action results within a
   // scope/foreach/until. For loops, results from all iterations are concatenated.
-  m = e.match(/^@?result\(['"](.+?)['"]\)((?:\.[A-Za-z_][\w]*)*)$/i);
+  m = e.match(/^@?result\(['"](.+?)['"]\)(.*)$/i);
   if (m) {
     const scopeName = m[1];
     const arr = ctx.scopeResults?.get(scopeName) ?? [];
@@ -681,7 +677,7 @@ export function evalExpression(expression: string, ctx: RunContext): any {
   }
 
   // Trigger reference functions (with property paths)
-  m = e.match(/^@?trigger\(\s*\)((?:\.[A-Za-z_][\w]*)*)$/i);
+  m = e.match(/^@?trigger\(\s*\)(.*)$/i);
   if (m) {
     // Extract body if present in triggerData (Power Automate compatibility)
     const triggerBody = (ctx.triggerData !== null && typeof ctx.triggerData === 'object' && 'body' in ctx.triggerData)
@@ -692,12 +688,8 @@ export function evalExpression(expression: string, ctx: RunContext): any {
       outputs: ctx.triggerData,
       body: triggerBody
     };
-    const path = m[1] || '';
-    if (path) {
-      for (const seg of path.split('.').filter(Boolean)) {
-        val = val?.[seg];
-      }
-    }
+    const pathExpr = m[1] || '';
+    if (pathExpr) val = navigatePath(val, pathExpr);
     return val;
   }
 
@@ -731,7 +723,7 @@ export function evalExpression(expression: string, ctx: RunContext): any {
   }
 
   // Workflow reference functions
-  m = e.match(/^@?workflow\(\s*\)((?:\.[A-Za-z_][\w]*)*)$/i);
+  m = e.match(/^@?workflow\(\s*\)(.*)$/i);
   if (m) {
     let val: any = {
       name: ctx.workflowName,
@@ -741,17 +733,13 @@ export function evalExpression(expression: string, ctx: RunContext): any {
         id: 'local-run'
       }
     };
-    const path = m[1];
-    if (path) {
-      for (const seg of path.split('.').filter(Boolean)) {
-        val = val?.[seg];
-      }
-    }
+    const pathExpr = m[1] || '';
+    if (pathExpr) val = navigatePath(val, pathExpr);
     return val;
   }
 
   // Parameters function - access workflow parameters
-  m = e.match(/^@?parameters\(['"](.+?)['"]\)((?:\.[A-Za-z_][\w]*)*)$/i);
+  m = e.match(/^@?parameters\(['"](.+?)['"]\)(.*)$/i);
   if (m) {
     const paramName = m[1];
     let val: any = ctx.parameters?.[paramName];
@@ -759,31 +747,33 @@ export function evalExpression(expression: string, ctx: RunContext): any {
     if (val && typeof val === 'object' && 'defaultValue' in val) {
       val = val.defaultValue;
     }
-    const path = m[2] || '';
-    if (path) {
-      for (const seg of path.split('.').filter(Boolean)) {
-        val = val?.[seg];
-      }
-    }
+    const pathExpr = m[2] || '';
+    if (pathExpr) val = navigatePath(val, pathExpr);
     return val;
   }
 
-  // Variables (case-insensitive to match Logic Apps behavior)
-  m = e.match(/^@?variables\(['"](.+?)['"]\)$/i);
+  // Variables (case-insensitive to match Logic Apps behavior), with property
+  // paths: variables('obj')['key'], variables('obj').key, variables('arr')[0]
+  m = e.match(/^@?variables\(['"](.+?)['"]\)(.*)$/i);
   if (m) {
     const varName = m[1];
+    const pathExpr = m[2] || '';
+    let val: any;
     // Try exact match first (fast path)
     if (varName in ctx.variables) {
-      return ctx.variables[varName];
-    }
-    // Fall back to case-insensitive search
-    const lowerVarName = varName.toLowerCase();
-    for (const key in ctx.variables) {
-      if (key.toLowerCase() === lowerVarName) {
-        return ctx.variables[key];
+      val = ctx.variables[varName];
+    } else {
+      // Fall back to case-insensitive search
+      const lowerVarName = varName.toLowerCase();
+      for (const key in ctx.variables) {
+        if (key.toLowerCase() === lowerVarName) {
+          val = ctx.variables[key];
+          break;
+        }
       }
     }
-    return undefined;
+    if (pathExpr) val = navigatePath(val, pathExpr);
+    return val;
   }
 
   // ForEach items() function - returns the current iteration item

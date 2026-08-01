@@ -16,7 +16,7 @@ class OptimizerTest {
     let status: string = 'active';
 
     // Get some items to process
-    const items = await ctx.http('GetItems', {
+    await ctx.http('GetItems', {
       method: 'GET',
       url: 'https://api.example.com/items',
     });

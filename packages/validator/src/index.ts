@@ -1,4 +1,5 @@
 import type { FlowIR, Node } from '@flowforger/ir';
+import { collectExpressionIssues } from './expressions.js';
 
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -187,6 +188,9 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   }
   walk(ir.nodes as any);
 
+  // Expression syntax + unknown-function checks across every node value
+  issues.push(...collectExpressionIssues(ir.nodes, 'nodes'));
+
   // Report duplicate InitializeVariable variable names
   for (const [varName, actionNames] of initVarNames) {
     if (actionNames.length > 1) {
@@ -260,6 +264,9 @@ export function validateLogicApps(def: any): ValidationResult {
       issues.push({ level: 'warning', code: 'TRIGGER_TYPE', message: `Trigger "${triggerName}" is missing "type" property`, path: `definition.triggers.${triggerName}` });
     }
   }
+
+  // Expression syntax + unknown-function checks across the whole definition
+  issues.push(...collectExpressionIssues(definition, 'definition'));
 
   return { ok: issues.find((i) => i.level === 'error') === undefined, issues };
 }

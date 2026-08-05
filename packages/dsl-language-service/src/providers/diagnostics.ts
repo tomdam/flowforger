@@ -28,6 +28,15 @@ import { findDuplicateActions } from '../analyzer/action-finder.js';
 import { findDuplicateVariables } from '../analyzer/variable-finder.js';
 import { DiagnosticCodes, type DiagnosticSeverity } from '../data/diagnostic-codes.js';
 import { flowContextMethods } from '../data/flow-context-methods.js';
+import {
+  parseExpression,
+  parseTemplateWithDiagnostics,
+  walkCalls,
+  KNOWN_FUNCTIONS,
+  ParseError,
+  type ExprNode,
+} from '@flowforger/expressions';
+import { getPositionFromOffset } from '../analyzer/dsl-parser.js';
 
 /**
  * A diagnostic message with location information.
@@ -91,6 +100,8 @@ export interface DiagnosticsOptions {
   checkSelfRefArrayReassign?: boolean;
   /** Check that comments compiled to action descriptions fit Power Automate's 255-char limit */
   checkDescriptionLength?: boolean;
+  /** Check Power Automate expressions inside ctx.eval(`...`) literals (DSL033, DSL034) */
+  checkEvalExpressions?: boolean;
 }
 
 const defaultOptions: DiagnosticsOptions = {
@@ -115,6 +126,7 @@ const defaultOptions: DiagnosticsOptions = {
   checkQuotedSpread: true,
   checkSelfRefArrayReassign: true,
   checkDescriptionLength: true,
+  checkEvalExpressions: true,
 };
 
 /**
@@ -209,6 +221,11 @@ export function getDiagnostics(
   // Check for unrecognized ctx method calls (DSL026)
   if (opts.checkUnknownCtxMethods) {
     diagnostics.push(...checkUnknownCtxMethods(sourceFile));
+  }
+
+  // Check Power Automate expressions inside ctx.eval literals (DSL033, DSL034)
+  if (opts.checkEvalExpressions) {
+    diagnostics.push(...checkEvalExpressions(sourceFile));
   }
 
   // Check for quoted spread / self-referential array reassignment (DSL028, DSL029)
@@ -1709,4 +1726,116 @@ export function getDiagnosticCounts(
   }
 
   return counts;
+}
+
+/**
+ * Check Power Automate expressions inside ctx.eval(`...`) / ctx.eval('...')
+ * literals (DSL033 syntax error, DSL034 unknown function).
+ *
+ * Substitution templates (`...${x}...`) are skipped — their content is
+ * dynamic. When the literal contains escape sequences (cooked text differs
+ * from raw source text), inner offsets would be misaligned, so findings fall
+ * back to squiggling the whole literal.
+ */
+function checkEvalExpressions(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'ctx' &&
+      node.expression.name.text === 'eval' &&
+      node.arguments.length > 0
+    ) {
+      const arg = node.arguments[0];
+      if (ts.isNoSubstitutionTemplateLiteral(arg) || ts.isStringLiteral(arg)) {
+        checkEvalLiteral(sourceFile, arg, diagnostics);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return diagnostics;
+}
+
+function checkEvalLiteral(
+  sourceFile: ts.SourceFile,
+  arg: ts.NoSubstitutionTemplateLiteral | ts.StringLiteral,
+  diagnostics: Diagnostic[]
+): void {
+  const content = arg.text; // cooked (escapes processed)
+  const literalStart = arg.getStart(sourceFile);
+  const literalRange: SourceRange = {
+    start: getPositionFromOffset(sourceFile, literalStart),
+    end: getPositionFromOffset(sourceFile, arg.getEnd()),
+  };
+  // Raw text includes the two delimiters; any difference beyond that means
+  // escape sequences shifted the offsets — fall back to the whole literal.
+  const exactOffsets = arg.getText(sourceFile).length - 2 === content.length;
+  const contentStart = literalStart + 1;
+
+  const rangeAt = (offset: number, length: number): SourceRange => {
+    if (!exactOffsets) return literalRange;
+    const startOff = contentStart + offset;
+    return {
+      start: getPositionFromOffset(sourceFile, startOff),
+      end: getPositionFromOffset(sourceFile, startOff + Math.max(1, length)),
+    };
+  };
+
+  const pushSyntax = (detail: string, offset: number, length: number) => {
+    diagnostics.push({
+      code: DiagnosticCodes.DSL033.code,
+      severity: DiagnosticCodes.DSL033.severity,
+      message: DiagnosticCodes.DSL033.format(detail),
+      range: rangeAt(offset, length),
+      source: 'flowforger',
+    });
+  };
+
+  const pushUnknowns = (node: ExprNode) => {
+    const seen = new Set<string>();
+    for (const name of walkCalls(node)) {
+      const lower = name.toLowerCase();
+      if (KNOWN_FUNCTIONS.has(lower) || seen.has(lower)) continue;
+      seen.add(lower);
+      const idx = content.indexOf(name);
+      diagnostics.push({
+        code: DiagnosticCodes.DSL034.code,
+        severity: DiagnosticCodes.DSL034.severity,
+        message: DiagnosticCodes.DSL034.format(name),
+        range: idx >= 0 ? rangeAt(idx, name.length) : literalRange,
+        source: 'flowforger',
+      });
+    }
+  };
+
+  const trimmed = content.trim();
+  const leadWs = content.length - content.trimStart().length;
+
+  // Full expression form: @... (not the @{...} template, not the @@ escape)
+  if (trimmed.startsWith('@') && !trimmed.startsWith('@{') && !trimmed.startsWith('@@')) {
+    try {
+      pushUnknowns(parseExpression(trimmed));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const pos = err instanceof ParseError && err.pos !== undefined ? leadWs + err.pos : 0;
+      pushSyntax(message, pos, content.length - pos);
+    }
+    return;
+  }
+
+  // Template form: text with embedded @{...} segments
+  if (content.includes('@{')) {
+    const { parts, errors } = parseTemplateWithDiagnostics(content);
+    for (const e of errors) {
+      const offset = e.pos ?? e.start;
+      pushSyntax(e.message, offset, e.start + e.length - offset);
+    }
+    for (const part of parts) {
+      if (part.kind === 'expr') pushUnknowns(part.node);
+    }
+  }
 }

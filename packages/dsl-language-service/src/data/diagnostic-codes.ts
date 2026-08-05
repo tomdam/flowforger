@@ -289,6 +289,22 @@ export const DiagnosticCodes = {
     format: (name: string) =>
       `Action call result cannot be captured in variable '${name}' — the binding is dropped and '${name}' compiles to a broken '@${name}' reference. Call the action as a statement (e.g. await ctx.http('MyAction', ...)) and reference its output with ctx.body('MyAction') or ctx.outputs('MyAction').`,
   },
+  // Invalid Power Automate Expression in ctx.eval (DSL033)
+  DSL033: {
+    code: 'DSL033',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Invalid Power Automate expression',
+    format: (detail: string) => `Invalid Power Automate expression: ${detail}`,
+  },
+
+  // Unknown Expression Function in ctx.eval (DSL034)
+  DSL034: {
+    code: 'DSL034',
+    severity: 'warning' as DiagnosticSeverity,
+    message: "Unknown expression function: '{0}'",
+    format: (name: string) =>
+      `'${name}' is not a known expression function (engine or cloud). Check for typos.`,
+  },
 } as const;
 
 /**

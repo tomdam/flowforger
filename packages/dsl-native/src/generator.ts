@@ -1659,9 +1659,10 @@ function generateIfStatement(node: IfNode, indent: string, previousActionName?: 
     metadata: node.metadata,
     conditionFormat: node.conditionFormat
   })}`);
-  if (!parsedCondition.success) {
-    lines.push(`${indent}// Original condition: ${condition}`);
-  }
+  // NOTE: no fallback comment when parsing fails — a plain comment between
+  // the JSDoc and the `if` would break the @action association (the comment
+  // becomes the action's description and the name is lost). The original
+  // condition is already fully visible inside the emitted ctx.eval(`...`).
   lines.push(`${indent}if (${parsedCondition.code}) {`);
 
   // Track previous action name within the if block

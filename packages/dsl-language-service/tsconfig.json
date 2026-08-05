@@ -9,6 +9,7 @@
   "include": ["src"],
   "references": [
     { "path": "../ir" },
+    { "path": "../expressions" },
     { "path": "../connectors-shared" },
     { "path": "../connectors-sharepoint" },
     { "path": "../connectors-dataverse" },

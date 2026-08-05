@@ -7,7 +7,12 @@
  * - Logical operators: &&, ||, !
  * - Parentheses for grouping
  * - Placeholders ${0}, ${1}, etc. for interpolated values
+ *
+ * Serialization goes through the shared OData AST + printer (../odata/).
  */
+
+import type { CompareOp, ODataFilter, ODataValue } from '../odata/ast.js';
+import { printFilter, printValue } from '../odata/printer.js';
 
 interface Token {
   type: 'identifier' | 'operator' | 'literal' | 'placeholder' | 'lparen' | 'rparen';
@@ -23,6 +28,8 @@ interface ParsedExpr {
   operand?: ParsedExpr;
   value?: any;
   index?: number;
+  /** Source numeral text for number literals (1.50 must print as 1.50). */
+  raw?: string;
 }
 
 /**
@@ -271,15 +278,21 @@ function parsePrimary(tokens: Token[], startIdx: number): { expr: ParsedExpr; en
   // Literal
   if (token.type === 'literal') {
     let value: any = token.value;
+    let raw: string | undefined;
     if (value === 'true') value = true;
     else if (value === 'false') value = false;
     else if (value === 'null') value = null;
-    else if (/^-?\d+$/.test(value)) value = parseInt(value, 10);
-    else if (/^-?\d+\.\d+$/.test(value)) value = parseFloat(value);
+    else if (/^-?\d+$/.test(value)) {
+      raw = value;
+      value = parseInt(value, 10);
+    } else if (/^-?\d+\.\d+$/.test(value)) {
+      raw = value;
+      value = parseFloat(value);
+    }
     // else it's a string
 
     return {
-      expr: { type: 'literal', value },
+      expr: { type: 'literal', value, raw },
       endIdx: startIdx + 1
     };
   }
@@ -288,76 +301,90 @@ function parsePrimary(tokens: Token[], startIdx: number): { expr: ParsedExpr; en
 }
 
 /**
- * Convert parsed expression to OData string.
+ * A placeholder written *inside* quotes — e.g. ctx.odata`name == '${ctx.parameters('X')}'`
+ * — is tokenized as a quoted literal `${0}`. Substitute those placeholders while
+ * keeping the surrounding OData single quotes, so string-typed dynamic values compare
+ * correctly (`name eq '@{parameters('X')}'`). Escape only the literal segments; the
+ * substituted OData expression may legitimately contain its own single quotes.
  */
-function exprToOData(expr: ParsedExpr, placeholderValues: string[]): string {
+function rebuildStringLiteral(value: string, placeholderValues: string[]): string {
+  return value
+    .split(/(\$\{\d+\})/)
+    .map((part: string) => {
+      const m = part.match(/^\$\{(\d+)\}$/);
+      if (m) {
+        const idx = parseInt(m[1], 10);
+        if (idx >= placeholderValues.length) {
+          throw new Error(`Placeholder \${${idx}} out of range`);
+        }
+        return placeholderValues[idx];
+      }
+      return part.replace(/'/g, "''");
+    })
+    .join('');
+}
+
+/** Convert an operand-position expression to a shared-AST value node. */
+function operandToValue(expr: ParsedExpr, placeholderValues: string[]): ODataValue {
   switch (expr.type) {
-    case 'comparison': {
-      const left = exprToOData(expr.left!, placeholderValues);
-      const right = exprToOData(expr.right!, placeholderValues);
-      return `${left} ${expr.operator} ${right}`;
-    }
-
-    case 'logical': {
-      const left = exprToOData(expr.left!, placeholderValues);
-      const right = exprToOData(expr.right!, placeholderValues);
-
-      // Add parentheses if needed
-      const needsParens = (e: ParsedExpr) => e.type === 'logical';
-      const leftStr = needsParens(expr.left!) ? `(${left})` : left;
-      const rightStr = needsParens(expr.right!) ? `(${right})` : right;
-
-      return `${leftStr} ${expr.operator} ${rightStr}`;
-    }
-
-    case 'unary': {
-      const operand = exprToOData(expr.operand!, placeholderValues);
-      return `${expr.operator} (${operand})`;
-    }
-
     case 'placeholder': {
       if (expr.index! >= placeholderValues.length) {
         throw new Error(`Placeholder \${${expr.index}} out of range`);
       }
-      return placeholderValues[expr.index!];
+      return { kind: 'verbatim', text: placeholderValues[expr.index!] };
     }
-
-    case 'identifier': {
-      return expr.value as string;
-    }
-
+    case 'identifier':
+      return { kind: 'verbatim', text: expr.value as string };
     case 'literal': {
       const value = expr.value;
-      if (value === null) return 'null';
-      if (typeof value === 'boolean') return String(value);
-      if (typeof value === 'number') return String(value);
-      if (typeof value === 'string') {
-        // A placeholder written *inside* quotes — e.g. ctx.odata`name == '${ctx.parameters('X')}'`
-        // — is tokenized as a quoted literal `${0}`. Substitute those placeholders while
-        // keeping the surrounding OData single quotes, so string-typed dynamic values compare
-        // correctly (`name eq '@{parameters('X')}'`). Escape only the literal segments; the
-        // substituted OData expression may legitimately contain its own single quotes.
-        const rebuilt = value
-          .split(/(\$\{\d+\})/)
-          .map((part: string) => {
-            const m = part.match(/^\$\{(\d+)\}$/);
-            if (m) {
-              const idx = parseInt(m[1], 10);
-              if (idx >= placeholderValues.length) {
-                throw new Error(`Placeholder \${${idx}} out of range`);
-              }
-              return placeholderValues[idx];
-            }
-            return part.replace(/'/g, "''");
-          })
-          .join('');
-        return `'${rebuilt}'`;
-      }
-      return String(value);
+      if (value === null) return { kind: 'null' };
+      if (typeof value === 'boolean') return { kind: 'bool', value };
+      if (typeof value === 'number') return { kind: 'number', raw: expr.raw ?? String(value) };
+      // String literal: rebuilt text is already escaped/substituted, so it
+      // must pass through the printer untouched (verbatim, quotes included).
+      return {
+        kind: 'verbatim',
+        text: `'${rebuildStringLiteral(String(value), placeholderValues)}'`,
+      };
+    }
+    default:
+      throw new Error(`Unknown expression type: ${expr.type}`);
+  }
+}
+
+/**
+ * Convert the parsed JS expression tree to the shared OData AST.
+ * Grouping policy (matching the historical output byte-for-byte): every
+ * nested logical operand is parenthesized, even when the operator matches.
+ */
+function buildFilter(expr: ParsedExpr, placeholderValues: string[]): ODataFilter {
+  switch (expr.type) {
+    case 'comparison':
+      return {
+        kind: 'compare',
+        field: printValue(operandToValue(expr.left!, placeholderValues)),
+        op: expr.operator as CompareOp,
+        value: operandToValue(expr.right!, placeholderValues),
+      };
+
+    case 'logical': {
+      const wrap = (side: ParsedExpr): ODataFilter => {
+        const built = buildFilter(side, placeholderValues);
+        return side.type === 'logical' ? { kind: 'group', inner: built } : built;
+      };
+      return {
+        kind: 'logical',
+        op: expr.operator as 'and' | 'or',
+        operands: [wrap(expr.left!), wrap(expr.right!)],
+      };
     }
 
+    case 'unary':
+      return { kind: 'not', operand: buildFilter(expr.operand!, placeholderValues) };
+
     default:
-      throw new Error(`Unknown expression type: ${(expr as any).type}`);
+      // Bare operand at filter position (e.g. a lone placeholder).
+      return { kind: 'raw', text: printValue(operandToValue(expr, placeholderValues)) };
   }
 }
 
@@ -383,7 +410,7 @@ export function parseJsToOData(jsExpr: string, placeholderValues: string[]): str
       throw new Error(`Unexpected token '${tokens[endIdx].value}' at position ${tokens[endIdx].position}`);
     }
 
-    return exprToOData(expr, placeholderValues);
+    return printFilter(buildFilter(expr, placeholderValues));
   } catch (error) {
     throw new Error(`Failed to parse JS expression: ${(error as Error).message}`);
   }

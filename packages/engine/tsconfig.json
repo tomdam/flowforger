@@ -8,6 +8,7 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../ir" }
+    { "path": "../ir" },
+    { "path": "../expressions" }
   ]
 }

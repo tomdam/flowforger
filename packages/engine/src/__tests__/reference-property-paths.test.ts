@@ -141,3 +141,41 @@ describe('bracket notation on the other reference functions', () => {
     assert.equal(evalExpression(`@triggerBody()['CreateZugferdSourceLibraryName']`, ctx), 'Accounting');
   });
 });
+
+describe('trailing property paths on generic function calls', () => {
+  const ctx = makeContext();
+
+  it('first(...)?[key] — the Dataverse ListRecords pattern', () => {
+    assert.equal(evalExpression(`@first(body('GetRows')?['value'])?['id']`, ctx), 7);
+  });
+
+  it('non-optional bracket and dot notation after a call', () => {
+    assert.equal(evalExpression(`@first(body('GetRows')['value'])['id']`, ctx), 7);
+    assert.equal(evalExpression(`@first(variables('Rows')).name`, ctx), 'first');
+    assert.equal(evalExpression(`@last(variables('Rows'))['id']`, ctx), 2);
+  });
+
+  it('chained paths and numeric indexes after a call', () => {
+    assert.equal(evalExpression(`@json('{"a":{"b":[1,2,3]}}')['a']['b'][2]`, ctx), 3);
+    assert.equal(evalExpression(`@take(variables('Rows'), 2)[1]?['name']`, ctx), 'second');
+  });
+
+  it('returns undefined (not the expression text) when the path misses', () => {
+    assert.equal(evalExpression(`@first(body('GetRows')?['value'])?['nope']`, ctx), undefined);
+  });
+
+  it('parens inside string literals do not confuse the balance scan', () => {
+    assert.equal(evalExpression(`@createArray('a)b', 'c')[0]`, ctx), 'a)b');
+  });
+
+  it('an unknown function with a path still falls back to the raw expression', () => {
+    assert.equal(
+      evalExpression(`@noSuchFn('x')?['y']`, ctx),
+      `@noSuchFn('x')?['y']`,
+    );
+  });
+
+  it('works inside an @{...} template', () => {
+    assert.equal(evalExpression(`@{first(body('GetRows')?['value'])?['id']}`, ctx), '7');
+  });
+});

@@ -50,11 +50,20 @@ function removeIgnoredFields(o: any, parentType?: string): any {
     for (const key of Object.keys(o)) {
       // Skip operationMetadataId as it's regenerated each time
       if (key === 'operationMetadataId') continue;
+      // The default connector authentication is dropped by the parser and
+      // re-injected by the emitter, so its presence/absence is not meaningful.
+      // Older portal exports omit it entirely; only non-default values compare.
+      if (key === 'authentication' && o[key] === "@parameters('$authentication')") continue;
       const cleaned = removeIgnoredFields(o[key], currentType);
       // Skip undefined/null values - they're semantically equivalent to absent
       if (cleaned === undefined || cleaned === null) {
         continue;
       }
+      // The emitter always injects the default $connections parameter; older
+      // portal exports omit it. Only a non-default value is meaningful.
+      // (Checked on the cleaned value: the emitted form carries undefined
+      // allowedValues/metadata keys that cleaning removes.)
+      if (key === '$connections' && isDefaultConnectionsParameter(cleaned)) continue;
       // Skip metadata objects that are empty after cleaning (only had operationMetadataId)
       if (key === 'metadata' && typeof cleaned === 'object' && Object.keys(cleaned).length === 0) {
         continue;
@@ -78,10 +87,21 @@ function removeIgnoredFields(o: any, parentType?: string): any {
           (currentType === 'IncrementVariable' || currentType === 'DecrementVariable')) {
         if (cleaned.value === undefined) cleaned.value = 1;
       }
-      // Normalize description: trim trailing whitespace
-      // DSL JSDoc format can't preserve trailing spaces reliably
+      // Normalize description: trim trailing whitespace, including at the end
+      // of each embedded line — DSL JSDoc format can't preserve trailing spaces
       if (key === 'description' && typeof cleaned === 'string') {
-        result[key] = cleaned.trim();
+        result[key] = cleaned
+          .split('\n')
+          .map((line: string) => line.replace(/[ \t]+$/, ''))
+          .join('\n')
+          .trim();
+        continue;
+      }
+      // Canonicalize If-condition expression objects: unwrap single-element
+      // and/or grouping and flatten same-operator nesting — the designer emits
+      // redundant wrappers that the DSL round-trip canonicalizes away.
+      if (key === 'expression' && cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)) {
+        result[key] = canonicalizeBooleanExpression(cleaned);
         continue;
       }
       result[key] = cleaned;
@@ -89,6 +109,83 @@ function removeIgnoredFields(o: any, parentType?: string): any {
     return result;
   }
   return o;
+}
+
+/**
+ * True when the value is the default $connections parameter definition the
+ * emitter injects: { defaultValue: {}, type: "Object" } (type case varies).
+ */
+function isDefaultConnectionsParameter(v: any): boolean {
+  return (
+    v !== null &&
+    typeof v === 'object' &&
+    !Array.isArray(v) &&
+    Object.keys(v).length === 2 &&
+    typeof v.type === 'string' &&
+    v.type.toLowerCase() === 'object' &&
+    v.defaultValue !== null &&
+    typeof v.defaultValue === 'object' &&
+    Object.keys(v.defaultValue).length === 0
+  );
+}
+
+/**
+ * Canonicalize a Logic Apps condition expression object so semantically equal
+ * shapes compare equal: `{or:[x]}` / `{and:[x]}` unwrap to `x`, and an and/or
+ * nested directly inside the same operator is flattened (associativity).
+ * Multi-element and vs or are NOT interchangeable and are left distinct.
+ */
+function canonicalizeBooleanExpression(node: any): any {
+  if (Array.isArray(node)) return node.map(canonicalizeBooleanExpression);
+  if (node && typeof node === 'object') {
+    const result: any = {};
+    for (const key of Object.keys(node)) {
+      result[key] = canonicalizeBooleanExpression(node[key]);
+    }
+    for (const op of ['and', 'or'] as const) {
+      if (Array.isArray(result[op])) {
+        const flat: any[] = [];
+        for (const child of result[op]) {
+          if (
+            child &&
+            typeof child === 'object' &&
+            !Array.isArray(child) &&
+            Object.keys(child).length === 1 &&
+            Array.isArray(child[op])
+          ) {
+            flat.push(...child[op]);
+          } else {
+            flat.push(child);
+          }
+        }
+        result[op] = flat;
+      }
+    }
+    const keys = Object.keys(result);
+    if (
+      keys.length === 1 &&
+      (keys[0] === 'and' || keys[0] === 'or') &&
+      Array.isArray(result[keys[0]]) &&
+      result[keys[0]].length === 1
+    ) {
+      return result[keys[0]][0];
+    }
+    return result;
+  }
+  return node;
+}
+
+/**
+ * Lowercase the keyword literals true/false/null in an expression string,
+ * outside single-quoted string literals — PA keywords are case-insensitive,
+ * but 'True' inside a quoted literal is data and must not change.
+ */
+function normalizeKeywordCase(expr: string): string {
+  const parts = expr.split("'");
+  for (let i = 0; i < parts.length; i += 2) {
+    parts[i] = parts[i].replace(/\b(true|false|null)\b/gi, m => m.toLowerCase());
+  }
+  return parts.join("'");
 }
 
 // Normalize whitespace in Power Automate expressions for comparison.
@@ -335,6 +432,7 @@ function normalizeExpressionsInObject(o: any, parityConfig: Required<ParityConfi
       result = normalizeExpressionWhitespace(result);
       if (parityConfig.normalizeFunctionCase) {
         result = normalizeFunctionCase(result);
+        result = normalizeKeywordCase(result);
       }
       if (parityConfig.normalizeItemFunction) {
         result = normalizeItemFunction(result);
@@ -344,6 +442,10 @@ function normalizeExpressionsInObject(o: any, parityConfig: Required<ParityConfi
     if (parityConfig.normalizeSpaces) {
       result = normalizeMultipleSpaces(result);
     }
+    // "@true"/"@false" are the expression forms of the boolean literals —
+    // Power Automate evaluates them to the same value, so compare as booleans.
+    if (result === '@true') return true;
+    if (result === '@false') return false;
     return result;
   }
   if (Array.isArray(o)) {

@@ -2,12 +2,17 @@
  * OData Transformer
  * Transforms ctx.odata.* builder calls back to OData filter strings.
  * Also supports tagged template literals: ctx.odata`field == ${value}`
+ *
+ * Serialization goes through the shared OData AST + printer (../odata/), so
+ * this direction and the generator's OData parser agree on one grammar.
  */
 
 import { CallExpression, SyntaxKind, Expression, Node, TaggedTemplateExpression } from 'ts-morph';
 import { parseJsToOData } from './js-to-odata-parser.js';
 import { transformExpression } from './expression-transformer.js';
 import type { TransformContext } from './expression-transformer.js';
+import type { CompareOp, ODataFilter, ODataValue } from '../odata/ast.js';
+import { printFilter } from '../odata/printer.js';
 
 /**
  * Check if an expression is a ctx.odata.* call.
@@ -192,97 +197,137 @@ function transformValueToOData(node: Expression): string {
 }
 
 /**
- * Transform a ctx.odata.* call to an OData filter string.
+ * Build an ODataValue node for a builder-call value argument.
+ * Literals map to typed nodes (the printer owns quoting/escaping); everything
+ * else goes through transformValueToOData and is printed verbatim.
  */
-export function transformODataCall(call: CallExpression): string {
+function buildValue(node: Expression): ODataValue {
+  switch (node.getKind()) {
+    case SyntaxKind.StringLiteral:
+      return {
+        kind: 'string',
+        value: node.asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue(),
+      };
+    case SyntaxKind.NumericLiteral:
+      return { kind: 'number', raw: node.getText() };
+    case SyntaxKind.TrueKeyword:
+      return { kind: 'bool', value: true };
+    case SyntaxKind.FalseKeyword:
+      return { kind: 'bool', value: false };
+    case SyntaxKind.NullKeyword:
+      return { kind: 'null' };
+    case SyntaxKind.PrefixUnaryExpression: {
+      const prefix = node.asKindOrThrow(SyntaxKind.PrefixUnaryExpression);
+      if (
+        prefix.getOperatorToken() === SyntaxKind.MinusToken &&
+        prefix.getOperand().getKind() === SyntaxKind.NumericLiteral
+      ) {
+        return { kind: 'number', raw: `-${prefix.getOperand().getText()}` };
+      }
+      return { kind: 'verbatim', text: transformValueToOData(node) };
+    }
+    default:
+      return { kind: 'verbatim', text: transformValueToOData(node) };
+  }
+}
+
+function fieldText(node: Expression): string {
+  return node.getKind() === SyntaxKind.StringLiteral
+    ? node.asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
+    : node.getText();
+}
+
+/**
+ * Build the shared OData AST from a ctx.odata.* builder call.
+ * Grouping policy (matching the historical output byte-for-byte): a nested
+ * logical operand is parenthesized only when its operator differs from the
+ * parent's.
+ */
+function buildFilterFromCall(call: CallExpression): ODataFilter {
   const method = getODataMethod(call);
   const args = call.getArguments() as Expression[];
 
   switch (method) {
-    // Comparison operators
     case 'eq':
     case 'ne':
     case 'gt':
     case 'ge':
     case 'lt':
     case 'le': {
-      if (args.length < 2) return '';
-      const field = args[0].getKind() === SyntaxKind.StringLiteral
-        ? (args[0] as any).asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
-        : args[0].getText();
-      const value = transformValueToOData(args[1]);
-      return `${field} ${method} ${value}`;
+      if (args.length < 2) return { kind: 'raw', text: '' };
+      return {
+        kind: 'compare',
+        field: fieldText(args[0]),
+        op: method as CompareOp,
+        value: buildValue(args[1]),
+      };
     }
 
-    // Logical operators
     case 'and':
     case 'or': {
-      const parts = args.map(arg => {
+      const operands = args.map((arg): ODataFilter => {
         if (isODataCall(arg)) {
-          const call = (arg as any).asKindOrThrow(SyntaxKind.CallExpression);
-          const innerMethod = getODataMethod(call);
-          const result = transformODataCall(call);
-          // Only wrap in parentheses if this is a nested logical operator with different precedence
-          // (e.g., 'or' inside 'and' needs parens, but simple comparisons don't)
-          const needsParens = (innerMethod === 'and' || innerMethod === 'or') && innerMethod !== method;
-          return needsParens ? `(${result})` : result;
+          const inner = buildFilterFromCall(arg.asKindOrThrow(SyntaxKind.CallExpression));
+          const needsParens = inner.kind === 'logical' && inner.op !== method;
+          return needsParens ? { kind: 'group', inner } : inner;
         }
-        return arg.getText();
+        return { kind: 'raw', text: arg.getText() };
       });
-      return parts.join(` ${method} `);
+      return { kind: 'logical', op: method, operands };
     }
 
-    // NOT operator
     case 'not': {
-      if (args.length < 1) return '';
-      const inner = isODataCall(args[0])
-        ? transformODataCall((args[0] as any).asKindOrThrow(SyntaxKind.CallExpression))
-        : args[0].getText();
-      return `not (${inner})`;
+      if (args.length < 1) return { kind: 'raw', text: '' };
+      const operand: ODataFilter = isODataCall(args[0])
+        ? buildFilterFromCall(args[0].asKindOrThrow(SyntaxKind.CallExpression))
+        : { kind: 'raw', text: args[0].getText() };
+      return { kind: 'not', operand };
     }
 
-    // String functions
     case 'contains':
     case 'startsWith':
     case 'endsWith': {
-      if (args.length < 2) return '';
-      const field = args[0].getKind() === SyntaxKind.StringLiteral
-        ? (args[0] as any).asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
-        : args[0].getText();
-      const value = transformValueToOData(args[1]);
-      const funcName = method.toLowerCase();
-      return `${funcName}(${field}, ${value})`;
+      if (args.length < 2) return { kind: 'raw', text: '' };
+      return {
+        kind: 'func',
+        name: method.toLowerCase() as 'contains' | 'startswith' | 'endswith',
+        field: fieldText(args[0]),
+        value: buildValue(args[1]),
+      };
     }
 
-    // Null checks
-    case 'isNull': {
-      if (args.length < 1) return '';
-      const field = args[0].getKind() === SyntaxKind.StringLiteral
-        ? (args[0] as any).asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
-        : args[0].getText();
-      return `${field} eq null`;
-    }
-
+    case 'isNull':
     case 'isNotNull': {
-      if (args.length < 1) return '';
-      const field = args[0].getKind() === SyntaxKind.StringLiteral
-        ? (args[0] as any).asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
-        : args[0].getText();
-      return `${field} ne null`;
+      if (args.length < 1) return { kind: 'raw', text: '' };
+      return {
+        kind: 'compare',
+        field: fieldText(args[0]),
+        op: method === 'isNull' ? 'eq' : 'ne',
+        value: { kind: 'null' },
+      };
     }
 
-    // Raw expression
     case 'raw': {
-      if (args.length < 1) return '';
-      if (args[0].getKind() === SyntaxKind.StringLiteral) {
-        return (args[0] as any).asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue();
-      }
-      return args[0].getText();
+      if (args.length < 1) return { kind: 'raw', text: '' };
+      return {
+        kind: 'raw',
+        text:
+          args[0].getKind() === SyntaxKind.StringLiteral
+            ? args[0].asKindOrThrow(SyntaxKind.StringLiteral).getLiteralValue()
+            : args[0].getText(),
+      };
     }
 
     default:
-      return '';
+      return { kind: 'raw', text: '' };
   }
+}
+
+/**
+ * Transform a ctx.odata.* call to an OData filter string.
+ */
+export function transformODataCall(call: CallExpression): string {
+  return printFilter(buildFilterFromCall(call));
 }
 
 /**

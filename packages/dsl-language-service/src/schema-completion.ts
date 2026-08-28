@@ -21,6 +21,8 @@ export interface ColumnSuggestion {
   displayName?: string;
   type?: string;
   required?: boolean;
+  /** SharePoint ReadOnlyField — readable (SELECT/$select) but never writable (item:/DML). */
+  readOnly?: boolean;
 }
 
 export type TableRef =

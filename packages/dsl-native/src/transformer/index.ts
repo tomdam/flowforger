@@ -10,6 +10,7 @@ import { resetIdCounter, genTriggerId, genActionId, genScopeId } from '../utils/
 import { createTransformContext, transformExpression } from './expression-transformer.js';
 import type { TransformContext } from './expression-transformer.js';
 import { VariableTracker, transformValueWithExpressions } from '../analyzers/variable-tracker.js';
+import { resolveConnectorEnumMember } from '../connector-enums.js';
 import { isActionCall, collectAction, parseActionNameFromJSDoc, parseTypeFromJSDoc, parseRunAfterFromJSDoc, parseParallelFromJSDoc, parseRetryPolicyFromJSDoc, parseTrackedPropertiesFromJSDoc, parseMetadataFromJSDoc, parseDescriptionFromJSDoc, parseValueArrayFormFromJSDoc, getLeadingPlainCommentText, getLeadingPlainCommentTextAt } from '../analyzers/action-collector.js';
 import {
   analyzeIfStatement,
@@ -814,6 +815,10 @@ function parseValueWithCtxConversion(node: any, ctx?: TransformContext): any {
   if (kind === SyntaxKind.TrueKeyword) return true;
   if (kind === SyntaxKind.FalseKeyword) return false;
   if (kind === SyntaxKind.NullKeyword) return null;
+
+  // Ambient connector enums (DataverseMessage.AddedOrModified → 4)
+  const enumValue = resolveAmbientEnumAccess(node);
+  if (enumValue !== undefined) return enumValue;
 
   // Handle object literals
   if (kind === SyntaxKind.ObjectLiteralExpression) {
@@ -1644,22 +1649,43 @@ function getLiteralValue(node: any): any {
     }
 
     default: {
-      // For complex expressions (like ctx.* calls in conditions),
-      // transform them back to PA format
-      const text = node.getText();
-      if (text.includes('ctx.')) {
-        // Use already imported transformExpression to convert ctx.* expressions to PA format
-        const transformCtx = createTransformContext();
-        const result = transformExpression(node, transformCtx);
-        // Ensure it starts with @ for PA expressions
-        if (result && !result.startsWith('@') && !result.includes('@{')) {
-          return `@${result}`;
-        }
-        return result;
-      }
-      return text;
+      // Ambient connector enums (DataverseMessage.AddedOrModified → 4)
+      const enumValue = resolveAmbientEnumAccess(node);
+      if (enumValue !== undefined) return enumValue;
+      return getLiteralValueFallback(node);
     }
   }
+}
+
+/**
+ * Resolve `EnumName.Member` where EnumName is one of the ambient connector enums
+ * (see connector-enums.ts). Resolved by name: the DSL is never executed, so the
+ * values must be statically known. Returns undefined for anything else.
+ */
+function resolveAmbientEnumAccess(node: any): number | undefined {
+  if (node.getKind() !== SyntaxKind.PropertyAccessExpression) return undefined;
+  const propAccess = node.asKindOrThrow(SyntaxKind.PropertyAccessExpression);
+  const target = propAccess.getExpression();
+  if (target.getKind() !== SyntaxKind.Identifier) return undefined;
+  return resolveConnectorEnumMember(target.getText(), propAccess.getName());
+}
+
+/** Non-literal expression: ctx.* calls become PA expressions, anything else is kept as source text. */
+function getLiteralValueFallback(node: any): any {
+  // For complex expressions (like ctx.* calls in conditions),
+  // transform them back to PA format
+  const text = node.getText();
+  if (text.includes('ctx.')) {
+    // Use already imported transformExpression to convert ctx.* expressions to PA format
+    const transformCtx = createTransformContext();
+    const result = transformExpression(node, transformCtx);
+    // Ensure it starts with @ for PA expressions
+    if (result && !result.startsWith('@') && !result.includes('@{')) {
+      return `@${result}`;
+    }
+    return result;
+  }
+  return text;
 }
 
 // Re-export types and functions

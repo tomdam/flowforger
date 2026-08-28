@@ -16,6 +16,7 @@ import { resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTri
 import { checkParity, ParityTransformError } from './parity.js';
 import { runPush, PushError } from './push.js';
 import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from './cli-args.js';
+import { resolveRunParameterOverrides } from './env-var-overrides.js';
 
 /**
  * Resolve the CLI's own package root (one level above dist/), working in both
@@ -83,6 +84,12 @@ function buildConfigFromFlags(args: Record<string, any>, baseConfig?: FlowForger
   }
   if (args['whitespace-compact'] !== undefined) {
     config.generator = { ...config.generator, argumentWhitespace: 'compact' };
+  }
+  if (args['expressions-strict'] !== undefined) {
+    config.generator = { ...config.generator, expressionFidelity: 'strict' };
+  }
+  if (args['expressions-relaxed'] !== undefined) {
+    config.generator = { ...config.generator, expressionFidelity: 'relaxed' };
   }
   if (args['description-jsdoc'] !== undefined) {
     config.generator = { ...config.generator, descriptionStyle: 'jsdoc' };
@@ -239,6 +246,10 @@ Generator Options (for generate-dsl, parity):
   --multiline-flatten       Flatten multiline expressions to single line
   --whitespace-spaced       Use spaces after commas: func(a, b) (default)
   --whitespace-compact      No spaces after commas: func(a,b)
+  --expressions-strict      Preserve expressions verbatim via ctx.eval() when regeneration
+                            would change cosmetic details (spacing, casing) (default)
+  --expressions-relaxed     Generate native DSL for parseable expressions, normalizing
+                            cosmetic spacing/casing (re-emitted JSON may differ textually)
   --description-comment     Render action descriptions as // line comments (default)
   --description-jsdoc       Render action descriptions as /** @description ... */ tags
   --skip-default-constructor  Omit the constructor when it only contains default boilerplate
@@ -803,6 +814,17 @@ async function main() {
           }
         }
       }
+      // Env-var-backed parameters resolve to their CURRENT environment values
+      // when a Dataverse connection is available (from --dv-url/--dv-token or
+      // --auth) — otherwise the engine would use the design-time defaultValue
+      // snapshot baked into the flow. Explicit --param flags win per key.
+      parameterOverrides = await resolveRunParameterOverrides({
+        ir,
+        dvUrl: args['dv-url'] as string | undefined,
+        dvToken: args['dv-token'] as string | undefined,
+        explicitOverrides: parameterOverrides,
+        log: (msg) => console.error(msg),
+      });
       // Child workflow loader setup
       let loadChildFlow: ((workflowId: string) => Promise<FlowIR | null>) | undefined;
 

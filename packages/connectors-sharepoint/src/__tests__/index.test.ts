@@ -245,7 +245,7 @@ describe('SharePointConnector lookup/person expansion', () => {
     assert.ok(!itemsUrl.includes('Approvers'));
   });
 
-  it('falls back to a raw query when the expanded query fails, still wrapping choices', async () => {
+  it('falls back to a raw query when every expanded query fails, still wrapping choices', async () => {
     routes = [
       { match: '/fields?', body: refFieldsResponse },
       { match: '$expand=', body: { error: 'lookup threshold exceeded' }, status: 400 },
@@ -254,8 +254,11 @@ describe('SharePointConnector lookup/person expansion', () => {
 
     const result: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
 
-    // Two items requests: expanded (400) then raw
-    assert.equal(fetchCalls.filter((c) => c.url.includes('/items')).length, 2);
+    // First items request is the expanded one (400), last is the raw fallback;
+    // narrowing probes in between also fail since every $expand 400s here.
+    const itemsCalls = fetchCalls.filter((c) => c.url.includes('/items'));
+    assert.ok(itemsCalls[0].url.includes('$expand='));
+    assert.ok(!itemsCalls[itemsCalls.length - 1].url.includes('$expand='));
     assert.deepEqual(result.value[0].UserType, {
       '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
       Id: 1,
@@ -263,6 +266,122 @@ describe('SharePointConnector lookup/person expansion', () => {
     });
     // Raw lookup sibling untouched
     assert.equal(result.value[0].ProjectId, 12);
+
+    // The empty verified set is cached: a second call goes straight to raw
+    // without retrying the failing expansion or re-probing.
+    const before = fetchCalls.length;
+    await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
+    const newCalls = fetchCalls.slice(before);
+    assert.equal(newCalls.length, 1);
+    assert.ok(!newCalls[0].url.includes('$expand='));
+  });
+
+  it('projects dependent lookup columns through the primary nav property', async () => {
+    const fieldsWithDependents = {
+      value: [
+        { Id: 'f-langs', InternalName: 'Languages', TypeAsString: 'LookupMulti', LookupField: 'Details' },
+        { Id: 'f-langs-title', InternalName: 'Languages_x003a_Title', TypeAsString: 'LookupMulti', LookupField: 'Title', IsDependentLookup: true, PrimaryFieldId: 'f-langs' },
+        { Id: 'f-proj', InternalName: 'Project', TypeAsString: 'Lookup', LookupField: 'Title' },
+        { Id: 'f-proj-phase', InternalName: 'Project_x003a_Phase', TypeAsString: 'Lookup', LookupField: 'Phase', IsDependentLookup: true, PrimaryFieldId: 'f-proj' },
+        { Id: 'f-orphan', InternalName: 'Orphan_x003a_Title', TypeAsString: 'Lookup', LookupField: 'Title', IsDependentLookup: true, PrimaryFieldId: 'missing' },
+      ],
+    };
+    routes = [
+      { match: '/fields?', body: fieldsWithDependents },
+      {
+        match: '/items',
+        body: {
+          value: [{
+            Id: 1,
+            Languages: [{ Id: 3, Details: 'DE-C1', Title: 'German' }, { Id: 4, Details: 'EN-B2', Title: 'English' }],
+            Project: { Id: 12, Title: 'Apollo', Phase: 'Beta' },
+          }],
+        },
+      },
+    ];
+
+    const result: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
+
+    // Dependent columns are never expanded by their own (invalid) nav name —
+    // they ride on the primary's expansion, with their show field selected.
+    const itemsUrl = decodeURIComponent(fetchCalls.find((c) => c.url.includes('/items'))!.url);
+    assert.ok(itemsUrl.includes('$expand=Languages,Project'));
+    assert.ok(!itemsUrl.includes('_x003a_'));
+    assert.ok(itemsUrl.includes('Languages/Title'));
+    assert.ok(itemsUrl.includes('Project/Phase'));
+
+    assert.deepEqual(result.value[0].Project, {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
+      Id: 12,
+      Value: 'Apollo',
+    });
+    assert.deepEqual(result.value[0].Project_x003a_Phase, {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
+      Id: 12,
+      Value: 'Beta',
+    });
+    assert.deepEqual(result.value[0].Languages, [
+      { '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference', Id: 3, Value: 'DE-C1' },
+      { '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference', Id: 4, Value: 'EN-B2' },
+    ]);
+    assert.deepEqual(result.value[0].Languages_x003a_Title, [
+      { '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference', Id: 3, Value: 'German' },
+      { '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference', Id: 4, Value: 'English' },
+    ]);
+    // Orphaned dependent (unresolvable primary) is skipped entirely
+    assert.equal(result.value[0].Orphan_x003a_Title, undefined);
+  });
+
+  it('recovers lookup expansion by isolating a failing ref field', async () => {
+    const fieldsWithBadRef = {
+      value: [
+        { InternalName: 'UserType', TypeAsString: 'Choice', Choices: ['Prospect', 'Current', 'Alumni'] },
+        { InternalName: 'Project', TypeAsString: 'Lookup', LookupField: 'Title' },
+        { InternalName: 'BadRef', TypeAsString: 'Lookup', LookupField: 'Title' },
+        { InternalName: 'Author', TypeAsString: 'User' },
+      ],
+    };
+    routes = [
+      { match: '/fields?', body: fieldsWithBadRef },
+      // Any query expanding BadRef fails (e.g. target list not readable)
+      { match: 'BadRef', body: { error: 'cannot expand' }, status: 400 },
+      { match: '/items', body: { value: [{ Id: 1, UserType: 'Current', Project: { Id: 12, Title: 'Apollo' }, BadRefId: 9 }] } },
+    ];
+
+    const result: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
+
+    // Lookup expansion survives for the good field...
+    assert.deepEqual(result.value[0].Project, {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
+      Id: 12,
+      Value: 'Apollo',
+    });
+    assert.deepEqual(result.value[0].UserType, {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
+      Id: 1,
+      Value: 'Current',
+    });
+    // ...while the bad field stays raw
+    assert.equal(result.value[0].BadRefId, 9);
+    // The successful retry expands Project and Author but never BadRef
+    const itemsCalls = fetchCalls.filter((c) => c.url.includes('/items'));
+    const lastUrl = decodeURIComponent(itemsCalls[itemsCalls.length - 1].url);
+    assert.ok(lastUrl.includes('Project'));
+    assert.ok(lastUrl.includes('Author'));
+    assert.ok(!lastUrl.includes('BadRef'));
+
+    // Verified set is cached: the next call expands the good fields directly,
+    // with no failing attempt and no probes.
+    const before = fetchCalls.length;
+    const second: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
+    const newCalls = fetchCalls.slice(before);
+    assert.equal(newCalls.length, 1);
+    assert.ok(!newCalls[0].url.includes('BadRef'));
+    assert.deepEqual(second.value[0].Project, {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedReference',
+      Id: 12,
+      Value: 'Apollo',
+    });
   });
 
   it('applies expansion to GetFileProperties', async () => {

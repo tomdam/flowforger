@@ -202,13 +202,15 @@ export const flowContextMethods: MethodSignature[] = [
       { name: 'name', type: 'string', description: 'Unique name for this action' },
       {
         name: 'file',
-        type: '{ contentType: string; content: string; fileName?: string; encoding?: "utf8" | "base64" }',
-        description: 'File descriptor. Use encoding "base64" for binary content.',
+        type: '{ contentType?: string; content: string | object; fileName?: string; encoding?: "utf8" | "base64" }',
+        description:
+          'File descriptor. `content` may be text, base64, or a Power Automate file-content object ({ $content, $content-type }) as returned by e.g. SharePoint GetFileContent. Encoding is inferred from the content type when omitted (binary types treat base64-shaped content as base64).',
       },
     ],
     returnType: 'Promise<any>',
     examples: [
       "await ctx.saveFile('Dump', { contentType: 'text/xml', content: xmlString });",
+      "await ctx.saveFile('Download', { fileName: 'report.pdf', content: await ctx.connectors.sharepoint.GetFileContent('Get_file', { dataset: siteUrl, id: fileId }) });",
       "await ctx.saveFile('Report', { contentType: 'application/pdf', content: base64Pdf, encoding: 'base64', fileName: 'report.pdf' });",
     ],
   },

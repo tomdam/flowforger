@@ -325,7 +325,11 @@ class CreateInvoiceOrchestrator {
     return {
       connector: 'commondataserviceforapps',
       operation: 'SubscribeWebhookTrigger',
-      params: { subscriptionRequest: { entityname: 'brk_posteniminkasso' } },
+      params: {
+        'subscriptionRequest/message': DataverseMessage.AddedOrModified,
+        'subscriptionRequest/entityname': 'brk_posteniminkasso',
+        'subscriptionRequest/scope': DataverseScope.Organization,
+      },
       connectionReferenceName: 'shared_commondataserviceforapps',
     };
   }

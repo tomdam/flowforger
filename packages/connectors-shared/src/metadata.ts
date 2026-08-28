@@ -23,6 +23,8 @@ export interface ParameterMetadata {
   required: boolean;
   /** Default value if optional */
   defaultValue?: unknown;
+  /** Fixed set of allowed values (enum-like parameters); label = DSL enum member name */
+  allowedValues?: { label: string; value: number | string }[];
 }
 
 /**

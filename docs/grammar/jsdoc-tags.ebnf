@@ -90,8 +90,8 @@ status           = "Succeeded" | "Failed" | "Skipped" | "TimedOut" ;
 (* @description <text>  — free prose, may itself contain '@' and '*'
    (e.g. "@{variables('x')}"); parsing stops at the NEXT known structural tag
    or the comment end. If absent, a plain comment ABOVE the JSDoc (or above the
-   statement when there is no JSDoc) is used instead. MUST be <= 256 chars after
-   trimming — see conformance.md rule 9. *)
+   statement when there is no JSDoc) is used instead. Any length — text over
+   255 chars overflows into action metadata; see conformance.md rule 9. *)
 description_tag  = "@description", ws, free_text_until_known_tag ;
 
 

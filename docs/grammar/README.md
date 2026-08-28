@@ -15,7 +15,7 @@ source of confusion:
 | **1. Host syntax** | Which source strings are legal text | The [TypeScript grammar](https://github.com/microsoft/TypeScript/blob/main/doc/spec-ARCHIVED.md). FlowForger inherits it 100% — it adds **no** syntax. |
 | **2. Recognized subset** | Which TypeScript constructs FlowForger actually understands, and what IR they map to | [`flowforger-dsl.ebnf`](./flowforger-dsl.ebnf) — *descriptive, non-authoritative* |
 | **3. Annotation language** | The `@action` / `@type` / `@runAfter` … mini-language living inside JSDoc comments | [`jsdoc-tags.ebnf`](./jsdoc-tags.ebnf) — *small and closed; near-authoritative* |
-| **4. Semantic rules** | Constraints a context-free grammar **cannot** express (name uniqueness, no `return`, try/catch must have a finally, 256-char descriptions) | [`conformance.md`](./conformance.md) |
+| **4. Semantic rules** | Constraints a context-free grammar **cannot** express (name uniqueness, no `return`, try/catch must have a finally, flow-level description length) | [`conformance.md`](./conformance.md) |
 | **5. Output contract** | The set of valid flow definitions, independent of how they were authored | [`flowforger-ir.schema.json`](../../packages/ir/schema/flowforger-ir.schema.json) — **authoritative, machine-checkable**, generated from the `ir` types |
 
 ## How to read these documents

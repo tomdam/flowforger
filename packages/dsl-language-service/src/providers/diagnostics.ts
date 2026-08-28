@@ -98,8 +98,6 @@ export interface DiagnosticsOptions {
   checkQuotedSpread?: boolean;
   /** Check for self-referential array reassignment like `x = [...x, value]` */
   checkSelfRefArrayReassign?: boolean;
-  /** Check that comments compiled to action descriptions fit Power Automate's 255-char limit */
-  checkDescriptionLength?: boolean;
   /** Check Power Automate expressions inside ctx.eval(`...`) literals (DSL033, DSL034) */
   checkEvalExpressions?: boolean;
 }
@@ -125,7 +123,6 @@ const defaultOptions: DiagnosticsOptions = {
   checkUnknownCtxMethods: true,
   checkQuotedSpread: true,
   checkSelfRefArrayReassign: true,
-  checkDescriptionLength: true,
   checkEvalExpressions: true,
 };
 
@@ -231,11 +228,6 @@ export function getDiagnostics(
   // Check for quoted spread / self-referential array reassignment (DSL028, DSL029)
   if (opts.checkQuotedSpread || opts.checkSelfRefArrayReassign) {
     diagnostics.push(...checkArrayAntiPatterns(sourceFile, index, opts));
-  }
-
-  // Check comment-derived action descriptions against Power Automate's 255-char limit (DSL031)
-  if (opts.checkDescriptionLength) {
-    diagnostics.push(...checkDescriptionLength(sourceFile));
   }
 
   return diagnostics;
@@ -1519,177 +1511,6 @@ function referencesIdentifier(expr: ts.Expression, name: string): boolean {
     return true;
   }
   return false;
-}
-
-/**
- * Power Automate rejects action/trigger descriptions longer than 255 characters.
- */
-const MAX_DESCRIPTION_LENGTH = 255;
-
-/**
- * A comment-derived description with the source range of the comment it came from.
- */
-interface ExtractedDescription {
-  /** The cleaned description text as the transformer would emit it */
-  text: string;
-  /** Absolute offset of the comment start */
-  start: number;
-  /** Absolute offset of the comment end */
-  end: number;
-}
-
-/**
- * Extract a plain (non-JSDoc) leading comment ending immediately before `anchorPos`.
- * Mirrors `getLeadingPlainCommentTextAt` in @flowforger/dsl-native's action-collector:
- * a single block comment (but not JSDoc) or a contiguous run of // line comments,
- * with comment markers stripped and lines joined with newlines.
- */
-function extractPlainCommentAbove(
-  sourceFile: ts.SourceFile,
-  anchorPos: number
-): ExtractedDescription | undefined {
-  const sourceText = sourceFile.text;
-  const textBefore = sourceText.substring(0, anchorPos);
-
-  // Block comment immediately before the anchor: /* ... */ but NOT /** ... */
-  const blockEndMatch = textBefore.match(/\*\/\s*$/);
-  if (blockEndMatch && blockEndMatch.index !== undefined) {
-    const blockEnd = blockEndMatch.index;
-    const blockStart = textBefore.lastIndexOf('/*', blockEnd - 1);
-    if (blockStart !== -1 && textBefore.substring(blockStart, blockStart + 3) !== '/**') {
-      const inner = textBefore.substring(blockStart + 2, blockEnd);
-      const cleaned = inner
-        .split('\n')
-        .map((line) => line.replace(/^\s*\*\s?/, '').trim())
-        .join('\n')
-        .trim();
-      if (!cleaned) return undefined;
-      return { text: cleaned, start: blockStart, end: blockEnd + 2 };
-    }
-  }
-
-  // Contiguous // line comments immediately above the anchor's line.
-  const anchorLine = sourceFile.getLineAndCharacterOfPosition(anchorPos).line;
-  const lineStarts = sourceFile.getLineStarts();
-  // Only counts as "leading" if nothing but whitespace precedes the anchor on its line.
-  if (!/^\s*$/.test(sourceText.substring(lineStarts[anchorLine], anchorPos))) {
-    return undefined;
-  }
-
-  const collected: string[] = [];
-  let firstLine = -1;
-  let lastLine = -1;
-  for (let line = anchorLine - 1; line >= 0; line--) {
-    const lineEnd = line + 1 < lineStarts.length ? lineStarts[line + 1] : sourceText.length;
-    const lineText = sourceText.substring(lineStarts[line], lineEnd).replace(/\r?\n$/, '');
-    const m = lineText.match(/^\s*\/\/(.*)$/);
-    if (!m) break;
-    collected.unshift(m[1].replace(/^[ \t]/, '').trimEnd());
-    if (lastLine === -1) lastLine = line;
-    firstLine = line;
-  }
-
-  if (collected.length === 0) return undefined;
-  const joined = collected.join('\n').trim();
-  if (!joined) return undefined;
-
-  const firstLineEnd = firstLine + 1 < lineStarts.length ? lineStarts[firstLine + 1] : sourceText.length;
-  const firstLineText = sourceText.substring(lineStarts[firstLine], firstLineEnd);
-  const lastLineEnd = lastLine + 1 < lineStarts.length ? lineStarts[lastLine + 1] : sourceText.length;
-  const lastLineText = sourceText.substring(lineStarts[lastLine], lastLineEnd).replace(/\r?\n$/, '');
-  return {
-    text: joined,
-    start: lineStarts[firstLine] + firstLineText.indexOf('//'),
-    end: lineStarts[lastLine] + lastLineText.trimEnd().length,
-  };
-}
-
-/**
- * Extract the description the transformer would attach to the node starting at `anchorPos`.
- * Mirrors `parseDescriptionFromJSDoc` in @flowforger/dsl-native: a JSDoc @description tag,
- * else a plain comment above the JSDoc, else a plain comment directly above the statement.
- */
-function extractDescriptionAbove(
-  sourceFile: ts.SourceFile,
-  anchorPos: number
-): ExtractedDescription | undefined {
-  const sourceText = sourceFile.text;
-  const textBefore = sourceText.substring(0, anchorPos);
-
-  const jsDocMatch = textBefore.match(/\/\*\*([^*]|\*(?!\/))*\*\/\s*$/);
-  if (jsDocMatch && jsDocMatch.index !== undefined) {
-    const jsDocText = jsDocMatch[0];
-    // Same tag list as the transformer — @description text runs until the next known tag.
-    const descMatch = jsDocText.match(
-      /@description\s+([\s\S]*?)(?=\s*@(?:metadata|runAfter|action|type|parallel|limit|originalName|retryPolicy|runtimeConfig|conditionFormat|varType|trackedProperties|operationOptions|paramsOmitted|valueArrayForm|varNameCase)\b|\*\/|$)/
-    );
-    if (descMatch) {
-      const jsDocEnd = jsDocMatch.index + jsDocText.trimEnd().length;
-      return { text: descMatch[1].trim(), start: jsDocMatch.index, end: jsDocEnd };
-    }
-    // JSDoc without @description — plain comments above the JSDoc become the description.
-    return extractPlainCommentAbove(sourceFile, jsDocMatch.index);
-  }
-
-  return extractPlainCommentAbove(sourceFile, anchorPos);
-}
-
-/**
- * Statement kinds the transformer attaches comment-derived descriptions to.
- */
-function isDescriptionBearingStatement(node: ts.Node): boolean {
-  return (
-    ts.isExpressionStatement(node) ||
-    ts.isVariableStatement(node) ||
-    ts.isIfStatement(node) ||
-    ts.isForOfStatement(node) ||
-    ts.isForStatement(node) ||
-    ts.isWhileStatement(node) ||
-    ts.isDoStatement(node) ||
-    ts.isSwitchStatement(node)
-  );
-}
-
-/**
- * Check comments that compile to action/trigger descriptions against
- * Power Automate's 255-character description limit (DSL031).
- */
-function checkDescriptionLength(sourceFile: ts.SourceFile): Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-
-  const flowClass = findFlowClass(sourceFile);
-  if (!flowClass) return diagnostics;
-
-  const anchors: ts.Node[] = [];
-
-  const triggerMethod = findTriggerMethod(flowClass);
-  if (triggerMethod) anchors.push(triggerMethod);
-
-  const actionMethod = findActionMethod(flowClass);
-  if (actionMethod && actionMethod.body) {
-    const visit = (node: ts.Node): void => {
-      if (isDescriptionBearingStatement(node)) anchors.push(node);
-      ts.forEachChild(node, visit);
-    };
-    visit(actionMethod.body);
-  }
-
-  for (const anchor of anchors) {
-    const desc = extractDescriptionAbove(sourceFile, anchor.getStart(sourceFile));
-    if (!desc || desc.text.length <= MAX_DESCRIPTION_LENGTH) continue;
-
-    const startPos = sourceFile.getLineAndCharacterOfPosition(desc.start);
-    const endPos = sourceFile.getLineAndCharacterOfPosition(desc.end);
-    diagnostics.push({
-      code: DiagnosticCodes.DSL031.code,
-      severity: DiagnosticCodes.DSL031.severity,
-      message: DiagnosticCodes.DSL031.format!(String(desc.text.length)),
-      range: { start: startPos, end: endPos },
-      source: 'flowforger',
-    });
-  }
-
-  return diagnostics;
 }
 
 /**

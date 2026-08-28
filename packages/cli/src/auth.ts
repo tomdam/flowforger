@@ -229,6 +229,19 @@ export async function resolveRequiredScopes(
     }
   }
 
+  // Env-var-backed parameters resolve against Dataverse at run time. When the
+  // flow carries any (metadata.schemaName) and a Dataverse resource is
+  // configured, request the default Dataverse scopes even if the flow uses no
+  // Dataverse connector — otherwise `run --auth` would have no token to fetch
+  // current values with. No resource configured = silently skip; resolution
+  // is best-effort and the run falls back to the flow definition defaults.
+  const { collectEnvVarParameters } = await import('@flowforger/dataverse-sdk');
+  if (collectEnvVarParameters(ir).length > 0 && authConfig.resources?.dataverse) {
+    const resourceUrl = authConfig.resources.dataverse;
+    const { dataverseScopes } = await import('@flowforger/connectors-dataverse');
+    addScopes(resourceUrl, dataverseScopes.default.map((s: string) => `${resourceUrl}/${s}`));
+  }
+
   // Add additional scopes from config
   if (authConfig.additionalScopes) {
     if (authConfig.additionalScopes.graph) {

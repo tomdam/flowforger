@@ -1,3 +1,5 @@
+import { buildConnectorEnumDeclarations } from './connector-enums.js';
+
 /**
  * Monaco Editor type definitions for FlowForger DSL.
  *
@@ -101,9 +103,12 @@ interface ResponseInputs {
 }
 
 interface SaveFileInputs {
-  contentType: string;
-  content: string;
+  /** MIME type; optional when content is a file-content object ({ $content, $content-type }). */
+  contentType?: string;
+  /** Text, base64, or a Power Automate file-content object (e.g. SharePoint GetFileContent result). */
+  content: string | { [key: string]: any };
   fileName?: string;
+  /** Defaults: utf8 for textual content types, base64 for binary ones when content looks like base64. */
   encoding?: 'utf8' | 'base64';
 }
 
@@ -1178,12 +1183,22 @@ declare const ctx: FlowContext;
 declare const item: any;
 
 // ============================================
+// Connector enums (ambient — no import needed)
+// Source of truth: connector-enums.ts
+// ============================================
+
+${buildConnectorEnumDeclarations()}
+
+// ============================================
 // Module declaration for imports
 // (Makes import statements work without errors)
 // ============================================
 
 declare module '@flowforger/dsl-native' {
   export {
+    DataverseMessage,
+    DataverseScope,
+    DataverseRunAs,
     Flow,
     FlowDecoratorOptions,
     HttpTrigger,

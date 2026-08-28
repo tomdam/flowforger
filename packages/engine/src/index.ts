@@ -214,21 +214,74 @@ const CONTENT_TYPE_EXT: Record<string, string> = {
   'application/zip': 'zip',
 };
 
+/** Content types whose payload is human-readable text (default utf8, not base64). */
+function isTextualContentType(contentType: string): boolean {
+  const lower = contentType.toLowerCase();
+  return (
+    lower.startsWith('text/') ||
+    lower.includes('json') ||
+    lower.includes('xml') ||
+    lower.includes('html') ||
+    lower.includes('csv') ||
+    lower.includes('javascript')
+  );
+}
+
+/** Loose base64 shape check (whitespace tolerated, padding optional). */
+function looksLikeBase64(s: string): boolean {
+  const compact = s.replace(/\s/g, '');
+  return compact.length > 0 && compact.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
+}
+
 /**
  * If `value` is a sentinel file object (`@@ff:saveFile === true`) with valid
  * fields, return a normalized FileArtifact; otherwise null. Pure — no I/O.
  */
 export function detectFileArtifact(value: any, actionName: string): FileArtifact | null {
   if (!value || typeof value !== 'object' || value['@@ff:saveFile'] !== true) return null;
-  const { contentType, content } = value;
+  let { contentType, content, encoding } = value as {
+    contentType?: unknown;
+    content?: unknown;
+    encoding?: unknown;
+  };
+
+  // Power Automate file-content shape ({ "$content": "<base64>", "$content-type": ... }),
+  // as returned by e.g. SharePoint GetFileContent — the payload is base64 by
+  // definition and carries its own content type, so ctx.saveFile can take the
+  // connector result verbatim as `content`.
+  if (content && typeof content === 'object') {
+    const obj = content as Record<string, unknown>;
+    const b64 = obj['$content'];
+    if (typeof b64 !== 'string') return null;
+    if (typeof contentType !== 'string') {
+      const ct = obj['$contentType'] ?? obj['$content-type'];
+      contentType = typeof ct === 'string' ? ct : 'application/octet-stream';
+    }
+    content = b64;
+    encoding = 'base64';
+  }
+
   if (typeof contentType !== 'string' || typeof content !== 'string') return null;
-  const encoding = value.encoding === 'base64' ? 'base64' : 'utf8';
+
+  // Explicit encoding wins. Otherwise textual content types default to utf8,
+  // while binary ones (pdf, octet-stream, images, …) can only travel through a
+  // flow as base64 — so base64-shaped content is decoded rather than written
+  // out as the base64 text itself.
+  const resolvedEncoding: FileArtifact['encoding'] =
+    encoding === 'base64'
+      ? 'base64'
+      : encoding === 'utf8'
+        ? 'utf8'
+        : !isTextualContentType(contentType) && looksLikeBase64(content)
+          ? 'base64'
+          : 'utf8';
+
   const ext = CONTENT_TYPE_EXT[contentType] ?? 'bin';
   const fileName =
     typeof value.fileName === 'string' && value.fileName.length > 0
       ? value.fileName
       : `${actionName}.${ext}`;
-  return { fileName, contentType, content, encoding };
+  return { fileName, contentType, content, encoding: resolvedEncoding };
 }
 
 /**
@@ -988,9 +1041,17 @@ export async function executeNode(
                 logger: options.logger,
                 secrets: options.secrets,
                 variables: {}, // Isolated variables
+                // Env-var-backed overrides apply environment-wide: a child flow
+                // reading the same env var must see the same value the parent does
+                // (parameter names embed the env var schema name, so cross-flow
+                // name matches identify the same variable).
+                parameterOverrides: options.parameterOverrides,
                 loadChildFlow: ctx.loadChildFlow, // Support nested child flows
                 strictWorkflows: options.strictWorkflows,
               });
+
+              // Child saveFile artifacts surface in the parent's single collection
+              if (childResult.artifacts?.length) ctx.artifacts?.push(...childResult.artifacts);
 
               // Get the body from the last action of the child workflow
               const childFlowBody = childResult.trace[childResult.trace.length - 1]?.outputs;

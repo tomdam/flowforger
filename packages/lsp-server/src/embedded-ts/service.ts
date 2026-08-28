@@ -173,3 +173,35 @@ export function getTypeScriptDiagnostics(uri: string, content: string): ts.Diagn
     return [];
   }
 }
+
+/**
+ * Get TypeScript completions for a document at an offset.
+ *
+ * `.ff.ts` files use the `flowforger` language ID, so VS Code's built-in
+ * TypeScript service never attaches to them — without this, plain identifier
+ * completions (a `let` flow variable, an object member, `ctx.va…` mid-word)
+ * simply don't exist in the extension, while the web app's Monaco gets them
+ * from its own TS worker. The LSP server calls this when no DSL-specific
+ * completion context applies.
+ *
+ * Returns an empty array on errors (never breaks the LSP session).
+ */
+export function getTypeScriptCompletions(
+  uri: string,
+  content: string,
+  offset: number
+): ts.CompletionEntry[] {
+  try {
+    const virtualPath = updateDocument(uri, content);
+    const info = languageService.getCompletionsAtPosition(virtualPath, offset, {
+      // No auto-import suggestions — the virtual FS has no real modules to import from.
+      includeCompletionsForModuleExports: false,
+      includeCompletionsWithInsertText: true,
+    });
+    if (!info) return [];
+    // 'warning' entries are TS's low-confidence word-list suggestions — noise here.
+    return info.entries.filter((e) => e.kind !== ts.ScriptElementKind.warning);
+  } catch {
+    return [];
+  }
+}

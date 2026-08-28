@@ -27,7 +27,11 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 
 import ts from 'typescript';
-import { getTypeScriptDiagnostics, removeDocument } from './embedded-ts/service.js';
+import {
+  getTypeScriptDiagnostics,
+  getTypeScriptCompletions,
+  removeDocument,
+} from './embedded-ts/service.js';
 
 import {
   analyzeCompletionContext,
@@ -313,9 +317,70 @@ connection.onCompletion((params: CompletionParams): CompletionItem[] => {
     }
 
     default:
-      return [];
+      // No DSL-specific context — fall back to the embedded TypeScript service.
+      // `.ff.ts` files carry the `flowforger` language ID, so VS Code's built-in
+      // TS never attaches; without this, plain identifiers (flow `let`
+      // variables, object members, `ctx.va…` mid-word) get no completions.
+      return getEmbeddedTsCompletions(params.textDocument.uri, text, offset);
   }
 });
+
+/**
+ * Get identifier/member completions from the embedded TypeScript service.
+ */
+function getEmbeddedTsCompletions(
+  uri: string,
+  text: string,
+  offset: number
+): CompletionItem[] {
+  return getTypeScriptCompletions(uri, text, offset).map((entry) => ({
+    label: entry.name,
+    kind: convertTsCompletionKind(entry.kind),
+    insertText: entry.insertText ?? entry.name,
+    sortText: entry.sortText,
+  }));
+}
+
+/**
+ * Map a TypeScript ScriptElementKind to an LSP CompletionItemKind.
+ */
+function convertTsCompletionKind(kind: ts.ScriptElementKind): LSPCompletionItemKind {
+  switch (kind) {
+    case ts.ScriptElementKind.variableElement:
+    case ts.ScriptElementKind.letElement:
+    case ts.ScriptElementKind.localVariableElement:
+    case ts.ScriptElementKind.parameterElement:
+      return LSPCompletionItemKind.Variable;
+    case ts.ScriptElementKind.constElement:
+      return LSPCompletionItemKind.Constant;
+    case ts.ScriptElementKind.functionElement:
+    case ts.ScriptElementKind.localFunctionElement:
+      return LSPCompletionItemKind.Function;
+    case ts.ScriptElementKind.memberFunctionElement:
+      return LSPCompletionItemKind.Method;
+    case ts.ScriptElementKind.memberVariableElement:
+    case ts.ScriptElementKind.memberGetAccessorElement:
+    case ts.ScriptElementKind.memberSetAccessorElement:
+      return LSPCompletionItemKind.Property;
+    case ts.ScriptElementKind.classElement:
+      return LSPCompletionItemKind.Class;
+    case ts.ScriptElementKind.interfaceElement:
+    case ts.ScriptElementKind.typeElement:
+      return LSPCompletionItemKind.Interface;
+    case ts.ScriptElementKind.enumElement:
+      return LSPCompletionItemKind.Enum;
+    case ts.ScriptElementKind.enumMemberElement:
+      return LSPCompletionItemKind.EnumMember;
+    case ts.ScriptElementKind.moduleElement:
+      return LSPCompletionItemKind.Module;
+    case ts.ScriptElementKind.keyword:
+      return LSPCompletionItemKind.Keyword;
+    case ts.ScriptElementKind.string:
+      return LSPCompletionItemKind.Text;
+    default:
+      return LSPCompletionItemKind.Text;
+  }
+}
 
 /**
  * Get completions for ctx.* methods.

@@ -870,11 +870,11 @@ export function collectAction(
     if (description) actionNode.description = description;
     if (metadata) actionNode.metadata = metadata;
     if (operationOptions) (actionNode as any).operationOptions = operationOptions;
-    // Apply limit if present (for connector/webhook/workflow actions with timeout)
+    // Apply limit if present (for connector/webhook/workflow/http actions with timeout)
     if (limit && typeof limit === 'object') {
       const nodeType = (actionNode as any).type;
       const nodeKind = (actionNode as any).kind;
-      if (nodeType === 'connector' || nodeType === 'connectorwebhook' || (nodeType === 'action' && nodeKind === 'workflow')) {
+      if (nodeType === 'connector' || nodeType === 'connectorwebhook' || (nodeType === 'action' && (nodeKind === 'workflow' || nodeKind === 'http'))) {
         (actionNode as any).limit = limit;
       }
     }

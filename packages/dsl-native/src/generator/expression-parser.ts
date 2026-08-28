@@ -71,13 +71,15 @@ function resolveOptions(optionsOrVariableMap?: ParseExpressionOptions | Variable
   config: GeneratorConfig;
 } {
   if (isParseExpressionOptions(optionsOrVariableMap)) {
+    const config = getGeneratorConfig({ generator: optionsOrVariableMap?.config });
     return {
       ec: {
         variableMap: optionsOrVariableMap?.variableMap,
         loopMap: optionsOrVariableMap?.loopMap,
         currentLoopVar: optionsOrVariableMap?.currentLoopVar,
+        relaxedFidelity: config.expressionFidelity === 'relaxed',
       },
-      config: getGeneratorConfig({ generator: optionsOrVariableMap?.config }),
+      config,
     };
   }
   return { ec: { variableMap: optionsOrVariableMap }, config: getGeneratorConfig() };
@@ -140,18 +142,24 @@ export function parseExpressionToTypeScript(
 
   // Round-trip fidelity heuristics — preserve the original verbatim whenever
   // regeneration (trim + canonical comma spacing + normalized literals) would
-  // lose source fidelity.
+  // lose source fidelity. With expressionFidelity 'relaxed', the cosmetic-only
+  // guards are skipped: the regenerated expression may differ textually from
+  // the source (spacing, +signs, casing) but is semantically identical.
+  const relaxed = config.expressionFidelity === 'relaxed';
   const hasMultilineFormatting = expression.includes('\r\n') || expression.includes('\n');
   if (hasMultilineFormatting && config.multilineExpressions === 'preserve') {
     return ctxEval(expression, true);
   }
-  if (expression !== expression.trimEnd()) {
-    return ctxEval(expression, true);
+  if (!relaxed) {
+    if (expression !== expression.trimEnd()) {
+      return ctxEval(expression, true);
+    }
+    if (hasIrregularTopLevelCommaSpacing(expression)) {
+      return ctxEval(expression, true);
+    }
   }
-  if (hasIrregularTopLevelCommaSpacing(expression)) {
-    return ctxEval(expression, true);
-  }
-  // Explicit `+<number>` sign — the AST strips the `+` on re-emit.
+  // Explicit `+<number>` sign — the expression AST cannot represent it, so
+  // preservation is intentional even in relaxed mode (not a parse failure).
   if (/[(,]\s*\+\d/.test(expression)) {
     return ctxEval(expression, true);
   }

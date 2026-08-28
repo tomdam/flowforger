@@ -10,6 +10,7 @@
  * to be generated from the same intermediate representation.
  */
 
+import { findConnectorEnumForParam, formatConnectorEnumValue } from './connector-enums.js';
 import type {
   FlowIR,
   Node,
@@ -409,6 +410,31 @@ function formatValueLiteral(value: any, indent: string = ''): string {
 }
 
 // Helper: Format value for TypeScript with expression parsing (recursively parses expressions in objects/arrays)
+/**
+ * Format connector trigger params, substituting ambient enum members
+ * (e.g. `DataverseMessage.AddedOrModified`) for registered numeric params.
+ * Values outside the enum, and params with no registered enum, fall back to formatValue.
+ */
+function formatConnectorTriggerParams(
+  connector: string,
+  operation: string,
+  params: Record<string, any>,
+  indent: string,
+): string {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined);
+  if (entries.length === 0) return '{}';
+  const props = entries.map(([k, v]) => {
+    const key = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k) ? k : `"${escapeString(k)}"`;
+    const enumDef = findConnectorEnumForParam(connector, operation, k);
+    const formatted = (enumDef && formatConnectorEnumValue(enumDef, v)) ?? formatValue(v, indent + '  ');
+    return `${key}: ${formatted}`;
+  });
+  if (props.every(p => !p.includes('\n')) && props.join(', ').length < 60) {
+    return `{ ${props.join(', ')} }`;
+  }
+  return `{\n${indent}  ${props.join(`,\n${indent}  `)}\n${indent}}`;
+}
+
 function formatValue(value: any, indent: string = '', variableMap?: VariableNameMap): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
@@ -933,7 +959,7 @@ function generateTriggerFromNode(node: Node): string[] {
       lines.push('  return {');
       lines.push(`    connector: "${connector}",`);
       lines.push(`    operation: "${operation}",`);
-      lines.push(`    params: ${formatValue(params, '    ')},`);
+      lines.push(`    params: ${formatConnectorTriggerParams(connector, operation, params, '    ')},`);
       if (inputs.connectionReferenceName) {
         lines.push(`    connectionReferenceName: "${inputs.connectionReferenceName}",`);
       }
@@ -1039,8 +1065,8 @@ function generateActionStatement(node: ActionNode, indent: string, previousActio
       }
       const runAfterTags = generateRunAfterTags(node.runAfter, previousActionName, indent);
       const httpOperationOptions = (node as any).operationOptions as string | undefined;
-      if (runAfterTags || node.runtimeConfiguration || node.retryPolicy || node.trackedProperties || node.description || node.metadata || httpOperationOptions) {
-        lines.push(`${indent}${buildJSDocComment(name, { runAfter: node.runAfter, previousActionName, indent, runtimeConfiguration: node.runtimeConfiguration, retryPolicy: node.retryPolicy, trackedProperties: node.trackedProperties, description: node.description, metadata: node.metadata, operationOptions: httpOperationOptions, includeAction: false })}`);
+      if (runAfterTags || node.runtimeConfiguration || node.retryPolicy || node.limit || node.trackedProperties || node.description || node.metadata || httpOperationOptions) {
+        lines.push(`${indent}${buildJSDocComment(name, { runAfter: node.runAfter, previousActionName, indent, runtimeConfiguration: node.runtimeConfiguration, retryPolicy: node.retryPolicy, limit: node.limit, trackedProperties: node.trackedProperties, description: node.description, metadata: node.metadata, operationOptions: httpOperationOptions, includeAction: false })}`);
       }
       lines.push(`${indent}await ctx.http("${escapeString(name)}", { ${opts.join(', ')} });`);
       break;

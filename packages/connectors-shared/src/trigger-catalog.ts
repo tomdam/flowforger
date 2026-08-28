@@ -8,6 +8,12 @@
 
 import type { ParameterMetadata } from './metadata.js';
 import { param } from './metadata.js';
+import { CONNECTOR_ENUMS, connectorEnumAllowedValues } from '@flowforger/ir';
+
+/** `param()` whose value set is one of the DSL's ambient connector enums (see @flowforger/ir connector-enums). */
+function enumParam(name: string, enumName: keyof typeof CONNECTOR_ENUMS, description: string, required: boolean, defaultValue?: number): ParameterMetadata {
+  return { ...param(name, 'number', description, required, defaultValue), allowedValues: connectorEnumAllowedValues(CONNECTOR_ENUMS[enumName]) };
+}
 
 /**
  * Trigger type determines how Power Automate invokes the trigger.
@@ -131,12 +137,12 @@ const dataverseTriggers: ConnectorTriggerCatalogEntry = {
       triggerType: 'OpenApiConnectionWebhook',
       defaultSplitOn: "@triggerOutputs()?['body/value']",
       parameters: [
-        param('subscriptionRequest/message', 'number', 'Message type: 1=Added, 2=Deleted, 3=Modified, 4=Added or Modified, 5=Added or Deleted, 6=Modified or Deleted, 7=Added, Modified, or Deleted', true),
+        enumParam('subscriptionRequest/message', 'DataverseMessage', 'Row event to subscribe to; use DataverseMessage.* in the DSL (e.g. DataverseMessage.AddedOrModified)', true),
         param('subscriptionRequest/entityname', 'string', 'Table logical name (e.g., account, contact)', true),
-        param('subscriptionRequest/scope', 'number', 'Scope: 1=User, 2=BusinessUnit, 3=ParentChildBusinessUnit, 4=Organization', false, 4),
+        enumParam('subscriptionRequest/scope', 'DataverseScope', 'Subscription scope; use DataverseScope.* in the DSL', false, 4),
         param('subscriptionRequest/filterexpression', 'string', 'Row filter expression', false),
         param('subscriptionRequest/filteringattributes', 'string', 'Comma-separated column names to filter on', false),
-        param('subscriptionRequest/runas', 'number', 'Run as: 1=Modifying user, 2=Row owner, 3=Flow owner', false),
+        enumParam('subscriptionRequest/runas', 'DataverseRunAs', 'User context the flow runs as; use DataverseRunAs.* in the DSL', false),
       ],
     },
     {

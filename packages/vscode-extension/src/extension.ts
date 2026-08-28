@@ -22,8 +22,14 @@ import { transformCode } from '@flowforger/dsl-native';
 import { emitLogicAppsJson } from '@flowforger/emitter-logicapps';
 import type { FlowIR, Node } from '@flowforger/ir';
 import { resolveRequiredScopes, acquireTokens, type AuthConfig } from './auth.js';
+import { SchemaCompletionProvider, SchemaContextManager } from './schema-completions.js';
+import { sharepointScopes } from '@flowforger/connectors-sharepoint';
+import { dataverseScopes } from '@flowforger/connectors-dataverse';
 
 let client: LanguageClient | undefined;
+
+/** Owns the Dataverse/SharePoint metadata caches behind schema completions. */
+const schemaManager = new SchemaContextManager();
 
 /**
  * Activate the extension.
@@ -39,6 +45,24 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Register debug adapter
   registerDebugAdapter(context);
+
+  // Register schema-aware completions (Dataverse tables/columns, SharePoint
+  // sites/lists/fields inside ctx.connectors.* calls). Merged by VS Code with
+  // the LSP server's completions; silent-only, so it never prompts for auth.
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(
+      [
+        { scheme: 'file', language: 'flowforger' },
+        { scheme: 'file', pattern: '**/*.ff.ts' },
+      ],
+      new SchemaCompletionProvider(schemaManager),
+      "'",
+      '"',
+      '$',
+      '{',
+      ','
+    )
+  );
 
   console.log('FlowForger extension activated');
 }
@@ -248,6 +272,89 @@ function registerCommands(context: vscode.ExtensionContext): void {
       compileActiveFlow('logicapps')
     )
   );
+
+  // Connect data sources: the one sanctioned interactive login for schema
+  // completions. Warms the MSAL token cache via device code, then retries
+  // failed metadata fetches. Completions themselves never prompt.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('flowforger.connectDataSources', connectDataSources)
+  );
+}
+
+/**
+ * Interactively acquire Dataverse/SharePoint tokens for schema completions.
+ * Resources come from flowforger.config.json's auth section; the SharePoint
+ * resource falls back to the origin of a dataset URL in the active .ff.ts.
+ */
+async function connectDataSources(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  const documentPath =
+    editor?.document.uri.fsPath ??
+    path.join(vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(), 'flow.ff.ts');
+
+  const authConfig = schemaManager.getAuthConfig(documentPath);
+  if (!authConfig) {
+    vscode.window.showErrorMessage(
+      'FlowForger: flowforger.config.json with an auth section (clientId, tenantId) is required to connect data sources.'
+    );
+    return;
+  }
+
+  const scopesByResource = new Map<string, string[]>();
+  const dvUrl = authConfig.resources?.dataverse?.replace(/\/+$/, '');
+  if (dvUrl) {
+    scopesByResource.set(dvUrl, dataverseScopes.default.map((s: string) => `${dvUrl}/${s}`));
+  }
+  let spResource = authConfig.resources?.sharepoint?.replace(/\/+$/, '');
+  if (!spResource && editor && isFlowForgerFile(editor.document)) {
+    const m = /dataset\s*:\s*['"](https:\/\/[^'"]*sharepoint\.com)[^'"]*['"]/.exec(
+      editor.document.getText()
+    );
+    if (m) spResource = m[1];
+  }
+  if (spResource) {
+    scopesByResource.set(spResource, sharepointScopes.default.map((s: string) => `${spResource}/${s}`));
+  }
+
+  if (scopesByResource.size === 0) {
+    vscode.window.showWarningMessage(
+      'FlowForger: no Dataverse or SharePoint resources found — add auth.resources to flowforger.config.json.'
+    );
+    return;
+  }
+
+  const outputChannel = vscode.window.createOutputChannel('FlowForger Auth');
+  try {
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: 'FlowForger: Connecting data sources...',
+        cancellable: false,
+      },
+      () =>
+        acquireTokens(authConfig, scopesByResource, {
+          onLog: (msg) => outputChannel.appendLine(msg),
+          onDeviceCode: async (info) => {
+            outputChannel.appendLine(info.message);
+            outputChannel.show(true);
+            await vscode.env.clipboard.writeText(info.userCode);
+            const action = await vscode.window.showInformationMessage(
+              `FlowForger Auth: Enter code ${info.userCode} (copied to clipboard)`,
+              'Open Browser'
+            );
+            if (action === 'Open Browser') {
+              vscode.env.openExternal(vscode.Uri.parse(info.verificationUri));
+            }
+          },
+        })
+    );
+    schemaManager.invalidateFailed();
+    vscode.window.showInformationMessage(
+      'FlowForger: Data sources connected — schema completions are available.'
+    );
+  } catch (err: any) {
+    vscode.window.showErrorMessage(`FlowForger: Connecting data sources failed — ${err.message}`);
+  }
 }
 
 /**
@@ -600,6 +707,10 @@ class FlowForgerDebugConfigProvider implements vscode.DebugConfigurationProvider
           });
         }
       );
+
+      // The debug login just warmed the token cache — let schema completions
+      // retry any metadata fetches that previously failed on a cold cache.
+      schemaManager.invalidateFailed();
 
       // Inject acquired tokens into the launch config
       if (tokens.graph && !config.graphToken) config.graphToken = tokens.graph;

@@ -459,4 +459,30 @@ export function isRecurrenceTrigger(n: Node): n is RecurrenceTriggerNode {
   return n.type === 'recurrence';
 }
 
+/**
+ * Power Automate rejects action/trigger descriptions longer than 255 characters.
+ * IR node descriptions are unbounded (DSL comments — including commented-out code —
+ * map to them); the Logic Apps emitter emits a longer description as a 255-char
+ * excerpt in `description` and preserves the full text in the action's metadata
+ * under DESCRIPTION_OVERFLOW_METADATA_KEY, which parseLogicAppsToIR reads back.
+ */
+export const MAX_ACTION_DESCRIPTION_LENGTH = 255;
+
+export const DESCRIPTION_OVERFLOW_METADATA_KEY = 'flowforgerDescription';
+
+/**
+ * The <=255-char excerpt the emitter puts in `description` for a long description.
+ * Deterministic so the parser can detect whether a cloud-side `description` still
+ * matches the stored full text (a note edited in the Power Automate designer wins
+ * over stale overflow metadata).
+ */
+export function toDescriptionExcerpt(description: string): string {
+  if (description.length <= MAX_ACTION_DESCRIPTION_LENGTH) return description;
+  let cut = description.slice(0, MAX_ACTION_DESCRIPTION_LENGTH - 1);
+  // Don't end on the high half of a split surrogate pair
+  if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
+  return cut + '…';
+}
+
 export * from './diff.js';
+export * from './connector-enums.js';

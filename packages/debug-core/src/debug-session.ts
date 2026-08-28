@@ -118,6 +118,12 @@ export class DebugSession {
 
   // Pause/resume
   private resumeResolver: ((action: ResumeAction) => void) | null = null;
+  // Serializes pause/resume cycles across concurrent execution lanes (parallel
+  // foreach): resumeResolver is a single slot, so a pause may only begin once
+  // the previous one has fully resumed. Lanes queue on this promise chain; a
+  // lane that acquires the gate after stop() re-checks isStopped and never
+  // pauses, so no lane can be stranded on an overwritten resolver.
+  private pauseGate: Promise<void> = Promise.resolve();
   private steppingMode: ResumeAction = 'step';
 
   // Step-in flag: true = F11 (step into child flows), false = F10 (step over)
@@ -185,6 +191,7 @@ export class DebugSession {
       workflowName: root.ir.name,
       parameters,
       iterationStack: [],
+      artifacts: [],
       now: () => new Date(),
       sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
       log: (evt) => callbacks.onOutput(JSON.stringify(evt), 'console'),
@@ -372,16 +379,38 @@ export class DebugSession {
       // Skip nodes already executed (or marked Skipped) by a parent control-flow node
       if (handledIds.has(node.id)) continue;
 
-      // Check if we should pause BEFORE executing
-      if (this.shouldPauseAt(node, i, breakpoints)) {
-        this.currentIterationContext = null;
-        this.pausedNode = node;
-        const reason = breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.() ? 'breakpoint' : 'step';
-        this.pausedAtStepLoop = true;
-        this.callbacks.onStopped(reason, node.id);
+      // Check if we should pause BEFORE executing. The stateful part is
+      // evaluated exactly ONCE, before the gate: the fast-forward controller's
+      // shouldPauseBefore deactivates itself when it fires, so consulting it
+      // again under the gate would silently drop the arrival pause.
+      const pauseBefore = this.options?.shouldPauseBefore?.(node) ?? false;
+      const hasBreakpoint = breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.();
+      const entryPause = this.stopOnEntry && i === 0 && this.callStack.length === 0;
+      if (pauseBefore || entryPause || hasBreakpoint || this.steppingMode === 'step') {
+        // Gated like the engine-hook pause: a child-flow debugged inside a
+        // parallel foreach lane pauses through THIS loop while sibling lanes
+        // pause through onBeforeChildExecute — both must share the single
+        // resumeResolver one cycle at a time.
+        const release = await this.acquirePauseGate();
+        let action: ResumeAction | null = null;
+        try {
+          if (this.isStopped) {
+            action = 'stop';
+          } else if (pauseBefore || entryPause || hasBreakpoint || this.steppingMode === 'step') {
+            // Only steppingMode is re-read under the gate: a resume that
+            // happened while this pause was queued may have cleared step mode.
+            this.currentIterationContext = null;
+            this.pausedNode = node;
+            const reason = hasBreakpoint ? 'breakpoint' : 'step';
+            this.pausedAtStepLoop = true;
+            this.callbacks.onStopped(reason, node.id);
 
-        const action = await this.waitForResume();
-        this.pausedAtStepLoop = false;
+            action = await this.waitForResume();
+            this.pausedAtStepLoop = false;
+          }
+        } finally {
+          release();
+        }
         if (action === 'stop') {
           this.isStopped = true;
           break;
@@ -406,7 +435,9 @@ export class DebugSession {
             continue;
           }
           // resume('jump') without a jumpTo() (host misuse): behave like a plain step
-        } else {
+        } else if (action) {
+          // null = the pause was skipped under the gate; steppingMode is
+          // whatever the resume that cleared it set.
           this.steppingMode = action;
         }
       }
@@ -500,19 +531,38 @@ export class DebugSession {
     const onBeforeChildExecute = async (childNode: Node, childCtx: RunContext): Promise<'continue' | 'stop'> => {
       if (this.isStopped) return 'stop';
 
+      // Stateful part evaluated exactly ONCE, before the gate (see the same
+      // pattern in executeSteps): the fast-forward controller's
+      // shouldPauseBefore deactivates itself when it fires.
       const hasBreakpoint = breakpoints.has(childNode.id) && !this.options?.suppressBreakpoints?.();
       const pauseBefore = this.options?.shouldPauseBefore?.(childNode) ?? false;
       if (childDebugMode === 'step' || hasBreakpoint || pauseBefore) {
-        this.updateIterationContext(childCtx, source);
-        this.pausedNode = childNode;
-        const reason = hasBreakpoint ? 'breakpoint' : 'step';
-        this.callbacks.onStopped(reason, childNode.id);
+        // Parallel foreach lanes reach this hook concurrently, so the pause is
+        // serialized through the gate: one lane owns the pause/resume cycle
+        // while the others queue. Without it, a second lane's waitForResume
+        // would overwrite the first lane's resolver and strand that lane
+        // forever — hanging the whole session (Stop and Continue alike).
+        const release = await this.acquirePauseGate();
+        try {
+          // Re-checked under the gate: while this lane was queued, the session
+          // may have been stopped, or another lane's 'continue' may have
+          // cleared step mode (only childDebugMode is re-read).
+          if (this.isStopped) return 'stop';
+          if (childDebugMode === 'step' || hasBreakpoint || pauseBefore) {
+            this.updateIterationContext(childCtx, source);
+            this.pausedNode = childNode;
+            const reason = hasBreakpoint ? 'breakpoint' : 'step';
+            this.callbacks.onStopped(reason, childNode.id);
 
-        const action = await this.waitForResume();
-        if (action === 'stop') return 'stop';
-        const effective = action === 'jump' ? 'step' : action;
-        childDebugMode = effective;
-        this.steppingMode = effective;
+            const action = await this.waitForResume();
+            if (action === 'stop') return 'stop';
+            const effective = action === 'jump' ? 'step' : action;
+            childDebugMode = effective;
+            this.steppingMode = effective;
+          }
+        } finally {
+          release();
+        }
       }
       this.executingNodeStack.push(childNode);
       return 'continue';
@@ -556,6 +606,10 @@ export class DebugSession {
             loadChildFlow: (ref: string) => this.loadChildFlowAsIR(ref, child),
             strictWorkflows: false,
           });
+
+          // Child saveFile artifacts funnel into the root collector, matching
+          // the step-in path and the engine's own nested-run behavior.
+          if (childResult.artifacts?.length) this.ctx.artifacts?.push(...childResult.artifacts);
 
           const childFlowBody = childResult.trace[childResult.trace.length - 1]?.outputs;
           const result: ExecuteNodeResult = {
@@ -617,6 +671,9 @@ export class DebugSession {
       workflowName: child.ir.name,
       parameters: childParameters,
       iterationStack: [],
+      // Child artifacts funnel into the root collector so a child's saveFile
+      // surfaces in the host's single Files list.
+      artifacts: this.ctx.artifacts,
       now: () => new Date(),
       sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
       log: (evt) => this.callbacks.onOutput(JSON.stringify(evt), 'console'),
@@ -698,18 +755,23 @@ export class DebugSession {
     }
   }
 
-  private shouldPauseAt(node: Node, stepIndex: number, breakpoints: Map<string, number>): boolean {
-    if (this.options?.shouldPauseBefore?.(node)) return true;
-    if (this.stopOnEntry && stepIndex === 0 && this.callStack.length === 0) return true;
-    if (this.steppingMode === 'step') return true;
-    if (breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.()) return true;
-    return false;
-  }
-
   private waitForResume(): Promise<ResumeAction> {
     return new Promise<ResumeAction>((resolve) => {
       this.resumeResolver = resolve;
     });
+  }
+
+  /**
+   * Acquire the pause gate: resolves once every earlier acquirer has released,
+   * returning the function that releases it for the next in line. Held only
+   * for the duration of one pause/resume cycle — never across node execution,
+   * so sequential runs are unaffected and re-entry cannot deadlock.
+   */
+  private acquirePauseGate(): Promise<() => void> {
+    const prev = this.pauseGate;
+    let release!: () => void;
+    this.pauseGate = new Promise<void>((res) => (release = res));
+    return prev.then(() => release);
   }
 
   // --- Breakpoint helpers ---

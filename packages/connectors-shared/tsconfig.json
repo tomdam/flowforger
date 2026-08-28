@@ -6,5 +6,12 @@
     "composite": true,
     "declarationMap": true
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ],
+  "references": [
+    {
+      "path": "../ir"
+    }
+  ]
 }

@@ -1,3 +1,7 @@
+import type { EnvironmentVariableDefinition, EnvironmentVariableValue } from './env-vars.js';
+
+export * from './env-vars.js';
+
 export interface DataverseClientOptions {
   baseUrl: string; // e.g., https://org.crm.dynamics.com
   token: string; // Bearer token
@@ -183,6 +187,27 @@ export class DataverseClient {
       allFlows.push(...(result?.value || []));
     }
     return allFlows;
+  }
+
+  /** List environment variable definitions (schema name, type, current default). */
+  async listEnvironmentVariableDefinitions(): Promise<EnvironmentVariableDefinition[]> {
+    const select =
+      '$select=environmentvariabledefinitionid,schemaname,displayname,type,defaultvalue';
+    const result = await this.request(`/environmentvariabledefinitions?${select}`);
+    return result?.value || [];
+  }
+
+  /** List current environment variable value records. */
+  async listEnvironmentVariableValues(): Promise<EnvironmentVariableValue[]> {
+    const select =
+      '$select=environmentvariablevalueid,schemaname,value,_environmentvariabledefinitionid_value';
+    const result = await this.request(`/environmentvariablevalues?${select}`);
+    return (result?.value || []).map((v: any) => ({
+      environmentvariablevalueid: v.environmentvariablevalueid,
+      schemaname: v.schemaname,
+      value: v.value,
+      environmentvariabledefinitionid: v._environmentvariabledefinitionid_value,
+    }));
   }
 
   async listConnectionReferences(): Promise<ConnectionReferenceRecord[]> {

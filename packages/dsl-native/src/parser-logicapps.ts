@@ -38,7 +38,7 @@ import type {
   ChildFlowDefinition,
 } from '@flowforger/ir';
 
-import { getLoggingConfig, getParserConfig } from '@flowforger/ir';
+import { getLoggingConfig, getParserConfig, DESCRIPTION_OVERFLOW_METADATA_KEY, toDescriptionExcerpt } from '@flowforger/ir';
 
 // Module-level config storage for the current parse run
 let currentParserConfig: Required<ParserConfig> = getParserConfig();
@@ -46,23 +46,41 @@ let currentParserConfig: Required<ParserConfig> = getParserConfig();
 /**
  * Filter metadata object based on skipMetadataFields config.
  * Returns undefined if resulting metadata is empty.
+ *
+ * The description-overflow key is always stripped — applyParsedDescription promotes it
+ * into the node's description, and the emitter re-derives it from there on emit.
  */
 function filterMetadata(metadata: Record<string, any> | undefined): Record<string, any> | undefined {
   if (!metadata) return undefined;
 
-  const skipFields = currentParserConfig.skipMetadataFields;
-  if (!skipFields || skipFields.length === 0) {
-    return metadata;
-  }
-
+  const skipFields = currentParserConfig.skipMetadataFields || [];
   const filtered: Record<string, any> = {};
   for (const [key, value] of Object.entries(metadata)) {
+    if (key === DESCRIPTION_OVERFLOW_METADATA_KEY) continue;
     if (!skipFields.includes(key)) {
       filtered[key] = value;
     }
   }
 
   return Object.keys(filtered).length > 0 ? filtered : undefined;
+}
+
+/**
+ * Set a node's description from a parsed action/trigger definition.
+ *
+ * A description longer than Power Automate's 255-char limit is emitted as a truncated
+ * excerpt in `description` with the full text (e.g. commented-out DSL code) preserved in
+ * metadata under DESCRIPTION_OVERFLOW_METADATA_KEY. Prefer that full text — but only
+ * while the excerpt still matches it: a note edited in the Power Automate designer no
+ * longer matches, and then the edited note wins and the stale full text is dropped.
+ */
+function applyParsedDescription(node: any, def: any): void {
+  const full = def.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY];
+  if (typeof full === 'string' && full && def.description === toDescriptionExcerpt(full)) {
+    node.description = full;
+  } else if (def.description) {
+    node.description = def.description;
+  }
 }
 
 // ID counter for generating unique IDs
@@ -303,7 +321,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
     if (rec.startTime) node.inputs.startTime = rec.startTime;
     if (rec.endTime) node.inputs.endTime = rec.endTime;
     if (rec.schedule) node.inputs.schedule = rec.schedule;
-    if (trigger.description) node.description = trigger.description;
+    applyParsedDescription(node, trigger);
     if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
     if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
     if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -341,7 +359,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
     if (tKind === 'powerappv2') {
       (node.inputs as any).triggerKind = 'PowerAppV2';
     }
-    if (trigger.description) node.description = trigger.description;
+    applyParsedDescription(node, trigger);
     if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
     if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
     if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -414,7 +432,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
       (node.inputs as any).authentication = trigger.inputs.authentication;
     }
 
-    if (trigger.description) node.description = trigger.description;
+    applyParsedDescription(node, trigger);
     if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
     if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
     if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -455,7 +473,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
     if (tKind === 'powerapp') {
       (node.inputs as any).triggerKind = 'PowerApp';
     }
-    if (trigger.description) node.description = trigger.description;
+    applyParsedDescription(node, trigger);
     if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
     if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
     if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -511,7 +529,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
         (node.inputs as any).retryPolicy = trigger.inputs.retryPolicy;
       }
 
-      if (trigger.description) node.description = trigger.description;
+      applyParsedDescription(node, trigger);
       if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
       if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
       if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -599,7 +617,7 @@ function parseTrigger(name: string, trigger: any): TriggerNode | RecurrenceTrigg
         (node.inputs as any).retryPolicy = trigger.inputs.retryPolicy;
       }
 
-      if (trigger.description) node.description = trigger.description;
+      applyParsedDescription(node, trigger);
       if (trigger.conditions !== undefined) node.conditions = trigger.conditions;
       if (trigger.correlation !== undefined) node.correlation = trigger.correlation;
       if (trigger.runtimeConfiguration) node.runtimeConfiguration = trigger.runtimeConfiguration;
@@ -674,9 +692,10 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       // HTTP actions store retryPolicy inside inputs (Logic Apps convention)
       if (action.inputs?.retryPolicy) node.retryPolicy = action.inputs.retryPolicy;
+      if (action.limit) node.limit = action.limit;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       if (action.operationOptions) (node as any).operationOptions = action.operationOptions;
       return node;
@@ -695,7 +714,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -715,7 +734,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -743,7 +762,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -762,7 +781,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -783,7 +802,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -804,7 +823,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -823,7 +842,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -842,7 +861,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -861,7 +880,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -880,7 +899,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -899,7 +918,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -918,7 +937,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -952,7 +971,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       if (action.operationOptions) (node as any).operationOptions = action.operationOptions;
       return node;
@@ -972,7 +991,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -990,7 +1009,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1011,7 +1030,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       // Workflow actions have retryPolicy inside inputs
       if (action.inputs?.retryPolicy) node.retryPolicy = action.inputs.retryPolicy;
@@ -1030,7 +1049,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1068,7 +1087,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1101,7 +1120,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1134,7 +1153,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1152,7 +1171,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1199,7 +1218,7 @@ function parseAction(name: string, action: any): Node | null {
         if (runAfter) node.runAfter = runAfter;
         if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
         if (action.metadata) node.metadata = filterMetadata(action.metadata);
-        if (action.description) node.description = action.description;
+        applyParsedDescription(node, action);
         if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
         if (action.operationOptions) (node as any).operationOptions = action.operationOptions;
         return node;
@@ -1282,7 +1301,7 @@ function parseAction(name: string, action: any): Node | null {
         if (runAfter) node.runAfter = runAfter;
         if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
         if (action.metadata) node.metadata = filterMetadata(action.metadata);
-        if (action.description) node.description = action.description;
+        applyParsedDescription(node, action);
         if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
         if (action.operationOptions) (node as any).operationOptions = action.operationOptions;
         return node;
@@ -1298,7 +1317,7 @@ function parseAction(name: string, action: any): Node | null {
         };
         if (runAfter) node.runAfter = runAfter;
         if (action.metadata) node.metadata = filterMetadata(action.metadata);
-        if (action.description) node.description = action.description;
+        applyParsedDescription(node, action);
         if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
         return node;
       }
@@ -1337,7 +1356,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1415,7 +1434,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1440,7 +1459,7 @@ function parseAction(name: string, action: any): Node | null {
       if (runAfter) node.runAfter = runAfter;
       if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
       if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
       return node;
     }
@@ -1480,7 +1499,7 @@ function parseAction(name: string, action: any): Node | null {
         if (runAfter) node.runAfter = runAfter;
         if (action.runtimeConfiguration) node.runtimeConfiguration = action.runtimeConfiguration;
         if (action.metadata) node.metadata = filterMetadata(action.metadata);
-      if (action.description) node.description = action.description;
+      applyParsedDescription(node, action);
       if (action.trackedProperties) node.trackedProperties = action.trackedProperties;
         return node;
       }

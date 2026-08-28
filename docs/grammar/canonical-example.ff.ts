@@ -22,7 +22,7 @@
  * external status, and responds — with a try/catch/finally around the risky call.
  */
 
-// File-level JSDoc above the class becomes the flow description (<= 256 chars, rule R9).
+// File-level JSDoc above the class becomes the flow description (<= 255 chars, rule R9).
 /**
  * Validate an incoming order, enrich it from SharePoint, process each line item,
  * and respond with the result. Demonstrates the full recognized subset.
@@ -76,7 +76,8 @@ class CanonicalOrderFlow {
 
     // ---- Compose: read its result with ctx.outputs() (rule R12) --------------
     // Action calls take their name as the FIRST argument — no @action JSDoc (rule R4).
-    // Short leading comment is allowed; it becomes the description (<= 256 chars, R9).
+    // A leading comment of any length is allowed; it becomes the description (long ones
+    // overflow into action metadata and round-trip intact — rule R9).
     // Normalize the order payload for downstream steps.
     await ctx.compose('Normalize_order', {
       id: ctx.triggerBody()?.['orderId'],

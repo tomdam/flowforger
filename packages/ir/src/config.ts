@@ -113,6 +113,19 @@ export interface GeneratorConfig {
   expressionFormat?: 'function' | 'braced';
 
   /**
+   * How strictly generated DSL preserves the original expression text.
+   * - 'strict': Preserve expressions verbatim via ctx.eval() whenever regeneration
+   *   would change cosmetic details (irregular comma spacing, trailing whitespace,
+   *   explicit +<number> signs, non-canonical function-name casing). Guarantees
+   *   byte-for-byte round-trip parity with the source JSON.
+   * - 'relaxed': Always generate native DSL for parseable expressions, normalizing
+   *   those cosmetic details. Semantically identical, but re-emitted JSON may differ
+   *   textually from the source (the parity check will report those diffs).
+   * @default 'strict'
+   */
+  expressionFidelity?: 'strict' | 'relaxed';
+
+  /**
    * How to render action/trigger descriptions in generated DSL.
    * - 'jsdoc': Emit as `\/** @description ... *\/` (combines with other JSDoc tags)
    * - 'lineComment': Emit as `// ...` line(s) above the action; structural JSDoc tags
@@ -364,6 +377,7 @@ export const DEFAULT_PARSER_CONFIG: Required<ParserConfig> = {
 export const DEFAULT_GENERATOR_CONFIG: Required<GeneratorConfig> = {
   argumentWhitespace: 'spaced',
   multilineExpressions: 'preserve',
+  expressionFidelity: 'strict',
   includeJsDocAnnotations: true,
   expressionFormat: 'function',
   descriptionStyle: 'lineComment',
@@ -547,6 +561,11 @@ export function validateConfig(config: Partial<FlowForgerConfig>): string[] {
     const validMultiline = ['preserve', 'flatten'];
     if (config.generator.multilineExpressions && !validMultiline.includes(config.generator.multilineExpressions)) {
       errors.push(`Invalid generator.multilineExpressions: ${config.generator.multilineExpressions}. Must be one of: ${validMultiline.join(', ')}`);
+    }
+
+    const validFidelity = ['strict', 'relaxed'];
+    if (config.generator.expressionFidelity && !validFidelity.includes(config.generator.expressionFidelity)) {
+      errors.push(`Invalid generator.expressionFidelity: ${config.generator.expressionFidelity}. Must be one of: ${validFidelity.join(', ')}`);
     }
   }
 

@@ -1,4 +1,5 @@
 import type { FlowIR, ActionNode, TriggerNode, RecurrenceTriggerNode, Node, ConnectionReference, ChildFlowDefinition } from '@flowforger/ir';
+import { MAX_ACTION_DESCRIPTION_LENGTH, DESCRIPTION_OVERFLOW_METADATA_KEY, toDescriptionExcerpt } from '@flowforger/ir';
 
 // Operation ID mapping: FlowForger IR → Power Automate cloud
 // Some Power Automate connectors use different operationIds than the names
@@ -838,6 +839,37 @@ function generateMetadataId(): string {
 }
 
 /**
+ * Apply description and metadata to an action/trigger definition.
+ * - If the node has existing metadata, use it
+ * - If includeMetadata is true and there's no existing metadata, generate new
+ *
+ * Power Automate rejects descriptions longer than 255 characters, so a longer
+ * description (e.g. commented-out DSL code) is emitted as a 255-char excerpt with
+ * the full text preserved in metadata under DESCRIPTION_OVERFLOW_METADATA_KEY —
+ * parseLogicAppsToIR restores it, so long comments survive the cloud round-trip.
+ */
+function applyDescriptionAndMetadata(def: any, node: any, includeMetadata: boolean): void {
+  let overflow: string | undefined;
+  if (node.description) {
+    if (node.description.length > MAX_ACTION_DESCRIPTION_LENGTH) {
+      overflow = node.description;
+      def.description = toDescriptionExcerpt(node.description);
+    } else {
+      def.description = node.description;
+    }
+  }
+  if (node.metadata) {
+    def.metadata = overflow ? { ...node.metadata, [DESCRIPTION_OVERFLOW_METADATA_KEY]: overflow } : node.metadata;
+  } else if (includeMetadata) {
+    def.metadata = overflow
+      ? { operationMetadataId: generateMetadataId(), [DESCRIPTION_OVERFLOW_METADATA_KEY]: overflow }
+      : { operationMetadataId: generateMetadataId() };
+  } else if (overflow) {
+    def.metadata = { [DESCRIPTION_OVERFLOW_METADATA_KEY]: overflow };
+  }
+}
+
+/**
  * Apply metadata to a definition.
  * - If the node has existing metadata, use it
  * - If includeMetadata is true and there's no existing metadata, generate new
@@ -847,15 +879,7 @@ function applyMetadata(def: any, node: any, includeMetadata: boolean): void {
   if (node.trackedProperties) {
     def.trackedProperties = node.trackedProperties;
   }
-  // Add description if present
-  if (node.description) {
-    def.description = node.description;
-  }
-  if (node.metadata) {
-    def.metadata = node.metadata;
-  } else if (includeMetadata) {
-    def.metadata = { operationMetadataId: generateMetadataId() };
-  }
+  applyDescriptionAndMetadata(def, node, includeMetadata);
   // Preserve operationOptions (e.g. "Asynchronous") if present
   if (node.operationOptions) {
     def.operationOptions = node.operationOptions;
@@ -901,6 +925,10 @@ function emitActionsContainer(nodes: Node[], config?: EmitterConfig): Record<str
         // HTTP retryPolicy lives inside inputs (Logic Apps convention)
         if (act.retryPolicy) {
           def.inputs.retryPolicy = act.retryPolicy;
+        }
+        // Add limit (timeout) if present
+        if (act.limit) {
+          def.limit = act.limit;
         }
         applyMetadata(def, act, includeMetadata);
       } else if (act.kind === 'compose') {
@@ -1885,16 +1913,7 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
       triggerDef[triggerName].correlation = recTrigger.correlation;
     }
 
-    // Add description if present
-    if (recTrigger.description) {
-      triggerDef[triggerName].description = recTrigger.description;
-    }
-
-    if (recTrigger.metadata) {
-      triggerDef[triggerName].metadata = recTrigger.metadata;
-    } else if (includeMetadata) {
-      triggerDef[triggerName].metadata = { operationMetadataId: generateMetadataId() };
-    }
+    applyDescriptionAndMetadata(triggerDef[triggerName], recTrigger, includeMetadata);
   } else if (trigger.kind === 'manual') {
     const manualInputs = trigger.inputs as any;
     const triggerName = trigger.name || 'manual';
@@ -1930,16 +1949,7 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
       triggerDef[triggerName].correlation = trigger.correlation;
     }
 
-    // Add description if present
-    if (trigger.description) {
-      triggerDef[triggerName].description = trigger.description;
-    }
-
-    if (trigger.metadata) {
-      triggerDef[triggerName].metadata = trigger.metadata;
-    } else if (includeMetadata) {
-      triggerDef[triggerName].metadata = { operationMetadataId: generateMetadataId() };
-    }
+    applyDescriptionAndMetadata(triggerDef[triggerName], trigger, includeMetadata);
   } else if (trigger.kind === 'http') {
     const httpInputs = trigger.inputs as any;
     const triggerName = trigger.name || 'manual';
@@ -1974,16 +1984,7 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
       triggerDef[triggerName].correlation = trigger.correlation;
     }
 
-    // Add description if present
-    if (trigger.description) {
-      triggerDef[triggerName].description = trigger.description;
-    }
-
-    if (trigger.metadata) {
-      triggerDef[triggerName].metadata = trigger.metadata;
-    } else if (includeMetadata) {
-      triggerDef[triggerName].metadata = { operationMetadataId: generateMetadataId() };
-    }
+    applyDescriptionAndMetadata(triggerDef[triggerName], trigger, includeMetadata);
   } else if (trigger.kind === 'connector') {
     const connInputs = trigger.inputs as any;
 
@@ -2112,16 +2113,7 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
         triggerDef[trigger.name].correlation = trigger.correlation;
       }
 
-      // Add description if present
-      if (trigger.description) {
-        triggerDef[trigger.name].description = trigger.description;
-      }
-
-      if (trigger.metadata) {
-        triggerDef[trigger.name].metadata = trigger.metadata;
-      } else if (includeMetadata) {
-        triggerDef[trigger.name].metadata = { operationMetadataId: generateMetadataId() };
-      }
+      applyDescriptionAndMetadata(triggerDef[trigger.name], trigger, includeMetadata);
     } else {
       // Modern connector trigger format
       const ref = resolveConnection(connInputs.connector, config);
@@ -2184,16 +2176,7 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
         triggerDef[trigger.name].correlation = trigger.correlation;
       }
 
-      // Add description if present
-      if (trigger.description) {
-        triggerDef[trigger.name].description = trigger.description;
-      }
-
-      if (trigger.metadata) {
-        triggerDef[trigger.name].metadata = trigger.metadata;
-      } else if (includeMetadata) {
-        triggerDef[trigger.name].metadata = { operationMetadataId: generateMetadataId() };
-      }
+      applyDescriptionAndMetadata(triggerDef[trigger.name], trigger, includeMetadata);
     }
   } else {
     throw new Error(`Unsupported trigger kind: ${trigger.kind}`);

@@ -243,7 +243,7 @@ myArray = ctx.eval(`@union(variables('myArray'), createArray(outputs('Item')))`)
 | `@HttpTrigger()` | HTTP/webhook trigger |
 | `@ManualTrigger()` | Button/PowerApp trigger (every input under `schema.properties` must include `"x-ms-dynamically-added": true` or the maker-portal designer hides it — see [dsl-syntax.md](dsl-syntax.md#manual-trigger)) |
 | `@RecurrenceTrigger({...})` | Scheduled trigger |
-| `@ConnectorTrigger()` | Connector-based trigger (e.g., SharePoint "when item created") |
+| `@ConnectorTrigger()` | Connector-based trigger (e.g., SharePoint "when item created"); numeric params have ambient enums `DataverseMessage` / `DataverseScope` / `DataverseRunAs` — no import (see [dsl-syntax.md](dsl-syntax.md#named-enums-for-numeric-connector-parameters)) |
 | `@Action()` | Flow action method (always named `run`) |
 
 ## FlowContext Methods
@@ -445,42 +445,26 @@ for (const user of ctx.body('GetUsers')?.['value'] ?? []) {
 }
 ```
 
-### 9. Action descriptions (comments above an action) MUST be ≤ 256 characters
+### 9. Action descriptions (comments above an action) — any length is fine; long ones overflow into metadata
 
-Any **plain comment** (`//` or `/* */`) or `@description` text placed above an action is captured by the transformer as that action's `description` field. The emitter copies it verbatim into the Logic Apps JSON (`"description": "..."`), and Dataverse enforces a **256-character limit** on this field. A longer description does NOT fail at compile time — it fails later, when **pushing/publishing to Power Automate (Dataverse)**, with an opaque error. AI agents authoring `.ff.ts` files frequently write long explanatory comments above actions, which silently overflow this limit.
+Any **plain comment** (`//` or `/* */`) or `@description` text placed above an action is captured by the transformer as that action's `description` field. Power Automate caps the `description` field at **255 characters**, but the emitter handles this automatically: a longer comment is emitted as a 255-char excerpt (ending `…`) in `description`, with the **full text preserved in the action's metadata** under `flowforgerDescription`. On pull, `parseLogicAppsToIR` restores the full text (a note edited in the Power Automate designer wins over the stored full text). So long comments — including **commented-out actions kept for reference** — survive the DSL → cloud → DSL round-trip, and there is no length limit to worry about and no push/publish failure.
 
 ```typescript
-// ❌ WRONG — this 300+ char explanatory comment becomes the action description
-// and exceeds Dataverse's 256-char limit, breaking the push/publish:
-// This compose builds the full notification payload that will later be sent to the
-// approver. It merges the order header, the line items, the requester's display name
-// and email, plus the computed total so the approval card renders everything inline.
-await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
-
-// ✅ CORRECT — keep the description short (≤ 256 chars):
-// Build the approval notification payload from the order trigger body.
+// ✅ FINE — long explanatory comments and commented-out actions round-trip intact:
+// Disabled while the HR list is migrated — restore after the migration:
+// await ctx.connectors.sharepoint.getItems({ dataset: site, table: listId, $filter: "Status eq 'Open'" });
+// await ctx.http('NotifyOwner', { method: 'POST', url: notifyUrl, body: { id: 1 } });
 await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
 ```
 
-**What counts toward the 256 characters:**
+**What becomes the description:**
 - Only the **descriptive prose** — plain comments and `@description` text.
-- Structural JSDoc tags are **stripped** and do NOT count: `@action`, `@type`, `@runAfter`, `@limit`, `@retryPolicy`, `@metadata`, etc. So `/** @action Foo @type if */` contributes nothing to the description.
-- A plain comment placed **above** a `/** @action … */` JSDoc block is also folded into the description — so it counts too.
+- Structural JSDoc tags are **stripped** and are NOT part of it: `@action`, `@type`, `@runAfter`, `@limit`, `@retryPolicy`, `@metadata`, etc. So `/** @action Foo @type if */` contributes nothing to the description.
+- A plain comment placed **above** a `/** @action … */` JSDoc block is also folded into the description.
 
-```typescript
-// ❌ WRONG — the plain comment above the JSDoc is the description; if it's long it overflows:
-// Long multi-sentence explanation of why we loop over every pending order and re-check
-// its status against the upstream system before deciding whether to send a reminder...
-/** @action ForEachOrder @type foreach */
-for (const order of ctx.body('GetOrders')?.['value'] ?? []) { ... }
-
-// ✅ CORRECT — short description, detail (if any) lives outside the action comment:
-// Loop pending orders and re-check status.
-/** @action ForEachOrder @type foreach */
-for (const order of ctx.body('GetOrders')?.['value'] ?? []) { ... }
-```
-
-**The rule:** Keep every action/trigger description (and any comment that becomes one) at **256 characters or fewer**. If you need to explain complex logic, put the long explanation somewhere that is NOT captured as a description — e.g., a comment *inside* the action body, or split the work across multiple well-named actions. Prefer concise, single-sentence descriptions. This same 256-char limit applies to trigger descriptions and the flow-level description.
+**Notes:**
+- Only the 255-char excerpt is visible as the action's note in the Power Automate designer; the full text reappears whenever the flow is opened in FlowForger (CLI, web app, or VS Code).
+- **Exception — the flow-level description** (the class-level JSDoc on the `@Flow` class): it maps to `definition.description`, which has NO overflow handling. Keep the flow-level description at 255 characters or fewer.
 
 ## Control Flow Summary
 

@@ -206,26 +206,27 @@ userEmails.push(x);                   // ✅ AppendToArrayVariable
 
 ---
 
-## R9 — Action descriptions must be ≤ 256 characters 🔴
+## R9 — Flow-level description must be ≤ 255 characters 🔴
 
-Any plain comment (`//` or `/* */`) or `@description` text above an action becomes the IR
-`description`, copied verbatim into Logic Apps JSON. Dataverse enforces a **256-char** limit;
-overflow fails at **publish** time with an opaque error (not at compile time).
+**Action/trigger descriptions have no length limit.** Any plain comment (`//` or `/* */`) or
+`@description` text above an action becomes the IR `description`. Power Automate caps the
+Logic Apps `description` field at **255 characters**, but the emitter handles overflow
+automatically: a longer description is emitted as a 255-char excerpt (ending `…`) with the
+full text preserved in the action's metadata under `flowforgerDescription`, and
+`parseLogicAppsToIR` restores it on pull — so long comments (including commented-out code)
+round-trip through the cloud intact.
 
 - Structural tags (`@action`, `@type`, `@runAfter`, `@limit`, `@metadata`, …) are stripped and
-  do **not** count.
-- A plain comment placed above a `/** @action … */` block is folded into the description and
-  **does** count.
+  are **not** part of the description.
+- A plain comment placed above a `/** @action … */` block is folded into the description.
 
-```ts
-// ✅ short, single sentence
-// Build the approval payload from the order trigger body.
-await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
-```
+The remaining hard limit is the **flow-level description** (the class-level JSDoc on the
+`@Flow` class): it maps to `definition.description`, which has no overflow handling — keep it
+at 255 characters or fewer.
 
-Applies equally to trigger descriptions and the flow-level description.
-
-*Origin:* `parseDescriptionFromJSDoc` / `getLeadingPlainCommentText`; Dataverse field limit.
+*Origin:* `parseDescriptionFromJSDoc` / `getLeadingPlainCommentText`; overflow handling in
+`@flowforger/emitter-logicapps` (`applyDescriptionAndMetadata`) and
+`@flowforger/dsl-native` (`applyParsedDescription`).
 
 ---
 
@@ -254,6 +255,13 @@ Use `@{...}` / `ctx.braced()` **only** for intentional string output (display st
 A conformant flow class has exactly one trigger member (`@HttpTrigger` / `@ManualTrigger` /
 `@RecurrenceTrigger` / `@ConnectorTrigger`) and exactly one `@Action` method (conventionally
 `run`). Missing either is a transform error.
+
+Inside a `@ConnectorTrigger` return object, a value may be a member access on one of the
+ambient connector enums (`DataverseMessage.*`, `DataverseScope.*`, `DataverseRunAs.*`, defined
+in `@flowforger/ir` `connector-enums.ts`). The transformer resolves these statically to their
+numeric value; the generator emits the member name for registered
+(connector, operation, param) triples and the raw number otherwise. No import is required —
+the names are ambient globals in the DSL type surface.
 
 *Origin:* `findTriggerMethod` / `findActionMethod` throw when absent.
 
@@ -362,7 +370,7 @@ A plain HTTP response (no Power Apps / Virtual Agent consumer) does not need the
 | R6 | Try/Catch needs a Finally (or explicit `@runAfter`) | 🔴 |
 | R7 | `&&`/`||` not top-level `ctx.and()`/`ctx.or()` | 🔴 |
 | R8 | Append arrays with `.push()` only | 🟠 |
-| R9 | Descriptions ≤ 256 chars | 🔴 |
+| R9 | Flow-level description ≤ 255 chars (action descriptions unlimited — overflow into metadata) | 🔴 |
 | R10 | No `@{...}` around array/object/number values | 🟠 |
 | R11 | Exactly one trigger + one action method | 🔴 |
 | R12 | `body()` for HTTP/connector/child-flow, `outputs()` for Compose | 🟠 |

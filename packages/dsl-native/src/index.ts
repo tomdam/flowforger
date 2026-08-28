@@ -124,3 +124,17 @@ export type {
   ConnectionRefSuggestion,
   ConnectionRefSelection,
 } from './optimizer/report.js';
+
+// Ambient connector enums (DataverseMessage etc.) - usable in .ff.ts without imports
+export {
+  DataverseMessage,
+  DataverseScope,
+  DataverseRunAs,
+  CONNECTOR_ENUMS,
+  CONNECTOR_PARAM_ENUMS,
+  resolveConnectorEnumMember,
+  findConnectorEnumForParam,
+  formatConnectorEnumValue,
+  buildConnectorEnumDeclarations,
+} from './connector-enums.js';
+export type { ConnectorEnumName, ConnectorEnumDefinition } from './connector-enums.js';

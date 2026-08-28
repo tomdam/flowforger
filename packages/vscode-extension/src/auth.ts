@@ -294,6 +294,48 @@ export async function acquireTokens(
   return tokens;
 }
 
+/** One PCA per app registration — the silent path runs on completion cache misses. */
+const silentPcaCache = new Map<string, PublicClientApplication>();
+
+function getSilentPca(authConfig: AuthConfig): PublicClientApplication {
+  const key = `${authConfig.clientId}|${authConfig.tenantId}`;
+  let pca = silentPcaCache.get(key);
+  if (!pca) {
+    pca = new PublicClientApplication({
+      auth: {
+        clientId: authConfig.clientId,
+        authority: `https://login.microsoftonline.com/${authConfig.tenantId}`,
+      },
+      cache: { cachePlugin: createFileCachePlugin() },
+    });
+    silentPcaCache.set(key, pca);
+  }
+  return pca;
+}
+
+/**
+ * Silent-only token acquisition for background paths (DSL schema completions)
+ * that must NEVER trigger an interactive device-code login. Returns null when
+ * no cached account exists or the silent acquisition fails — callers degrade
+ * to "no completions". Interactive login stays behind explicit user gestures
+ * (starting a debug session, or the "Connect data sources" command), which
+ * warm the same file cache this reads from.
+ */
+export async function acquireTokenSilentOnly(
+  authConfig: AuthConfig,
+  scopes: string[]
+): Promise<string | null> {
+  try {
+    const pca = getSilentPca(authConfig);
+    const accounts = await pca.getTokenCache().getAllAccounts();
+    if (accounts.length === 0) return null;
+    const result = await pca.acquireTokenSilent({ scopes, account: accounts[0] });
+    return result.accessToken;
+  } catch {
+    return null;
+  }
+}
+
 function assignToken(
   tokens: ResolvedTokens,
   resourceUrl: string,

@@ -47,13 +47,25 @@ export interface ResponseInputs {
 
 // Save File inputs (debug aid; see FlowContext.saveFile)
 export interface SaveFileInputs {
-  /** MIME type, e.g. 'text/xml', 'application/pdf'. */
-  contentType: string;
-  /** File content: text, or base64 when encoding === 'base64'. */
-  content: string;
+  /**
+   * MIME type, e.g. 'text/xml', 'application/pdf'. Optional when `content` is
+   * a Power Automate file-content object — its `$content-type` is used then.
+   */
+  contentType?: string;
+  /**
+   * File content: text, base64, or a Power Automate file-content object
+   * (`{ $content: '<base64>', $content-type: '...' }`) as returned by e.g.
+   * SharePoint GetFileContent — the object is unwrapped and saved as binary.
+   */
+  content: string | { [key: string]: any };
   /** Optional file name; defaults to '<actionName>.<ext-from-contentType>'. */
   fileName?: string;
-  /** Encoding of `content`; defaults to 'utf8'. Use 'base64' for binary. */
+  /**
+   * Encoding of a string `content`. Defaults to 'utf8' for textual content
+   * types (text/*, json, xml, html, csv) and to 'base64' for binary ones
+   * (application/pdf, application/octet-stream, images, …) when the content
+   * looks like base64. Set explicitly to override the inference.
+   */
   encoding?: 'utf8' | 'base64';
 }
 

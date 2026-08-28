@@ -272,14 +272,10 @@ export const DiagnosticCodes = {
       `Variable '${name}' is already declared at line ${line}. FlowForger variables map to Power Automate InitializeVariable actions, which must be unique per variable name.`,
   },
 
-  // Description Exceeds Power Automate Limit (DSL031)
-  DSL031: {
-    code: 'DSL031',
-    severity: 'error' as DiagnosticSeverity,
-    message: 'Description exceeds 255 characters',
-    format: (length: string) =>
-      `This comment becomes the action's description in Power Automate, which allows at most 255 characters (currently ${length}). Shorten the comment.`,
-  },
+  // DSL031 (description exceeds 255 characters) is retired: the Logic Apps emitter now
+  // emits long descriptions as a 255-char excerpt with the full comment preserved in
+  // action metadata (flowforgerDescription), so long comments are no longer an error.
+  // Do not reuse the DSL031 code number.
 
   // Action Result Assigned to a Variable (DSL032)
   DSL032: {

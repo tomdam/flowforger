@@ -68,6 +68,8 @@ trigger_decorator =
     | "@ManualTrigger",     [ "(", [ <TS:ObjectLiteral> ], ")" ]
     | "@RecurrenceTrigger", "(", <TS:ObjectLiteral>, ")"
     | "@ConnectorTrigger",  "(", <TS:ObjectLiteral>, ")" ;
+(* Values inside the @ConnectorTrigger return object may be ambient enum member accesses,
+   e.g. DataverseMessage.AddedOrModified — resolved statically to a number. *)
 
 
 (* ---------------------------------------------------------------------------
@@ -111,7 +113,8 @@ flow_statement   =
       | scope_stmt ) ;
       (* Any other TypeScript statement is not lowered to IR. A leading plain
          (non-JSDoc) comment above a statement is captured as the action's
-         `description` — see conformance.md "256-char limit". *)
+         `description` — any length; over 255 chars it is emitted as an excerpt
+         with the full text preserved in action metadata (conformance.md R9). *)
 
 
 (* ----- 5a. Action calls (ctx.* and typed connectors) ----------------------- *)

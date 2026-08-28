@@ -405,38 +405,44 @@ export function analyzeCompletionContext(
     return { type: CompletionType.ContextMethods };
   }
 
+  // The string-reference patterns below allow a partially typed name after the
+  // opening quote ([^'"]*), so completions still appear when the user invokes
+  // them mid-word (e.g. Ctrl+Space after `variables('cou`) — not only on the
+  // quote trigger character itself. A closed string never matches because the
+  // closing quote can't be part of [^'"]*$.
+
   // Check for body('
-  if (/body\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/body\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.ActionName };
   }
 
   // Check for outputs('
-  if (/outputs\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/outputs\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.ActionName };
   }
 
   // Check for actions('
-  if (/actions\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/actions\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.ActionName };
   }
 
   // Check for variables('
-  if (/variables\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/variables\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.VariableName };
   }
 
   // Check for items('
-  if (/items\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/items\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.LoopName };
   }
 
   // Check for parameters('
-  if (/parameters\s*\(\s*['"]$/.test(textBeforeCursor)) {
+  if (/parameters\s*\(\s*['"][^'"]*$/.test(textBeforeCursor)) {
     return { type: CompletionType.ParameterName };
   }
 
   // Inside callWorkflow second argument: callWorkflow("name", "
-  if (/callWorkflow\s*\(\s*(['"][^'"]*['"]\s*,\s*['"])$/.test(textBeforeCursor)) {
+  if (/callWorkflow\s*\(\s*(['"][^'"]*['"]\s*,\s*['"][^'"]*)$/.test(textBeforeCursor)) {
     return { type: CompletionType.ChildFlowName };
   }
 
@@ -474,8 +480,9 @@ export function analyzeCompletionContext(
 
   // Check for connection reference name in connector calls
   // Connection references are the last argument after closing a params object
-  // Pattern: }, ' or },  ' at the end (we just closed an object and started a string)
-  if (/\}\s*,\s*['"]$/.test(textBeforeCursor)) {
+  // Pattern: }, ' or },  ' at the end (we just closed an object and started a
+  // string), optionally followed by a partially typed name
+  if (/\}\s*,\s*['"][^'"]*$/.test(textBeforeCursor)) {
     // Verify we're in a connector call context (look for ctx.connectors. or ctx.connector( earlier)
     if (/ctx\.connectors\.\w+\.\w+\s*\(/.test(textBeforeCursor) ||
         /ctx\.connector\s*\(/.test(textBeforeCursor) ||

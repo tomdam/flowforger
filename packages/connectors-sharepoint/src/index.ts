@@ -71,6 +71,14 @@ interface ExpandableFieldInfo {
   choices: string[];
   /** lookup fields: internal name of the display column on the target list */
   lookupField: string;
+  /**
+   * Dependent (projected) lookup columns only: internal name of the primary
+   * lookup field. Dependent columns (e.g. `Project_x003a_Phase`) are not
+   * expandable nav properties themselves — `$expand` on them 400s — so their
+   * value is projected through the primary's nav property instead
+   * (`$expand=Project&$select=Project/Phase`).
+   */
+  primaryName?: string;
 }
 
 // SharePoint field TypeAsString → cloud-shape expansion kind
@@ -485,6 +493,13 @@ export class SharePointConnector implements BaseConnector {
 
   private fieldMetadataCache = new Map<string, ExpandableFieldInfo[]>();
 
+  /**
+   * Per-list set of lookup/person internal names verified to expand cleanly.
+   * Populated by narrowRefExpansion after an expanded query fails, so later
+   * queries on the same list skip the known-bad fields instead of re-failing.
+   */
+  private verifiedRefFieldsCache = new Map<string, Set<string>>();
+
   private async getExpandableFields(siteUrl: string, listId: string, log?: LogFunction): Promise<ExpandableFieldInfo[]> {
     const cacheKey = `${siteUrl}|${listId}`;
     const cached = this.fieldMetadataCache.get(cacheKey);
@@ -495,10 +510,24 @@ export class SharePointConnector implements BaseConnector {
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/fields?$filter=${filter}`;
     const data = await this.spGet<{ value?: Array<Record<string, unknown>> }>(url, log);
 
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const f of data.value ?? []) {
+      if (typeof f.Id === 'string') byId.set(f.Id, f);
+    }
+
     const fields: ExpandableFieldInfo[] = [];
     for (const f of data.value ?? []) {
       const mapping = FIELD_KIND_MAP[String(f.TypeAsString)];
       if (!mapping || typeof f.InternalName !== 'string') continue;
+      let primaryName: string | undefined;
+      if (f.IsDependentLookup === true) {
+        // Projected column — resolve the primary lookup it projects through.
+        // Without a resolvable primary the value cannot be materialized (the
+        // dependent name itself is not expandable), so skip the field.
+        const primary = typeof f.PrimaryFieldId === 'string' ? byId.get(f.PrimaryFieldId) : undefined;
+        if (!primary || typeof primary.InternalName !== 'string') continue;
+        primaryName = primary.InternalName;
+      }
       const rawChoices = f.Choices as string[] | { results?: string[] } | undefined;
       fields.push({
         internalName: f.InternalName,
@@ -506,6 +535,7 @@ export class SharePointConnector implements BaseConnector {
         multi: mapping.multi,
         choices: Array.isArray(rawChoices) ? rawChoices : rawChoices?.results ?? [],
         lookupField: typeof f.LookupField === 'string' && f.LookupField ? f.LookupField : 'Title',
+        primaryName,
       });
     }
     this.fieldMetadataCache.set(cacheKey, fields);
@@ -535,23 +565,45 @@ export class SharePointConnector implements BaseConnector {
       return passthrough;
     }
 
+    const verified = this.verifiedRefFieldsCache.get(`${siteUrl}|${listId}`);
+    if (verified) refFields = refFields.filter((f) => verified.has(f.internalName));
     if (userSelect) {
       const selected = new Set(userSelect.split(',').map((s) => s.trim().split('/')[0]));
       refFields = refFields.filter((f) => selected.has(f.internalName));
     }
     if (refFields.length === 0) return passthrough;
 
+    return this.buildRefQuery(refFields, userSelect, userExpand);
+  }
+
+  /** The nav property a ref field is materialized through (its own name, or the primary lookup's for dependent columns). */
+  private refFieldNav(f: ExpandableFieldInfo): string {
+    return f.primaryName ?? f.internalName;
+  }
+
+  /** Nav-property selects a ref field needs on an expanded query. */
+  private refFieldSelects(f: ExpandableFieldInfo): string[] {
+    const nav = this.refFieldNav(f);
+    return f.kind === 'user'
+      ? [`${nav}/Id`, `${nav}/Title`, `${nav}/EMail`, `${nav}/Name`]
+      : [`${nav}/Id`, `${nav}/${f.lookupField}`];
+  }
+
+  private buildRefQuery(
+    refFields: ExpandableFieldInfo[],
+    userSelect: string | undefined,
+    userExpand: string | undefined,
+  ): { select: string; expand: string; augmented: true; refNames: string[] } {
     const userExpandParts = userExpand ? userExpand.split(',').map((s) => s.trim()) : [];
     // With no user $select, '*' covers scalar fields but not expanded
     // navigations — keep the user's own expansions selected as whole entities.
     const selectParts = userSelect ? [userSelect] : ['*', ...userExpandParts];
     const expandParts = [...userExpandParts];
     for (const f of refFields) {
-      if (!expandParts.includes(f.internalName)) expandParts.push(f.internalName);
-      if (f.kind === 'user') {
-        selectParts.push(`${f.internalName}/Id`, `${f.internalName}/Title`, `${f.internalName}/EMail`, `${f.internalName}/Name`);
-      } else {
-        selectParts.push(`${f.internalName}/Id`, `${f.internalName}/${f.lookupField}`);
+      const nav = this.refFieldNav(f);
+      if (!expandParts.includes(nav)) expandParts.push(nav);
+      for (const s of this.refFieldSelects(f)) {
+        if (!selectParts.includes(s)) selectParts.push(s);
       }
     }
     return {
@@ -560,6 +612,89 @@ export class SharePointConnector implements BaseConnector {
       augmented: true,
       refNames: refFields.map((f) => f.internalName),
     };
+  }
+
+  /**
+   * After an expanded items query fails, find which ref fields actually expand
+   * by probing subsets with cheap `$top=1` queries (binary split, so one bad
+   * field among N costs ~log N probes). A field can fail individually (e.g. a
+   * dependent lookup or a target list the user cannot read) or only in
+   * combination (lookup column threshold) — both are handled. The verified set
+   * is cached per list, so subsequent queries go straight to the good subset.
+   * Returns a rebuilt query over the surviving fields, or null when narrowing
+   * cannot help (nothing survives, or the failure is unrelated to ref fields).
+   */
+  private async narrowRefExpansion(
+    siteUrl: string,
+    listId: string,
+    userSelect: string | undefined,
+    userExpand: string | undefined,
+    ctx: RunContext,
+  ): Promise<{ select: string; expand: string; augmented: true; refNames: string[] } | null> {
+    let allRef: ExpandableFieldInfo[];
+    try {
+      allRef = (await this.getExpandableFields(siteUrl, listId, ctx.log)).filter((f) => f.kind !== 'choice');
+    } catch {
+      return null;
+    }
+    if (allRef.length === 0) return null;
+
+    const probe = async (subset: ExpandableFieldInfo[]): Promise<boolean> => {
+      if (subset.length === 0) return true;
+      const select = [...new Set(['Id', ...subset.flatMap((f) => this.refFieldSelects(f))])].join(',');
+      const expand = [...new Set(subset.map((f) => this.refFieldNav(f)))].join(',');
+      const qs = buildODataQuery({ top: 1, select, expand });
+      try {
+        await this.spGet(`${siteUrl}/_api/web/lists(guid'${listId}')/items?${qs}`, ctx.log);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Binary split: keep groups that probe clean, isolate single bad fields.
+    const good: ExpandableFieldInfo[] = [];
+    const stack: ExpandableFieldInfo[][] = [allRef];
+    while (stack.length) {
+      const group = stack.pop()!;
+      if (await probe(group)) {
+        good.push(...group);
+        continue;
+      }
+      if (group.length === 1) {
+        ctx.log?.({ type: 'sp.ref-expansion-field-skipped', field: group[0].internalName });
+        continue;
+      }
+      const mid = Math.ceil(group.length / 2);
+      stack.push(group.slice(mid), group.slice(0, mid));
+    }
+
+    // The full set probed clean, so ref expansion is not what failed — retrying
+    // the same query would fail again; let the caller fall back to raw.
+    if (good.length === allRef.length) return null;
+
+    // Individually-good fields can still fail together (lookup column
+    // threshold) — trim from the end until the combined probe passes.
+    let subset = good;
+    while (subset.length && !(await probe(subset))) {
+      ctx.log?.({ type: 'sp.ref-expansion-field-skipped', field: subset[subset.length - 1].internalName, reason: 'combined query failed' });
+      subset = subset.slice(0, -1);
+    }
+
+    this.verifiedRefFieldsCache.set(`${siteUrl}|${listId}`, new Set(subset.map((f) => f.internalName)));
+    ctx.log?.({
+      type: 'sp.ref-expansion-narrowed',
+      kept: subset.map((f) => f.internalName),
+      skipped: allRef.filter((f) => !subset.includes(f)).map((f) => f.internalName),
+    });
+
+    let refFields = subset;
+    if (userSelect) {
+      const selected = new Set(userSelect.split(',').map((s) => s.trim().split('/')[0]));
+      refFields = refFields.filter((f) => selected.has(f.internalName));
+    }
+    if (refFields.length === 0) return null;
+    return this.buildRefQuery(refFields, userSelect, userExpand);
   }
 
   private toExpandedReference(id: number, value: string | null): SPListExpandedReference {
@@ -585,7 +720,25 @@ export class SharePointConnector implements BaseConnector {
 
   /** Wrap expandable column values in `item` (in place) to match the cloud connector's output shape. */
   private expandItemFieldValues(siteUrl: string, item: Record<string, unknown>, fields: ExpandableFieldInfo[]): void {
+    // Dependent (projected) lookup columns read their value from the primary
+    // lookup's expanded object — process them first, while the primary is
+    // still the raw nav object (wrapping it below drops the projected props).
     for (const field of fields) {
+      if (!field.primaryName) continue;
+      const rawPrimary = item[field.primaryName];
+      if (rawPrimary == null || typeof rawPrimary !== 'object') continue;
+      const project = (v: unknown): unknown => {
+        if (!v || typeof v !== 'object') return v;
+        const o = v as Record<string, unknown>;
+        if ('@odata.type' in o) return o; // primary already wrapped — nothing to project from
+        return this.toExpandedReference(typeof o.Id === 'number' ? o.Id : -1, (o[field.lookupField] as string) ?? null);
+      };
+      const values = Array.isArray(rawPrimary) ? rawPrimary : (rawPrimary as { results?: unknown[] }).results;
+      item[field.internalName] = Array.isArray(values) ? values.map(project) : project(rawPrimary);
+    }
+
+    for (const field of fields) {
+      if (field.primaryName) continue; // projected above
       const raw = item[field.internalName];
       if (raw == null) continue;
 
@@ -664,16 +817,29 @@ export class SharePointConnector implements BaseConnector {
       return `${siteUrl}/_api/web/lists(guid'${listId}')/items${qs ? '?' + qs : ''}`;
     };
 
-    let body: { value: unknown[] };
+    let body: { value: unknown[] } | undefined;
     let refNames = aug.refNames;
     try {
       body = await this.spGet<{ value: unknown[] }>(makeUrl(aug.select, aug.expand), ctx.log);
     } catch (err) {
       if (!aug.augmented) throw err;
-      // Expanded queries can fail (e.g. lookup column threshold) — retry raw.
+      // Expanded queries can fail (a dependent lookup, a lookup the caller
+      // cannot read, or the lookup column threshold). Isolate the bad fields
+      // and retry with the ones that work, before giving up on expansion.
       ctx.log?.({ type: 'sp.ref-expansion-fallback', error: err instanceof Error ? err.message : String(err) });
-      body = await this.spGet<{ value: unknown[] }>(makeUrl(baseQuery.select, baseQuery.expand), ctx.log);
-      refNames = [];
+      const narrowed = await this.narrowRefExpansion(siteUrl, listId, baseQuery.select, baseQuery.expand, ctx);
+      if (narrowed) {
+        try {
+          body = await this.spGet<{ value: unknown[] }>(makeUrl(narrowed.select, narrowed.expand), ctx.log);
+          refNames = narrowed.refNames;
+        } catch {
+          body = undefined;
+        }
+      }
+      if (!body) {
+        body = await this.spGet<{ value: unknown[] }>(makeUrl(baseQuery.select, baseQuery.expand), ctx.log);
+        refNames = [];
+      }
     }
     ctx.log?.({ type: 'sp.response', itemCount: body.value?.length });
     if (Array.isArray(body.value)) {
@@ -704,8 +870,20 @@ export class SharePointConnector implements BaseConnector {
         item = await this.spGet(`${baseUrl}?${qs}`, ctx.log);
       } catch (err) {
         ctx.log?.({ type: 'sp.ref-expansion-fallback', error: err instanceof Error ? err.message : String(err) });
-        item = await this.spGet(baseUrl, ctx.log);
-        refNames = [];
+        const narrowed = await this.narrowRefExpansion(siteUrl, listId, undefined, undefined, ctx);
+        if (narrowed) {
+          try {
+            const qs = buildODataQuery({ select: narrowed.select, expand: narrowed.expand });
+            item = await this.spGet(`${baseUrl}?${qs}`, ctx.log);
+            refNames = narrowed.refNames;
+          } catch {
+            item = undefined;
+          }
+        }
+        if (item === undefined) {
+          item = await this.spGet(baseUrl, ctx.log);
+          refNames = [];
+        }
       }
     } else {
       item = await this.spGet(baseUrl, ctx.log);
@@ -1107,15 +1285,26 @@ export class SharePointConnector implements BaseConnector {
       return `${siteUrl}/_api/web/lists(guid'${listId}')/items?${parts.join('&')}`;
     };
 
-    let body: { value?: unknown[] };
+    let body: { value?: unknown[] } | undefined;
     let refNames = aug.refNames;
     try {
       body = await this.spGet<{ value?: unknown[] }>(makeUrl(aug.select, aug.expand), ctx.log);
     } catch (err) {
       if (!aug.augmented) throw err;
       ctx.log?.({ type: 'sp.ref-expansion-fallback', error: err instanceof Error ? err.message : String(err) });
-      body = await this.spGet<{ value?: unknown[] }>(makeUrl(), ctx.log);
-      refNames = [];
+      const narrowed = await this.narrowRefExpansion(siteUrl, listId, undefined, 'File,Folder', ctx);
+      if (narrowed) {
+        try {
+          body = await this.spGet<{ value?: unknown[] }>(makeUrl(narrowed.select, narrowed.expand), ctx.log);
+          refNames = narrowed.refNames;
+        } catch {
+          body = undefined;
+        }
+      }
+      if (!body) {
+        body = await this.spGet<{ value?: unknown[] }>(makeUrl(), ctx.log);
+        refNames = [];
+      }
     }
     if (Array.isArray(body.value)) {
       await this.applyCloudShape(siteUrl, listId, body.value, ctx, refNames);

@@ -21,6 +21,9 @@ export interface EmitContext {
   loopMap?: Map<string, string>;
   /** Innermost foreach loop variable; item() emits it directly. */
   currentLoopVar?: string;
+  /** generator.expressionFidelity === 'relaxed': skip cosmetic-only bailouts
+   *  (canonical-casing guards) and emit native DSL with normalized casing. */
+  relaxedFidelity?: boolean;
 }
 
 export class EmitBailout extends Error {
@@ -118,7 +121,9 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
   const args = node.args;
 
   const guard = CASING_GUARDS[lower];
-  if (guard && funcName !== guard) throw new EmitBailout(`non-canonical casing: ${funcName}`);
+  if (guard && funcName !== guard && !ec.relaxedFidelity) {
+    throw new EmitBailout(`non-canonical casing: ${funcName}`);
+  }
 
   switch (lower) {
     // Comparison operators (2 args; other arities fall through to the default ctx call)

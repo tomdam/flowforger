@@ -108,6 +108,38 @@ trigger(ctx: FlowContext) {
 }
 ```
 
+#### Named enums for numeric connector parameters
+
+Some connector triggers take magic numbers. The DSL provides **ambient enums** for them —
+no import needed (they are globals, like `ctx` and the decorators). The transformer resolves
+them statically to the number Power Automate expects, and `generate-dsl` emits them back:
+
+```typescript
+@ConnectorTrigger()
+trigger(ctx: FlowContext) {
+  return {
+    connector: 'dataverse',
+    operation: 'SubscribeWebhookTrigger',
+    params: {
+      'subscriptionRequest/message': DataverseMessage.AddedOrModified,   // 4
+      'subscriptionRequest/entityname': 'account',
+      'subscriptionRequest/scope': DataverseScope.Organization,          // 4
+      'subscriptionRequest/runas': DataverseRunAs.FlowOwner,             // 3
+    },
+    connectionReferenceName: 'shared_commondataserviceforapps',
+    triggerType: 'OpenApiConnectionWebhook',
+  };
+}
+```
+
+| Enum | Parameter | Members |
+|------|-----------|---------|
+| `DataverseMessage` | `subscriptionRequest/message` | `Added`=1, `Deleted`=2, `Modified`=3, `AddedOrModified`=4, `AddedOrDeleted`=5, `ModifiedOrDeleted`=6, `AddedModifiedOrDeleted`=7 |
+| `DataverseScope` | `subscriptionRequest/scope` | `User`=1, `BusinessUnit`=2, `ParentChildBusinessUnit`=3, `Organization`=4 |
+| `DataverseRunAs` | `subscriptionRequest/runas` | `ModifyingUser`=1, `RowOwner`=2, `FlowOwner`=3 |
+
+Raw numbers still work. Do not declare a local `const DataverseMessage = …` — it would shadow the built-in.
+
 ## Actions
 
 All actions are `await`ed with the action name as first parameter.

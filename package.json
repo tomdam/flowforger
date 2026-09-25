@@ -20,7 +20,8 @@
     "build": "tsc -b",
     "clean": "rimraf **/dist || true",
     "format": "prettier -w .",
-    "test": "npm -ws run test || true"
+    "test": "npm -ws run test || true",
+    "test:ci": "npm -ws --if-present run test"
   },
   "devDependencies": {
     "@types/node": "^22.7.7",

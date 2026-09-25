@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Getting started
+    url: https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md
+    about: First-run guide for the CLI — install, app registration, permissions, running a flow
+  - name: Report a security vulnerability
+    url: https://github.com/tomdam/flowforger/security/advisories/new
+    about: Please report security problems privately, not as a public issue

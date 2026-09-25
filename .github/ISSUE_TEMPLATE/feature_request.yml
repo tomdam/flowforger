@@ -1,0 +1,21 @@
+name: Feature request
+description: A missing connector operation, expression function, DSL feature or tooling improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the flow or workflow you're building and where FlowForger gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: The feature, connector operation, or behaviour you'd like. A DSL snippet of how you'd like to write it is very welcome.
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: How are you handling this today, if at all?

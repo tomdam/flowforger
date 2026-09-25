@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "packages/ir" },
+    { "path": "packages/expressions" },
     { "path": "packages/dsl-language-service" },
     { "path": "packages/engine" },
     { "path": "packages/emitter-logicapps" },
@@ -18,6 +19,9 @@
     { "path": "packages/connectors-teams" },
     { "path": "packages/connectors-onedrive" },
     { "path": "packages/dataverse-sdk" },
+    { "path": "packages/debug-core" },
+    { "path": "packages/debug-node" },
+    { "path": "packages/mcp-server" },
     { "path": "packages/generator-dsl" },
     { "path": "packages/dsl-native" },
     { "path": "packages/cli" },

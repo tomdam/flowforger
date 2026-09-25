@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # No lockfile is committed, so this is `npm install` rather than `npm ci`.
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm run test:ci
+
+      # A tree-shaken expression function registry fails neither the build nor
+      # the tests — every expression would silently evaluate to its own source
+      # text. Guard the shipped bundle directly.
+      - name: Check CLI bundle keeps the expression registry
+        shell: bash
+        run: |
+          node packages/cli/esbuild.config.mjs
+          count=$(grep -c "use setProperty" packages/cli/dist/bundle.cjs || true)
+          if [ "$count" != "1" ]; then
+            echo "::error::Expected 1 'use setProperty' marker in the CLI bundle, found $count — the expression registry was tree-shaken."
+            exit 1
+          fi
+          cat > ci-smoke.ff.ts <<'EOF'
+          @Flow('ci-smoke')
+          class CiSmoke {
+            @ManualTrigger()
+            trigger() {}
+
+            @Action()
+            async run(ctx: FlowContext) {
+              await ctx.compose('Joined', "@concat('a','b')");
+            }
+          }
+          EOF
+          node packages/cli/dist/bundle.cjs run ci-smoke.ff.ts --json > smoke.json
+          grep -q '"ab"' smoke.json || { echo "::error::Expression smoke test failed"; cat smoke.json; exit 1; }

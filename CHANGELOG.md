@@ -2,6 +2,10 @@
 
 FlowForger ships two artifacts at the same version: the [`flowforger` CLI on npm](https://www.npmjs.com/package/flowforger) and the [FlowForger VS Code extension](https://marketplace.visualstudio.com/items?itemName=FlowForger.flowforger-vscode). Library packages (`@flowforger/*`) are bundled into both and not published separately.
 
+## Unreleased
+
+- **Fixed: the CLI crashed on startup on Linux machines without libsecret.** This included slim Docker images and GitHub-hosted Ubuntu runners, and affected every command, even `--version`. The encrypted token cache is now loaded only when `--auth` or `init` needs it, and a missing libsecret produces install instructions instead of a stack trace.
+
 ## 0.3.0 — 2026-09-25
 
 **Power Automate's save/activate rules are now checked locally**, so errors the portal only reports when you save show up in your editor and in `flowforger validate`.

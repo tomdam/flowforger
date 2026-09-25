@@ -41,6 +41,10 @@ jobs:
       # A tree-shaken expression function registry fails neither the build nor
       # the tests — every expression would silently evaluate to its own source
       # text. Guard the shipped bundle directly.
+      #
+      # Do NOT install libsecret on the Ubuntu runner: its absence is what makes
+      # this step also prove the CLI starts on Linux without it (0.3.0 crashed
+      # on startup there because keytar was loaded eagerly).
       - name: Check CLI bundle keeps the expression registry
         shell: bash
         run: |

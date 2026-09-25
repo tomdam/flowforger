@@ -9,17 +9,7 @@
 
 import { DataverseClient, type ConnectionReferenceRecord } from '@flowforger/dataverse-sdk';
 import { PublicClientApplication } from '@azure/msal-node';
-import {
-  PersistenceCreator,
-  PersistenceCachePlugin,
-  DataProtectionScope,
-} from '@azure/msal-node-extensions';
-import { mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
-
-const CACHE_DIR = join(homedir(), '.flowforger');
-const CACHE_PATH = join(CACHE_DIR, 'token-cache.json');
+import { createCachePlugin } from './token-cache.js';
 
 /**
  * Mapping from FlowForger connector short names to Dataverse connectorid suffixes.
@@ -79,16 +69,7 @@ export async function acquireInitToken(
   dataverseUrl: string,
   log: (msg: string) => void
 ): Promise<string> {
-  mkdirSync(CACHE_DIR, { recursive: true });
-
-  const persistence = await PersistenceCreator.createPersistence({
-    cachePath: CACHE_PATH,
-    dataProtectionScope: DataProtectionScope.CurrentUser,
-    serviceName: 'FlowForger',
-    accountName: 'TokenCache',
-  });
-
-  const cachePlugin = new PersistenceCachePlugin(persistence);
+  const cachePlugin = await createCachePlugin();
 
   const pca = new PublicClientApplication({
     auth: {

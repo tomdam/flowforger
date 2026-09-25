@@ -185,6 +185,9 @@ The token cache is readable by anything running as your user account, which is t
 
 ## Common issues
 
+**Linux: "The encrypted token cache used by --auth could not be loaded: libsecret-1.so.0 ..."**
+- `--auth` stores tokens through libsecret on Linux. Install it (`sudo apt-get install libsecret-1-0` on Debian/Ubuntu, `sudo dnf install libsecret` on Fedora), or skip `--auth` and pass tokens explicitly (`--graph-token`, `--sp-token`, `--dv-token`). Every other command works without it.
+
 **"AADSTS65001: The user or administrator has not consented to use the application"**
 - Go back to Step 3 and click **Grant admin consent**, or a permission the flow needs is missing. Run `flowforger scopes <flow>` to see the list.
 

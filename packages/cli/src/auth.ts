@@ -7,16 +7,8 @@
  */
 
 import type { FlowIR, Node } from '@flowforger/ir';
-import type { ICachePlugin } from '@azure/msal-node';
 import { PublicClientApplication } from '@azure/msal-node';
-import {
-  PersistenceCreator,
-  PersistenceCachePlugin,
-  DataProtectionScope,
-} from '@azure/msal-node-extensions';
-import { mkdirSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { createCachePlugin } from './token-cache.js';
 
 export interface AuthConfig {
   clientId: string;
@@ -152,8 +144,6 @@ export async function collectAllConnectorScopes(): Promise<
   ];
 }
 
-const CACHE_DIR = join(homedir(), '.flowforger');
-const CACHE_PATH = join(CACHE_DIR, 'token-cache.json');
 
 /**
  * Recursively collect all connector nodes from the IR, including nested nodes
@@ -335,26 +325,6 @@ export async function resolveRequiredScopes(
   }
 
   return result;
-}
-
-/**
- * Create an OS-level encrypted cache plugin.
- * - Windows: DPAPI encryption (CurrentUser scope)
- * - macOS: Keychain
- * - Linux: libsecret (falls back to file-level encryption)
- */
-async function createCachePlugin(log: (msg: string) => void): Promise<ICachePlugin> {
-  mkdirSync(CACHE_DIR, { recursive: true });
-
-  const persistence = await PersistenceCreator.createPersistence({
-    cachePath: CACHE_PATH,
-    dataProtectionScope: DataProtectionScope.CurrentUser,
-    serviceName: 'FlowForger',
-    accountName: 'TokenCache',
-  });
-
-  log('Auth: Using OS-level encrypted token cache');
-  return new PersistenceCachePlugin(persistence);
 }
 
 /**

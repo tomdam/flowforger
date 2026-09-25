@@ -110,10 +110,13 @@ const GOLDEN: Record<string, string> = {
   // guard-triggered raw fallbacks
   "(Status eq 'Rejected') and (Time lt '@{utcNow()}')":
     'ctx.odata.raw("(Status eq \'Rejected\') and (Time lt \'@{utcNow()}\')")', // hasParenthesizedConditions
+  // quoted template with no prefix/suffix → template-literal emission (the
+  // template literal is what carries the OData quotes through the round-trip;
+  // ctx.braced would serialize unquoted)
   "Person/EMail eq '@{triggerOutputs()?['body/Person/Email']}'":
-    "ctx.odata.raw(\"Person/EMail eq '@{triggerOutputs()?['body/Person/Email']}'\")", // hasQuotedExpressions
+    "ctx.odata.eq(\"Person/EMail\", `${ctx.triggerOutputs()?.['body/Person/Email']}`)",
   "_brk_buchung_value eq '@{items('ForEach_X')?['_brk_buchung_value']}'":
-    "ctx.odata.raw(\"_brk_buchung_value eq '@{items('ForEach_X')?['_brk_buchung_value']}'\")",
+    "ctx.odata.eq(\"_brk_buchung_value\", `${ctx.items('ForEach_X')?.['_brk_buchung_value']}`)",
   'statecode eq 0 ': 'ctx.odata.raw("statecode eq 0 ")', // hasSignificantWhitespace
   "substringof('x', name)": 'ctx.odata.raw("substringof(\'x\', name)")', // hasUnsupportedFunction
   'not (a eq 1)': 'ctx.odata.raw("not (a eq 1)")', // hasUnsupportedFunction (leading not)

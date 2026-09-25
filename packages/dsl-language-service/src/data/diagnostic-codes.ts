@@ -301,6 +301,110 @@ export const DiagnosticCodes = {
     format: (name: string) =>
       `'${name}' is not a known expression function (engine or cloud). Check for typos.`,
   },
+
+  // Comments become Power Automate descriptions (DSL035-DSL036)
+  DSL035: {
+    code: 'DSL035',
+    severity: 'error' as DiagnosticSeverity,
+    message: "Comment contains a template expression: '{0}'",
+    format: (snippet: string) =>
+      `Comment contains '${snippet}'. Comments become the action's description in Power Automate, ` +
+      `which parses "@{...}" inside a description as a template expression and rejects the flow on save ` +
+      `(InvalidTemplate). Write the expression without the "@" (e.g. "{...}" or the bare function call).`,
+  },
+  DSL036: {
+    code: 'DSL036',
+    severity: 'warning' as DiagnosticSeverity,
+    message: "Comment starts with '{0}'",
+    format: (snippet: string) =>
+      `Comment starts with '${snippet}'. Comments become the action's description in Power Automate, ` +
+      `and a description that begins with "@" is parsed as a template expression. Start the comment with a word instead.`,
+  },
+
+  // Response / Terminate inside a loop (DSL037)
+  DSL037: {
+    code: 'DSL037',
+    severity: 'error' as DiagnosticSeverity,
+    message: "'{0}' cannot be inside a loop",
+    format: (method: string, loop: string) =>
+      `ctx.${method}() cannot be inside a ${loop}. Power Automate rejects the flow on save ` +
+      `("... has type '${method === 'response' ? 'Response' : 'Terminate'}' that could not be nested under an action of type 'foreach'"): ` +
+      `Response and Terminate are not allowed inside foreach or until loops at any depth. ` +
+      (method === 'response'
+        ? `Collect the result in a variable inside the loop and call ctx.response() once after the loop.`
+        : `Set a flag variable inside the loop and call ctx.terminate() after it, or filter the items before the loop.`),
+  },
+
+  // Response without a request trigger (DSL038)
+  DSL038: {
+    code: 'DSL038',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'ctx.response() requires a request trigger',
+    format: (trigger: string) =>
+      `ctx.response() requires a request trigger (@HttpTrigger or @ManualTrigger), but this flow uses @${trigger}. ` +
+      `Power Automate rejects the flow on save. Remove the response (there is no caller to respond to) or change the trigger.`,
+  },
+
+  // Definition limits (DSL039-DSL042) — learn.microsoft.com/power-automate/limits-and-config
+  DSL039: {
+    code: 'DSL039',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Action name exceeds 80 characters',
+    format: (name: string, length: string) =>
+      `Action name '${name}' is ${length} characters; Power Automate limits trigger and action names to 80 characters.`,
+  },
+  DSL040: {
+    code: 'DSL040',
+    severity: 'warning' as DiagnosticSeverity,
+    message: 'Flow exceeds 500 actions',
+    format: (count: string) =>
+      `Flow declares ${count} actions; Power Automate limits a flow to 500 actions. Move part of the logic into a child flow.`,
+  },
+  DSL041: {
+    code: 'DSL041',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Switch exceeds 25 cases',
+    format: (count: string) =>
+      `Switch has ${count} cases; Power Automate limits a Switch to 25 cases. Split it into nested switches or use a lookup object.`,
+  },
+  DSL042: {
+    code: 'DSL042',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Flow exceeds 250 variables',
+    format: (count: string) =>
+      `Flow declares ${count} variables; Power Automate limits a flow to 250 variables. Group related values into one object variable.`,
+  },
+
+  // Invalid value inside a JSDoc annotation (DSL043)
+  DSL043: {
+    code: 'DSL043',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Invalid @{0} value',
+    format: (annotation: string, detail: string) => `Invalid @${annotation} value: ${detail}`,
+  },
+
+  // Response kind does not match the trigger (DSL044)
+  DSL044: {
+    code: 'DSL044',
+    severity: 'warning' as DiagnosticSeverity,
+    message: "Response kind '{0}' does not match the trigger",
+    format: (kind: string, expected: string, actual: string) =>
+      `ctx.response() with kind '${kind}' pairs with ${expected}, but this flow uses ${actual}. The maker portal will not offer this combination.`,
+  },
+
+  // @RecurrenceTrigger options (DSL045 error, DSL046 warning)
+  DSL045: {
+    code: 'DSL045',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Invalid @RecurrenceTrigger option',
+    format: (detail: string) => `Invalid @RecurrenceTrigger option: ${detail}`,
+  },
+  DSL046: {
+    code: 'DSL046',
+    severity: 'warning' as DiagnosticSeverity,
+    message: 'Ignored @RecurrenceTrigger schedule option',
+    format: (detail: string) => `@RecurrenceTrigger schedule option is ignored: ${detail}`,
+  },
 } as const;
 
 /**

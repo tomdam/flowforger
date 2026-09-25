@@ -34,7 +34,7 @@ source of confusion:
 - **If you want a contract you can validate against in code** → layer 5, the IR JSON Schema.
 
 > **If you are an AI agent generating `.ff.ts` files:** read [`conformance.md`](./conformance.md)
-> first (the 14 rules are the difference between "compiles" and "works"), then study
+> first (the 17 rules are the difference between "compiles" and "works"), then study
 > [`canonical-example.ff.ts`](./canonical-example.ff.ts) as a template to imitate. Reach for the
 > EBNFs only when you need the exact accepted form of a construct. For the *semantics* of each
 > `ctx.*` method, connector operation, and worked patterns, see the concrete references below.

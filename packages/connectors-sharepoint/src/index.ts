@@ -21,6 +21,96 @@ const SP_HEADERS = {
 export { HttpError };
 
 /**
+ * Extension → MIME type, mirroring the .NET/IIS MimeMapping table the cloud
+ * SharePoint connector uses when "Infer Content Type" is on (hence `text/xml`
+ * rather than `application/xml`, and `application/vnd.ms-excel` for .csv).
+ * Unknown extensions fall back to application/octet-stream, as in the cloud.
+ */
+const MIME_BY_EXTENSION: Record<string, string> = {
+  xml: 'text/xml',
+  xsl: 'text/xml',
+  xslt: 'text/xml',
+  json: 'application/json',
+  txt: 'text/plain',
+  log: 'text/plain',
+  csv: 'application/vnd.ms-excel',
+  htm: 'text/html',
+  html: 'text/html',
+  css: 'text/css',
+  js: 'application/x-javascript',
+  pdf: 'application/pdf',
+  rtf: 'application/rtf',
+  doc: 'application/msword',
+  dot: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  docm: 'application/vnd.ms-word.document.macroEnabled.12',
+  dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  msg: 'application/vnd.ms-outlook',
+  eml: 'message/rfc822',
+  zip: 'application/x-zip-compressed',
+  gz: 'application/x-gzip',
+  '7z': 'application/x-7z-compressed',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  svg: 'image/svg+xml',
+  ico: 'image/x-icon',
+  webp: 'image/webp',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  mp4: 'video/mp4',
+  avi: 'video/x-msvideo',
+  mov: 'video/quicktime',
+};
+
+/** Content type the cloud connector reports for a file when inferContentType is on. */
+export function inferFileContentType(fileName: string | undefined): string {
+  const ext = fileName?.split('.').pop()?.toLowerCase();
+  return (ext && fileName?.includes('.') && MIME_BY_EXTENSION[ext]) || 'application/octet-stream';
+}
+
+/** Base64 envelope Logic Apps uses for non-text bodies (note the cloud key is `$content-type`). */
+export type FileContentEnvelope = { '$content-type': string; $content: string };
+
+/** What "Get file content" hands the next action: parsed JSON, plain text, or the base64 envelope. */
+export type FileContentResult = string | unknown | FileContentEnvelope;
+
+/**
+ * Shape downloaded bytes the way Logic Apps content handling does for the
+ * given content type: `application/json` is parsed (falls back to text if it
+ * is not valid JSON), `text/*` is the UTF-8 text, and everything else stays
+ * the base64 envelope. This is why an .xml file shows up as XML source in a
+ * Power Automate run (its inferred type is `text/xml`), while a .pdf shows up
+ * as `{ "$content-type": "application/pdf", "$content": "..." }`.
+ */
+export function toCloudFileContent(base64: string, contentType: string): FileContentResult {
+  const mediaType = contentType.split(';')[0].trim().toLowerCase();
+  const isJson = mediaType === 'application/json';
+  if (!isJson && !mediaType.startsWith('text/')) {
+    return { '$content-type': contentType, $content: base64 };
+  }
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  const text = new TextDecoder('utf-8').decode(bytes);
+  if (!isJson) return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/**
  * Power Automate cloud operationId → the name this connector implements.
  *
  * Flows authored in the maker portal (and DSL reverse-engineered from their
@@ -123,6 +213,8 @@ export class SharePointConnector implements BaseConnector {
       body?: unknown;
       headers?: Record<string, string>;
       rawBody?: boolean;
+      /** Read a successful response as bytes → { $content (base64), $contentType } whatever its content-type header says. */
+      binary?: boolean;
     }
   ): Promise<T> {
     log?.({ type: 'sp.request', method, url });
@@ -158,10 +250,11 @@ export class SharePointConnector implements BaseConnector {
     const contentType = response.headers.get('content-type') || '';
     let data: unknown;
 
-    if (contentType.includes('application/json')) {
-      const text = await response.text();
-      data = text ? JSON.parse(text) : null;
-    } else if (contentType.includes('application/octet-stream') || contentType.includes('image/')) {
+    const readAsBinary = (options?.binary && response.ok)
+      || contentType.includes('application/octet-stream')
+      || contentType.includes('image/');
+
+    if (readAsBinary) {
       // Return binary content as base64 (browser-compatible, no Node.js Buffer dependency)
       const arrayBuffer = await response.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
@@ -173,6 +266,9 @@ export class SharePointConnector implements BaseConnector {
         $content: btoa(binary),
         $contentType: contentType,
       };
+    } else if (contentType.includes('application/json')) {
+      const text = await response.text();
+      data = text ? JSON.parse(text) : null;
     } else {
       data = await response.text();
     }
@@ -461,6 +557,45 @@ export class SharePointConnector implements BaseConnector {
       return String(obj.value || value);
     }
     return String(value);
+  }
+
+  /**
+   * Resolve the REST resource segment for a file addressed by the cloud
+   * connector's `id` parameter. Power Automate's file identifiers are not
+   * GUIDs: triggers ({Identifier}) and actions such as "Create file" hand out
+   * a double URL-encoded site-relative path (`/` → `%252f`, space → `%2b`,
+   * e.g. `Shared%2bDocuments%252fInvoices%252fa.xml`), which `GetFileById`
+   * rejects with "Guid should contain 32 digits with 4 dashes". A real GUID
+   * (the file's UniqueId) still goes through `GetFileById`; anything else is
+   * decoded and addressed via `GetFileByServerRelativeUrl`.
+   */
+  private fileResource(siteUrl: string, fileId: string): string {
+    if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(fileId)) {
+      return `GetFileById('${fileId.replace(/[{}]/g, '')}')`;
+    }
+    const path = this.decodeFileIdentifier(fileId);
+    const serverRelativePath = this.toServerRelativePath(siteUrl, path);
+    return `GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`;
+  }
+
+  /**
+   * Decode a Power Automate SharePoint file identifier into a plain path.
+   * The cloud connector encodes the path twice and represents spaces as `+`
+   * after the first decode, so: decode once, turn `+` into a space, decode
+   * again (a literal `+` in a name arrives as `%252b` and survives).
+   * A plain, already-decoded path (e.g. "Shared Documents/a.xml") passes
+   * through unchanged.
+   */
+  private decodeFileIdentifier(id: string): string {
+    const safeDecode = (s: string) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    };
+    const once = safeDecode(id).replace(/\+/g, ' ');
+    return safeDecode(once);
   }
 
   // ============= List Item Type Helper =============
@@ -1079,17 +1214,23 @@ export class SharePointConnector implements BaseConnector {
     });
   }
 
-  private async getFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ $content: string; $contentType: string }> {
+  private async getFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<FileContentResult> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const fileId = this.normalizeValue(inputs.fileId);
 
     if (!siteUrl || !fileId) throw new Error('getFileContent requires siteUrl and fileId');
 
-    const url = `${siteUrl}/_api/web/GetFileById('${fileId}')/$value`;
-    return this.spGet(url, ctx.log, { Accept: 'application/octet-stream' });
+    const resource = this.fileResource(siteUrl, fileId);
+    let fileName = this.fileNameFromId(fileId);
+    if (fileName === undefined && this.wantsInferredContentType(inputs)) {
+      // A GUID id carries no name; one metadata call gets the extension.
+      const meta = await this.spGet<{ Name?: string }>(`${siteUrl}/_api/web/${resource}?$select=Name`, ctx.log);
+      fileName = meta?.Name;
+    }
+    return this.downloadFile(`${siteUrl}/_api/web/${resource}/$value`, fileName, inputs, ctx);
   }
 
-  private async getFileContentByPath(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ $content: string; $contentType: string }> {
+  private async getFileContentByPath(inputs: Record<string, unknown>, ctx: RunContext): Promise<FileContentResult> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const path = String(inputs.path);
 
@@ -1097,7 +1238,42 @@ export class SharePointConnector implements BaseConnector {
 
     const serverRelativePath = this.toServerRelativePath(siteUrl, path);
     const url = `${siteUrl}/_api/web/GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')/$value`;
-    return this.spGet(url, ctx.log, { Accept: 'application/octet-stream' });
+    return this.downloadFile(url, path.split('/').pop(), inputs, ctx);
+  }
+
+  /**
+   * Download a file the way the cloud connector reports it. The content type
+   * is inferred from the file extension (e.g. `text/xml` for .xml) unless
+   * `inferContentType` is false, in which case it is `application/octet-stream`
+   * — SharePoint's own `$value` content-type header is ignored either way.
+   * The body then follows Logic Apps content handling for that type:
+   * `application/json` is parsed, `text/*` is the decoded text, and anything
+   * else is the base64 envelope `{ "$content-type", "$content" }`.
+   */
+  private async downloadFile(
+    url: string,
+    fileName: string | undefined,
+    inputs: Record<string, unknown>,
+    ctx: RunContext,
+  ): Promise<FileContentResult> {
+    const result = await this.spRequest<{ $content: string }>('GET', url, ctx.log, {
+      headers: { Accept: 'application/octet-stream' },
+      binary: true,
+    });
+    const contentType = this.wantsInferredContentType(inputs) ? inferFileContentType(fileName) : 'application/octet-stream';
+    return toCloudFileContent(result.$content, contentType);
+  }
+
+  /** The cloud default for inferContentType is true; only an explicit false turns it off. */
+  private wantsInferredContentType(inputs: Record<string, unknown>): boolean {
+    const v = inputs.inferContentType;
+    return !(v === false || (typeof v === 'string' && v.toLowerCase() === 'false'));
+  }
+
+  /** File name from a Power Automate path identifier; undefined for a GUID id. */
+  private fileNameFromId(fileId: string): string | undefined {
+    if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(fileId)) return undefined;
+    return this.decodeFileIdentifier(fileId).split('/').pop();
   }
 
   private async updateFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
@@ -1110,7 +1286,7 @@ export class SharePointConnector implements BaseConnector {
     }
 
     const content = this.resolveFileContent(rawContent);
-    const url = `${siteUrl}/_api/web/GetFileById('${fileId}')/$value`;
+    const url = `${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/$value`;
     await this.spPost(url, ctx.log, {
       body: content,
       rawBody: true,
@@ -1126,7 +1302,7 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !fileId) throw new Error('deleteFile requires siteUrl and fileId');
 
-    const url = `${siteUrl}/_api/web/GetFileById('${fileId}')`;
+    const url = `${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}`;
     await this.spPost(url, ctx.log, {
       headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' },
     });
@@ -1212,7 +1388,7 @@ export class SharePointConnector implements BaseConnector {
     const fileId = this.normalizeValue(inputs.fileId);
 
     if (!siteUrl || !fileId) throw new Error('getFileMetadata requires siteUrl and fileId');
-    return this.spGet(`${siteUrl}/_api/web/GetFileById('${fileId}')`, ctx.log);
+    return this.spGet(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}`, ctx.log);
   }
 
   private async getFileMetadataByPath(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1266,7 +1442,24 @@ export class SharePointConnector implements BaseConnector {
     const folderPath = inputs.folderPath ? String(inputs.folderPath) : null;
     const filter = inputs.filter as string | undefined;
 
-    if (folderPath) {
+    // Folder scoping. A `FileDirRef eq` $filter is not indexable, so on a library
+    // over the 5,000-item list view threshold SharePoint rejects it outright. The
+    // threshold-safe form is a CAML GetItems scoped with FolderServerRelativeUrl:
+    // SharePoint then evaluates only that folder's items. GetItems takes $select/
+    // $expand on the URL but ignores $filter/$orderby/$top/$skip, so the scoped
+    // POST is used only when none of those OData inputs is set; otherwise the
+    // original items GET (folder as $filter) is kept so no existing input is lost.
+    const folderScoped = !!folderPath && !filter && !inputs.orderby && !inputs.top && !inputs.skip;
+    let folderQuery: { ViewXml: string; FolderServerRelativeUrl: string } | undefined;
+    if (folderScoped) {
+      // Cloud "Include Nested Items" defaults to true: the whole subtree. A bare
+      // <View> (no Scope) returns the folder's direct children, files and subfolders.
+      const nested = inputs.includeNestedItems !== false && inputs.includeNestedItems !== 'false';
+      folderQuery = {
+        ViewXml: `<View${nested ? " Scope='RecursiveAll'" : ''}><RowLimit>5000</RowLimit></View>`,
+        FolderServerRelativeUrl: this.toServerRelativeFolderPath(siteUrl, folderPath),
+      };
+    } else if (folderPath) {
       const folderFilter = `FileDirRef eq '${folderPath}'`;
       queryParams.push(`$filter=${filter ? `(${folderFilter}) and (${filter})` : folderFilter}`);
     } else if (filter) {
@@ -1282,27 +1475,32 @@ export class SharePointConnector implements BaseConnector {
       const parts = [...queryParams];
       if (select) parts.push(`$select=${encodeURIComponent(select)}`);
       parts.push(`$expand=${encodeURIComponent(expand || 'File,Folder')}`);
-      return `${siteUrl}/_api/web/lists(guid'${listId}')/items?${parts.join('&')}`;
+      const resource = folderQuery ? 'GetItems' : 'items';
+      return `${siteUrl}/_api/web/lists(guid'${listId}')/${resource}?${parts.join('&')}`;
     };
+    const fetchItems = (url: string) =>
+      folderQuery
+        ? this.spPost<{ value?: unknown[] }>(url, ctx.log, { body: { query: folderQuery } })
+        : this.spGet<{ value?: unknown[] }>(url, ctx.log);
 
     let body: { value?: unknown[] } | undefined;
     let refNames = aug.refNames;
     try {
-      body = await this.spGet<{ value?: unknown[] }>(makeUrl(aug.select, aug.expand), ctx.log);
+      body = await fetchItems(makeUrl(aug.select, aug.expand));
     } catch (err) {
       if (!aug.augmented) throw err;
       ctx.log?.({ type: 'sp.ref-expansion-fallback', error: err instanceof Error ? err.message : String(err) });
       const narrowed = await this.narrowRefExpansion(siteUrl, listId, undefined, 'File,Folder', ctx);
       if (narrowed) {
         try {
-          body = await this.spGet<{ value?: unknown[] }>(makeUrl(narrowed.select, narrowed.expand), ctx.log);
+          body = await fetchItems(makeUrl(narrowed.select, narrowed.expand));
           refNames = narrowed.refNames;
         } catch {
           body = undefined;
         }
       }
       if (!body) {
-        body = await this.spGet<{ value?: unknown[] }>(makeUrl(), ctx.log);
+        body = await fetchItems(makeUrl());
         refNames = [];
       }
     }
@@ -1310,6 +1508,19 @@ export class SharePointConnector implements BaseConnector {
       await this.applyCloudShape(siteUrl, listId, body.value, ctx, refNames);
     }
     return body;
+  }
+
+  /** Normalize a folder path for CamlQuery.FolderServerRelativeUrl. The cloud
+   *  connector's folder picker yields a site-relative path ("Shared Documents/X"
+   *  or "/Shared Documents/X"); a server-relative one ("/sites/s/Shared Documents/X")
+   *  is passed through. Both forms are accepted so a flow authored against the
+   *  cloud shape and one written by hand behave the same locally. */
+  private toServerRelativeFolderPath(siteUrl: string, folderPath: string): string {
+    const sitePath = new URL(siteUrl).pathname.replace(/\/+$/, ''); // '' for a root site
+    const trimmed = folderPath.replace(/\/+$/, '');
+    const withSlash = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+    if (sitePath && (withSlash === sitePath || withSlash.startsWith(`${sitePath}/`))) return withSlash;
+    return `${sitePath}${withSlash}`;
   }
 
   private async getItemChanges(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1377,7 +1588,7 @@ export class SharePointConnector implements BaseConnector {
     return this.spGet(`${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles`, ctx.log);
   }
 
-  private async getAttachmentContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ $content: string; $contentType: string }> {
+  private async getAttachmentContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<FileContentResult> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
     const itemId = this.normalizeValue(inputs.itemId);
@@ -1388,7 +1599,7 @@ export class SharePointConnector implements BaseConnector {
     }
 
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles('${encodeURIComponent(attachmentId)}')/$value`;
-    return this.spGet(url, ctx.log, { Accept: 'application/octet-stream' });
+    return this.downloadFile(url, attachmentId, inputs, ctx);
   }
 
   private async deleteAttachment(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
@@ -1417,7 +1628,7 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !fileId) throw new Error('checkOutFile requires siteUrl and fileId');
 
-    await this.spPost(`${siteUrl}/_api/web/GetFileById('${fileId}')/CheckOut()`, ctx.log);
+    await this.spPost(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/CheckOut()`, ctx.log);
     return { ok: true, status: 200 };
   }
 
@@ -1429,7 +1640,7 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !fileId) throw new Error('checkInFile requires siteUrl and fileId');
 
-    const url = `${siteUrl}/_api/web/GetFileById('${fileId}')/CheckIn(comment='${encodeURIComponent(comment)}',checkintype=${checkInType})`;
+    const url = `${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/CheckIn(comment='${encodeURIComponent(comment)}',checkintype=${checkInType})`;
     await this.spPost(url, ctx.log);
     return { ok: true, status: 200 };
   }
@@ -1440,7 +1651,7 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !fileId) throw new Error('discardCheckOut requires siteUrl and fileId');
 
-    await this.spPost(`${siteUrl}/_api/web/GetFileById('${fileId}')/UndoCheckOut()`, ctx.log);
+    await this.spPost(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/UndoCheckOut()`, ctx.log);
     return { ok: true, status: 200 };
   }
 

@@ -30,6 +30,8 @@ import ts from 'typescript';
 import {
   getTypeScriptDiagnostics,
   getTypeScriptCompletions,
+  getTypeScriptDefinition,
+  getTypeScriptQuickInfo,
   removeDocument,
 } from './embedded-ts/service.js';
 
@@ -734,8 +736,72 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     }
   }
 
+  // Bare identifier (`varName = …`, a for-of loop variable, a class member):
+  // nothing above matches because there is no string to detect, and VS Code's
+  // own TS service never attaches to the `flowforger` language ID — so ask the
+  // embedded TypeScript service. Flow `let` variables get the DSL details
+  // (Power Automate type, initial value, declaration line) on top of the TS
+  // signature so the hover matches what `ctx.variables('x')` shows.
+  if (word) {
+    return getBareIdentifierHover(document, params.textDocument.uri, text, params.position, word.text);
+  }
+
   return null;
 });
+
+/**
+ * Hover for an identifier that is not a string reference — see the call site
+ * in `onHover`. Returns null when the embedded TS service has no quick info
+ * at the position (whitespace, punctuation, comments, string contents).
+ */
+function getBareIdentifierHover(
+  document: TextDocument,
+  uri: string,
+  text: string,
+  position: { line: number; character: number },
+  wordText: string
+): Hover | null {
+  const info = getTypeScriptQuickInfo(uri, text, document.offsetAt(position));
+  if (!info) return null;
+
+  const lines = ['```typescript', info.text, '```'];
+  if (info.documentation) {
+    lines.push('', info.documentation);
+  }
+
+  if (BARE_VARIABLE_KINDS.has(info.kind)) {
+    let symbolIndex = symbolIndexCache.get(uri);
+    if (!symbolIndex) {
+      symbolIndex = buildSymbolIndex(text);
+      symbolIndexCache.set(uri, symbolIndex);
+    }
+    const variable = symbolIndex.variables.find(
+      (v) => v.name === wordText && v.isInitialDeclaration
+    );
+    if (variable) {
+      lines.push('', `Flow variable — type: \`${variable.paType}\``);
+      if (variable.initialValue !== undefined) {
+        lines.push(`Initial value: \`${JSON.stringify(variable.initialValue)}\``);
+      }
+      lines.push(`Declared at line ${variable.line + 1}`);
+    }
+  }
+
+  return {
+    contents: { kind: MarkupKind.Markdown, value: lines.join('\n') },
+    range: {
+      start: document.positionAt(info.start),
+      end: document.positionAt(info.start + info.length),
+    },
+  };
+}
+
+/** TS quick-info kinds under which a flow `let` variable can surface. */
+const BARE_VARIABLE_KINDS = new Set<string>([
+  ts.ScriptElementKind.variableElement,
+  ts.ScriptElementKind.letElement,
+  ts.ScriptElementKind.localVariableElement,
+]);
 
 /**
  * Handle go-to-definition requests (Ctrl+Click).
@@ -758,7 +824,21 @@ connection.onDefinition((params: TextDocumentPositionParams): Location | null =>
   if (!lineText) return null;
 
   const ref = detectStringReference(lineText, params.position.character);
-  if (!ref) return null;
+  if (!ref) {
+    // Bare identifier (`varName = …`, loop variable, class member) — no string
+    // to detect, and VS Code's own TS never attaches to the `flowforger`
+    // language ID, so resolve through the embedded TypeScript service.
+    const [span] = getTypeScriptDefinition(
+      params.textDocument.uri,
+      text,
+      document.offsetAt(params.position)
+    );
+    if (!span) return null;
+    return Location.create(params.textDocument.uri, {
+      start: document.positionAt(span.start),
+      end: document.positionAt(span.start + span.length),
+    });
+  }
 
   // Get or build symbol index
   let symbolIndex = symbolIndexCache.get(params.textDocument.uri);

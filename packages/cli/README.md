@@ -16,6 +16,11 @@ Or run directly with npx:
 npx flowforger <command>
 ```
 
+> **First time connecting to Microsoft 365?** Commands that talk to Dataverse, SharePoint, or Graph
+> (`--auth`, `init`, `pull`, `push`) sign in through an app registration in **your own** Entra ID tenant.
+> FlowForger ships no built-in client ID. The [Quickstart](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md)
+> walks through creating one (about 10 minutes), and `flowforger scopes <flow>` tells you which permissions it needs.
+
 ## Quick Start
 
 ### 1. Write a flow in TypeScript
@@ -68,8 +73,13 @@ flowforger compile hello-flow.ff.ts --emit logicapps --out clientdata.json
 ```bash
 # Creates the flow if it doesn't exist yet, updates it if it does
 flowforger push --file hello-flow.ff.ts \
-  --url https://org.crm.dynamics.com --token <AAD_TOKEN>
+  --url https://org.crm.dynamics.com --auth
 ```
+
+`--auth` signs you in with a device code the first time and silently afterwards. It needs a
+`flowforger.config.json` with your app registration's client ID, which `flowforger init` writes for
+you; see the [Quickstart](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md) for the app registration steps.
+Pass `--token <AAD_TOKEN>` instead if you already have a Dataverse token.
 
 ## Commands
 
@@ -308,6 +318,23 @@ If `flowforger.config.json` already exists, the output is written to `flowforger
 | `--out` | Output file path (default: `flowforger.config.json`) |
 | `--skip-discovery` | Skip authentication and connection reference discovery |
 
+### `scopes`
+
+Print the delegated permissions your app registration needs, either for one flow or for every connector the CLI supports. Use it when setting up the registration or when a `--auth` run fails with a consent error.
+
+```bash
+# What this flow will request at run time
+flowforger scopes flow.ff.ts
+
+# The complete list, grouped by API, for a registration that covers all connectors
+flowforger scopes --all
+
+# Machine-readable
+flowforger scopes flow.ff.ts --json
+```
+
+Each API is printed with the App ID to search for under **APIs my organization uses** in the Azure Portal. A config file is optional: with one, the SharePoint and Dataverse resource URLs come from `auth.resources`; without one, placeholders are shown.
+
 ### `sp-discover`
 
 Discover SharePoint sites and lists via Microsoft Graph.
@@ -354,7 +381,7 @@ The easiest way to create a config file is with the `init` command, which auto-d
 flowforger init --url https://org.crm.dynamics.com --client-id <CLIENT_ID>
 ```
 
-This generates a `flowforger.config.json` with connection references, parser/emitter defaults, and auth settings pre-filled. You can also create one manually:
+This generates a `flowforger.config.json` with connection references, parser/emitter defaults, and auth settings pre-filled. `<CLIENT_ID>` is your own app registration; see [Azure AD App Registration](#azure-ad-app-registration) below. You can also create one manually:
 
 ```json
 {
@@ -410,13 +437,26 @@ Graph API scopes are implicit (no config needed). SharePoint and Dataverse requi
 
 ### Azure AD App Registration
 
-The app registration needs:
-- **"Allow public client flows"** enabled (for device code flow)
-- Delegated permissions matching the connectors you use:
-  - **Office 365**: `User.Read`, `Mail.Send`, `Mail.ReadWrite`, `Calendars.ReadWrite`, `Contacts.ReadWrite`
-  - **SharePoint**: `AllSites.Write` (SharePoint API, not Graph)
-  - **Dataverse**: `user_impersonation` (Dynamics CRM API)
-  - **Excel/Word Online**: `Files.ReadWrite`
+FlowForger does not ship a client ID. Register a public client app in your own Microsoft Entra ID tenant (single tenant, no redirect URI, no secret) and:
+
+- Enable **Allow public client flows** under Authentication (for the device code sign-in)
+- Add **Delegated** permissions for the connectors you use and **grant admin consent**
+
+The CLI requests only the permissions a given flow uses. `flowforger scopes <flow>` prints them; `flowforger scopes --all` prints the full set below. SharePoint and Dynamics CRM are found under **APIs my organization uses** (search by App ID).
+
+| Connector | API | Delegated permissions |
+|-----------|-----|-----------------------|
+| Always | Microsoft Graph | `User.Read` |
+| Dataverse, `init`, `pull`, `push`, env-var resolution | Dynamics CRM (`00000007-0000-0000-c000-000000000000`) | `user_impersonation` |
+| SharePoint | SharePoint (`00000003-0000-0ff1-ce00-000000000000`) | `AllSites.Write` (SharePoint API, not Graph) |
+| Office 365 Outlook | Microsoft Graph | `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`, `Calendars.ReadWrite`, `Contacts.Read`, `Contacts.ReadWrite` |
+| Office 365 Users | Microsoft Graph | `User.Read.All`, `User.ReadWrite`, `People.Read`, `Sites.Read.All` |
+| Office 365 Groups | Microsoft Graph | `Group.Read.All`, `Group.ReadWrite.All`, `GroupMember.Read.All`, `GroupMember.ReadWrite.All` |
+| Microsoft Teams | Microsoft Graph | `Team.ReadBasic.All`, `Team.Create`, `TeamMember.ReadWrite.All`, `Channel.ReadBasic.All`, `Channel.Create`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `Chat.Create`, `Chat.Read`, `Chat.ReadWrite`, `ChatMember.Read`, `TeamsActivity.Send`, `TeamworkTag.ReadWrite`, `OnlineMeetings.ReadWrite`, `Calendars.ReadWrite`, `User.Read.All` |
+| Word Online, Excel Online, OneDrive | Microsoft Graph | `Files.ReadWrite` |
+| `listCallbackUrl()` | Microsoft Flow Service (`7df0a125-d3be-4c96-aa54-591f83ff541c`) | `User` |
+
+Add both `Read` and `ReadWrite` where both are listed: consent is per permission, and a read-only flow requests the narrower one. Step-by-step portal instructions and troubleshooting are in the [Quickstart](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md).
 
 ## Requirements
 

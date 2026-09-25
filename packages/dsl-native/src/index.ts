@@ -138,3 +138,14 @@ export {
   buildConnectorEnumDeclarations,
 } from './connector-enums.js';
 export type { ConnectorEnumName, ConnectorEnumDefinition } from './connector-enums.js';
+
+// Flow scaffolds (starting DSL for "New flow" in the web app, VS Code, CLI)
+export {
+  buildFlowScaffold,
+  toFlowClassName,
+  isScaffoldTriggerKind,
+  SCAFFOLD_TRIGGERS,
+  SCAFFOLD_GROUP_LABELS,
+  DEFAULT_SCAFFOLD_TRIGGER,
+} from './scaffold.js';
+export type { ScaffoldTriggerKind, ScaffoldTriggerGroup, ScaffoldTriggerOption, FlowScaffoldOptions } from './scaffold.js';

@@ -1,7 +1,7 @@
 {
   "name": "flowforger",
-  "version": "0.1.5",
-  "description": "CLI for FlowForger — compile TypeScript DSL to Power Automate / Logic Apps workflows, validate, run locally, and deploy",
+  "version": "0.2.0",
+  "description": "CLI for FlowForger \u2014 compile TypeScript DSL to Power Automate / Logic Apps workflows, validate, run locally, and deploy",
   "keywords": [
     "power-automate",
     "logic-apps",
@@ -36,6 +36,7 @@
     "dist/bundle.cjs",
     "skills",
     "README.md",
+    "QUICKSTART.md",
     "LICENSE"
   ],
   "engines": {

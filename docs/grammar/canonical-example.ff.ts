@@ -131,9 +131,11 @@ class CanonicalOrderFlow {
         await ctx.compose('Set_priority_default', { priority: 9 });
     }
 
-    // ---- Array merge: NO @{...} wrapping (rule R10) --------------------------
-    // ctx.union(...) emits @union(...) which PRESERVES the array type. Wrapping it
-    // in ctx.braced() / @{...} would stringify it and break any downstream array use.
+    // ---- Array merge: NO brace-interpolation wrapping (rule R10) -------------
+    // ctx.union(...) emits a bare union(...) expression which PRESERVES the array type.
+    // Wrapping it in ctx.braced() (brace interpolation) would stringify it and break any
+    // downstream array use. This comment becomes the action's description, which is why
+    // it spells the syntax out in words instead of writing it literally (rule R15).
     await ctx.compose('All_skus', ctx.union(skuList, ctx.outputs('Normalize_order')?.['extraSkus'] ?? []));
 
     // ---- Try / Catch / Finally (rule R6) ------------------------------------

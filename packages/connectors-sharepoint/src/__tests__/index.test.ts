@@ -34,6 +34,7 @@ function jsonResponse(body: unknown, status = 200) {
     status,
     headers: new Map([['content-type', 'application/json']]),
     text: async () => JSON.stringify(body),
+    arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer,
   };
 }
 
@@ -508,5 +509,254 @@ describe('SharePointConnector cloud item/* payloads', () => {
     assert.equal(result.ok, true);
     const call = fetchCalls.find((c) => c.url.includes('items(9)'));
     assert.ok(call, `never patched items(9); called: ${fetchCalls.map((c) => c.url).join(', ')}`);
+  });
+});
+
+describe('SharePointConnector file identifiers', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    routes = [{ match: '/', body: { Name: 'a.xml', ServerRelativeUrl: '/sites/test/Lib/a.xml' } }];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      fetchCalls.push({ url, method: opts?.method || 'GET' });
+      const route = routes.find((r) => url.includes(r.match));
+      if (!route) throw new Error(`No mocked route for ${url}`);
+      return jsonResponse(route.body, route.status);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  const lastUrl = () => decodeURIComponent(fetchCalls[fetchCalls.length - 1].url);
+
+  it('addresses a trigger {Identifier} (double-encoded site-relative path) by server-relative URL', async () => {
+    // Exactly what "When a file is created" hands out: library name, then
+    // '/' as %252f — GetFileById would reject this with "Guid should contain 32 digits".
+    const id = 'InkassoNeu%252f20260914_060059_Spk_Muensterland_Ost_2026-09-14_C53_DE14400501500034508333_EUR_26-00155.xml';
+    await connector.invoke('GetFileContent', { dataset: SITE, id, inferContentType: true }, ctx);
+    assert.ok(
+      lastUrl().endsWith(
+        `/_api/web/GetFileByServerRelativeUrl('/sites/test/InkassoNeu/20260914_060059_Spk_Muensterland_Ost_2026-09-14_C53_DE14400501500034508333_EUR_26-00155.xml')/$value`,
+      ),
+      lastUrl(),
+    );
+  });
+
+  it('decodes %2b as a space and keeps a server-relative identifier as-is', async () => {
+    // "Create file" returns ids like this: leading %252f, site path included, spaces as %2b.
+    const id = '%252fsites%252ftest%252fShared%2bDocuments%252fMy%2bReport.docx';
+    await connector.invoke('GetFileMetadata', { dataset: SITE, id }, ctx);
+    assert.ok(lastUrl().endsWith(`/_api/web/GetFileByServerRelativeUrl('/sites/test/Shared Documents/My Report.docx')`), lastUrl());
+  });
+
+  it('keeps a literal + in a file name (arrives as %252b)', async () => {
+    await connector.invoke('GetFileMetadata', { dataset: SITE, id: 'Lib%252fa%252bb.txt' }, ctx);
+    assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/a+b.txt')`), lastUrl());
+  });
+
+  it('still uses GetFileById for a real GUID (with or without braces)', async () => {
+    await connector.invoke('GetFileContent', { dataset: SITE, id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' }, ctx);
+    assert.ok(lastUrl().endsWith(`GetFileById('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')/$value`), lastUrl());
+    await connector.invoke('DeleteFile', { dataset: SITE, id: '{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}' }, ctx);
+    assert.ok(lastUrl().endsWith(`GetFileById('AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE')`), lastUrl());
+  });
+
+  it('applies the resolver to the other file-id operations', async () => {
+    const id = 'Lib%252fdoc.docx';
+    await connector.invoke('CheckOutFile', { dataset: SITE, id }, ctx);
+    assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/doc.docx')/CheckOut()`), lastUrl());
+    await connector.invoke('UpdateFile', { dataset: SITE, id, body: 'hello' }, ctx);
+    assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/doc.docx')/$value`), lastUrl());
+  });
+});
+
+describe('SharePointConnector GetFilesPropertiesOnly folder scoping', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+  let calls: Array<{ url: string; method: string; body?: any }> = [];
+
+  const fieldsResponse = {
+    value: [{ InternalName: 'Author', TypeAsString: 'User', LookupField: 'Title' }],
+  };
+  const janeRaw = { Id: 3, Title: 'Jane Doe', EMail: 'jane@contoso.com', Name: 'i:0#.f|membership|jane@contoso.com' };
+
+  beforeEach(() => {
+    calls = [];
+    routes = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      calls.push({ url, method: opts?.method || 'GET', body: opts?.body ? JSON.parse(opts.body) : undefined });
+      const route = routes.find((r) => url.includes(r.match));
+      if (!route) throw new Error(`No mocked route for ${url}`);
+      return jsonResponse(route.body, route.status);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('posts a folder-scoped GetItems instead of a FileDirRef $filter', async () => {
+    routes = [
+      { match: '/fields?', body: fieldsResponse },
+      { match: '/GetItems', body: { value: [{ Id: 1, Author: janeRaw, File: { Name: 'a.docx' } }] } },
+    ];
+
+    const result: any = await connector.invoke(
+      'GetFilesPropertiesOnly',
+      { dataset: SITE, table: LIST, 'parameters/folderPath': '/sites/test/Shared Documents/Projects' },
+      ctx
+    );
+
+    const call = calls.find((c) => c.url.includes('/GetItems'));
+    assert.ok(call, `no GetItems call; called: ${calls.map((c) => c.url).join(', ')}`);
+    assert.equal(call.method, 'POST');
+    assert.ok(call.url.startsWith(`${SITE}/_api/web/lists(guid'${LIST}')/GetItems?`));
+    const decoded = decodeURIComponent(call.url);
+    assert.ok(decoded.includes('$expand=File,Folder,Author'), decoded);
+    assert.ok(decoded.includes('$select=*,File,Folder,'), decoded);
+    assert.ok(!decoded.includes('FileDirRef'), decoded);
+    assert.equal(call.body.query.FolderServerRelativeUrl, '/sites/test/Shared Documents/Projects');
+    assert.equal(call.body.query.ViewXml, "<View Scope='RecursiveAll'><RowLimit>5000</RowLimit></View>");
+    assert.ok(!calls.some((c) => c.url.includes('/items?')), 'must not fall back to the items GET');
+    // Cloud-shape wrapping still applies to the GetItems rows.
+    assert.equal(result.value[0].Author.Email, 'jane@contoso.com');
+    assert.deepEqual(result.value[0].File, { Name: 'a.docx' });
+  });
+
+  it('prefixes a site-relative folder path with the site server-relative path', async () => {
+    routes = [
+      { match: '/fields?', body: fieldsResponse },
+      { match: '/GetItems', body: { value: [] } },
+    ];
+    await connector.invoke(
+      'GetFilesPropertiesOnly',
+      { dataset: SITE, table: LIST, 'parameters/folderPath': 'Shared Documents/Projects' },
+      ctx
+    );
+    const call = calls.find((c) => c.url.includes('/GetItems'))!;
+    assert.equal(call.body.query.FolderServerRelativeUrl, '/sites/test/Shared Documents/Projects');
+  });
+
+  it('includeNestedItems=false scopes the view to direct children only', async () => {
+    routes = [
+      { match: '/fields?', body: fieldsResponse },
+      { match: '/GetItems', body: { value: [] } },
+    ];
+    await connector.invoke(
+      'GetFilesPropertiesOnly',
+      {
+        dataset: SITE,
+        table: LIST,
+        'parameters/folderPath': '/sites/test/Shared Documents/Projects',
+        'parameters/includeNestedItems': false,
+      },
+      ctx
+    );
+    const call = calls.find((c) => c.url.includes('/GetItems'))!;
+    assert.equal(call.body.query.ViewXml, '<View><RowLimit>5000</RowLimit></View>');
+  });
+
+  it('keeps the FileDirRef $filter GET when an OData filter is also given', async () => {
+    routes = [
+      { match: '/fields?', body: fieldsResponse },
+      { match: '/items', body: { value: [] } },
+    ];
+    await connector.invoke(
+      'GetFilesPropertiesOnly',
+      {
+        dataset: SITE,
+        table: LIST,
+        'parameters/folderPath': '/sites/test/Shared Documents/Projects',
+        'parameters/$filter': "Title eq 'x'",
+      },
+      ctx
+    );
+    assert.ok(!calls.some((c) => c.url.includes('/GetItems')));
+    const call = calls.find((c) => c.url.includes('/items'))!;
+    assert.equal(call.method, 'GET');
+    assert.ok(decodeURIComponent(call.url).includes("FileDirRef eq '/sites/test/Shared Documents/Projects'"));
+  });
+});
+
+describe('SharePointConnector file content (cloud body shape)', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+
+  /** Serve every URL as raw bytes with the given content-type header, like SharePoint's $value endpoint. */
+  function serveBytes(contentType: string, text = '<a/>') {
+    (globalThis as any).fetch = async (url: string) => {
+      if (url.includes('$select=Name')) return jsonResponse({ Name: 'by-guid.pdf' });
+      return {
+        ok: true,
+        status: 200,
+        headers: new Map([['content-type', contentType]]),
+        text: async () => text,
+        arrayBuffer: async () => new TextEncoder().encode(text).buffer,
+      };
+    };
+  }
+
+  beforeEach(() => {
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('returns an .xml file as its text, like the cloud run does, even when SharePoint serves octet-stream', async () => {
+    serveBytes('application/octet-stream', '<?xml version="1.0"?><root>ä</root>');
+    const result = await connector.invoke(
+      'GetFileContent',
+      { dataset: SITE, id: 'InkassoNeu%252f20260914_Spk.xml', inferContentType: true },
+      ctx,
+    );
+    assert.equal(result, '<?xml version="1.0"?><root>ä</root>');
+  });
+
+  it('returns the base64 envelope with the cloud $content-type key when inferContentType is false', async () => {
+    serveBytes('text/xml', '<a/>');
+    const result = await connector.invoke(
+      'GetFileContent',
+      { dataset: SITE, id: 'Lib%252fa.xml', inferContentType: false },
+      ctx,
+    );
+    assert.deepEqual(result, { '$content-type': 'application/octet-stream', $content: btoa('<a/>') });
+  });
+
+  it('parses a .json file into an object', async () => {
+    serveBytes('application/octet-stream', '{"a":1}');
+    const result = await connector.invoke('GetFileContent', { dataset: SITE, id: 'Lib%252fcfg.json' }, ctx);
+    assert.deepEqual(result, { a: 1 });
+  });
+
+  it('looks up the name for a GUID id and returns a binary type as the envelope', async () => {
+    serveBytes('application/octet-stream', '%PDF');
+    const result: any = await connector.invoke(
+      'GetFileContent',
+      { dataset: SITE, id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+      ctx,
+    );
+    assert.deepEqual(result, { '$content-type': 'application/pdf', $content: btoa('%PDF') });
+  });
+
+  it('applies the same rules to GetFileContentByPath and attachments', async () => {
+    serveBytes('application/octet-stream', 'hello');
+    const byPath: any = await connector.invoke(
+      'GetFileContentByPath',
+      { dataset: SITE, path: '/Shared Documents/Report Q3.docx' },
+      ctx,
+    );
+    assert.equal(byPath['$content-type'], 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    assert.equal(byPath.$content, btoa('hello'));
+    const att = await connector.invoke(
+      'GetAttachmentContent',
+      { dataset: SITE, table: LIST, id: 4, attachmentId: 'notes.txt' },
+      ctx,
+    );
+    assert.equal(att, 'hello');
+  });
+
+  it('falls back to an application/octet-stream envelope for an unknown extension', async () => {
+    serveBytes('application/octet-stream', 'xyz');
+    const result = await connector.invoke('GetFileContent', { dataset: SITE, id: 'Lib%252fdata.weird' }, ctx);
+    assert.deepEqual(result, { '$content-type': 'application/octet-stream', $content: btoa('xyz') });
   });
 });

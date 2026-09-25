@@ -34,19 +34,6 @@ function hasParenthesizedConditions(filter: string): boolean {
 }
 
 /**
- * Check if a filter contains expressions inside quoted strings.
- * These need to be preserved as-is to maintain the quotes around expressions.
- * Examples:
- *   - 'field eq '@{outputs('X')}'' - has quoted expression
- *   - 'field eq @{outputs('X')}' - expression not quoted, can be parsed
- */
-function hasQuotedExpressions(filter: string): boolean {
-  // Match patterns like '@{...}' (expression wrapped in OData single quotes)
-  // The pattern: ' followed by @{ then any content then } followed by '
-  return /'@\{[^}]*\}'/.test(filter);
-}
-
-/**
  * Check if a filter has leading/trailing whitespace that should be preserved.
  */
 function hasSignificantWhitespace(filter: string): boolean {
@@ -225,7 +212,6 @@ export function parseODataFilter(filter: string): string {
   // to survive a structured round-trip.
   if (
     hasParenthesizedConditions(filter) ||
-    hasQuotedExpressions(filter) ||
     hasSignificantWhitespace(filter) ||
     hasUnsupportedFunction(filter) ||
     hasTemplateAfterAndOr(filter) ||

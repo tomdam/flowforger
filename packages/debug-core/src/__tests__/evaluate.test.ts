@@ -99,8 +99,10 @@ describe('debug runner DSL expression evaluation', () => {
     assert.deepEqual(runner.evaluate('AllItems').value, [{ id: 7 }]);
     // Flow variables keep precedence over any same-named action
     assert.equal(runner.evaluate('counter').value, 41);
-    // Unknown quoted names still fall through to the legacy echo, not a crash
-    assert.equal(runner.evaluate("'NoSuchAction'").result, "@'NoSuchAction'");
+    // Unknown quoted names resolve as plain string literals, not a crash.
+    // (Before the AST expression rewrite the regex chain could not parse a bare
+    // quoted string and fell through to the legacy echo, "@'NoSuchAction'".)
+    assert.equal(runner.evaluate("'NoSuchAction'").value, 'NoSuchAction');
 
     // Quoted variable names resolve too — hover over the string inside
     // ctx.variables('counter') sends 'counter (often with unbalanced quote)

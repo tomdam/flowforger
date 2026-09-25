@@ -16,6 +16,7 @@ Run `flowforger --help` for full flag reference. This skill covers what `--help`
 | Task | Command |
 |------|---------|
 | First-time project setup | `flowforger init --url <envUrl> --client-id <appId>` |
+| Which Entra permissions a flow / the app registration needs | `flowforger scopes <flow.ff.ts>` / `flowforger scopes --all` |
 | Pull one flow | `flowforger pull --name "My Flow" --auth` |
 | Pull a whole solution | `flowforger pull --solution <UniqueName> --auth --out ./flows` |
 | Push a flow back (updates or creates) | `flowforger push --file flow.ff.ts --auth` |
@@ -62,7 +63,7 @@ Run `flowforger --help` for full flag reference. This skill covers what `--help`
 - **Name resolution has three real limits.** (1) Two flows sharing a name → `push` refuses and demands `--id`, rather than guessing which to overwrite. (2) Flows owned by others and not shared with you are invisible to the lookup, so a push creates a duplicate — the create message says when no flow was visible. (3) `push` sends only `clientdata`, never `name`, so renaming in `@Flow({...})` and pushing by name creates a duplicate instead of renaming; push by id after a rename.
 - **`push` never publishes or changes solution membership of an existing flow.** `.ff.ts` inputs are compiled on the fly using the cwd config's connection references. With `--auth`, `--url` may be omitted — it comes from `auth.resources.dataverse` in the config (an explicit `--url` overrides it).
 - **`operationMetadataId` stripping** comes from `global.parser.skipMetadataFields` (init writes `["operationMetadataId"]`). `pull` applies it automatically via the cwd config (CLI ≥ 0.1.1 — check with `flowforger --version`); one-off override: `--skip-metadata-fields operationMetadataId` (also valid on `pull`, despite being listed under generate-dsl/parity options).
-- **`validate` is permissive** — it checks schema shape, not connection-reference correctness or referential integrity. `ok:true` does not guarantee an importable flow; use `parity` for round-trip confidence.
+- **`validate` is permissive** — it checks schema shape, not connection-reference correctness or referential integrity. `ok:true` does not guarantee an importable flow; use `parity` for round-trip confidence. It does catch the placement rules the cloud enforces on save/activate: `Response`/`Terminate` inside a foreach/until loop (`DSL037` for `.ff.ts`, `RESPONSE_NESTED`/`TERMINATE_NESTED` for JSON — the cloud error is "...has type 'Response' that could not be nested under an action of type 'foreach'"), `Response` without a request trigger (`DSL038` / `RESPONSE_TRIGGER`), `Response` in a parallel branch and nesting deeper than 8 (warnings). It also enforces the definition limits (80-char names, 500 actions, 25 switch cases, 250 variables, concurrency/retry/until/recurrence ranges — `DSL039`–`DSL046` for `.ff.ts`) and, for JSON, name uniqueness, `runAfter` integrity, expression references and `connectionReferences` consistency. For `.ff.ts` files the IR validator runs after a clean DSL pass, so those warnings show up there too.
 - **`pull` creates the `--out` directory** if missing; no need to pre-create.
 
 ## Common Mistakes

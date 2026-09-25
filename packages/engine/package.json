@@ -36,7 +36,8 @@
     "LICENSE"
   ],
   "sideEffects": [
-    "./dist/expr/functions/*.js"
+    "./dist/expr/functions/*.js",
+    "./src/expr/functions/*.ts"
   ],
   "engines": {
     "node": ">=18.0.0"

@@ -205,3 +205,74 @@ export function getTypeScriptCompletions(
     return [];
   }
 }
+
+/** A span (offset + length) inside the document the request was made against. */
+export interface DocumentSpan {
+  start: number;
+  length: number;
+}
+
+/**
+ * Go-to-definition for a bare identifier (a flow `let` variable, a for-of loop
+ * variable, a class member, …) via the embedded TypeScript service.
+ *
+ * The DSL hover/definition handlers only understand string references such as
+ * `ctx.variables('x')`; a plain `x = …` assignment has no string to detect, and
+ * because `.ff.ts` files carry the `flowforger` language ID VS Code's own TS
+ * service never attaches to answer it either. This fills that gap.
+ *
+ * Only spans inside the requesting document are returned — definitions that
+ * land in the ambient FlowForger globals or the bundled libs are dropped, since
+ * there is no real file to navigate to. Returns `[]` on any error.
+ */
+export function getTypeScriptDefinition(
+  uri: string,
+  content: string,
+  offset: number
+): DocumentSpan[] {
+  try {
+    const virtualPath = updateDocument(uri, content);
+    const defs = languageService.getDefinitionAtPosition(virtualPath, offset) ?? [];
+    return defs
+      .filter((d) => d.fileName === virtualPath)
+      .map((d) => ({ start: d.textSpan.start, length: d.textSpan.length }));
+  } catch {
+    return [];
+  }
+}
+
+/** Hover text for a bare identifier, as TypeScript would display it. */
+export interface QuickInfo extends DocumentSpan {
+  /** TS symbol kind (`let`, `local var`, `property`, …) — see `ts.ScriptElementKind`. */
+  kind: ts.ScriptElementKind;
+  /** The signature line, e.g. `let varName: string`. */
+  text: string;
+  /** JSDoc / leading-comment documentation, if any. */
+  documentation: string;
+}
+
+/**
+ * Hover (quick info) for a bare identifier via the embedded TypeScript service.
+ * Companion to {@link getTypeScriptDefinition}; returns `null` when TS has
+ * nothing to say (whitespace, punctuation, string contents) or on error.
+ */
+export function getTypeScriptQuickInfo(
+  uri: string,
+  content: string,
+  offset: number
+): QuickInfo | null {
+  try {
+    const virtualPath = updateDocument(uri, content);
+    const info = languageService.getQuickInfoAtPosition(virtualPath, offset);
+    if (!info) return null;
+    return {
+      start: info.textSpan.start,
+      length: info.textSpan.length,
+      kind: info.kind,
+      text: ts.displayPartsToString(info.displayParts),
+      documentation: ts.displayPartsToString(info.documentation),
+    };
+  } catch {
+    return null;
+  }
+}

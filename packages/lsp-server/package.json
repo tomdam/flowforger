@@ -42,6 +42,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
+    "test": "node --import tsx --test test/*.test.ts",
     "regenerate-lib-files": "node scripts/generate-lib-files.mjs"
   },
   "dependencies": {

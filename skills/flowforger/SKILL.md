@@ -445,7 +445,7 @@ for (const user of ctx.body('GetUsers')?.['value'] ?? []) {
 }
 ```
 
-### 9. Action descriptions (comments above an action) — any length is fine; long ones overflow into metadata
+### 9. Action descriptions (comments above an action) — any length is fine, but NEVER write `@{…}` in a comment
 
 Any **plain comment** (`//` or `/* */`) or `@description` text placed above an action is captured by the transformer as that action's `description` field. Power Automate caps the `description` field at **255 characters**, but the emitter handles this automatically: a longer comment is emitted as a 255-char excerpt (ending `…`) in `description`, with the **full text preserved in the action's metadata** under `flowforgerDescription`. On pull, `parseLogicAppsToIR` restores the full text (a note edited in the Power Automate designer wins over the stored full text). So long comments — including **commented-out actions kept for reference** — survive the DSL → cloud → DSL round-trip, and there is no length limit to worry about and no push/publish failure.
 
@@ -457,6 +457,27 @@ Any **plain comment** (`//` or `/* */`) or `@description` text placed above an a
 await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
 ```
 
+**⚠️ Never write `@{…}` in a comment, and don't start a comment with `@`.** Comments become the emitted action's `description`, and Power Automate runs *every* string in the definition — descriptions included — through its template parser: `@{…}` anywhere in a description is an interpolation, and a leading `@` starts an expression. Either makes the cloud reject the flow on push/save (`InvalidTemplate`), even though the DSL transforms and compiles fine locally. When a comment needs to mention an expression, write it without the `@`:
+
+```typescript
+// ❌ WRONG — the flow is rejected on push (the description becomes a template expression):
+// Build the payload using @{triggerBody()?['name']} for the name
+await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+
+// ❌ WRONG — a description starting with "@" is parsed as an expression:
+// @todo handle retries
+await ctx.compose('Notify', { ok: true });
+
+// ✅ CORRECT — same information, no template syntax:
+// Build the payload using triggerBody()?['name'] for the name
+await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+
+// TODO: handle retries
+await ctx.compose('Notify', { ok: true });
+```
+
+This applies to `//` comments, `/* */` comments, `@description` text, and the class-level flow description alike. `flowforger validate <file.ff.ts>` reports these as **DSL035** (error — `@{` in any comment) and **DSL036** (warning — description starting with `@`); the IR / Logic Apps JSON validators report the same as `DESCRIPTION_EXPRESSION` / `DESCRIPTION_LEADING_AT`. Fix them before pushing.
+
 **What becomes the description:**
 - Only the **descriptive prose** — plain comments and `@description` text.
 - Structural JSDoc tags are **stripped** and are NOT part of it: `@action`, `@type`, `@runAfter`, `@limit`, `@retryPolicy`, `@metadata`, etc. So `/** @action Foo @type if */` contributes nothing to the description.
@@ -465,6 +486,71 @@ await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
 **Notes:**
 - Only the 255-char excerpt is visible as the action's note in the Power Automate designer; the full text reappears whenever the flow is opened in FlowForger (CLI, web app, or VS Code).
 - **Exception — the flow-level description** (the class-level JSDoc on the `@Flow` class): it maps to `definition.description`, which has NO overflow handling. Keep the flow-level description at 255 characters or fewer.
+
+### 10. NEVER call `ctx.response()` or `ctx.terminate()` inside a loop — and `ctx.response()` needs a request trigger
+
+Power Automate validates *where* an action sits when the flow is saved/activated, and rejects the whole flow with `InvalidWorkflowRunAction`:
+
+> The workflow run action 'Respond_FileNotFound' has type 'Response' that could not be nested under an action of type 'foreach'.
+
+The rules (from the Logic Apps schema reference):
+
+- **`Response` and `Terminate` cannot be nested under a `foreach` or `until` loop at any depth** — a `for...of`, `while` or `do...while` body, including inside an `if`/`switch`/scope block within that loop. `if`, `switch` and scope blocks *outside* a loop are fine.
+- **`Response` requires a request trigger** — `@HttpTrigger` or `@ManualTrigger`. A flow with `@RecurrenceTrigger` or `@ConnectorTrigger` has no caller to respond to; the cloud rejects a Response action there.
+- **`Response` must not sit in a parallel branch** (two actions with the same explicit `@runAfter` predecessor and status). Join the branches first, then respond. Two responses after the same scope on *disjoint* statuses (`Succeeded` vs `Failed`) are fine — that is the try/catch pattern.
+- Actions nest at most **8 levels deep** (Logic Apps limit).
+
+```typescript
+// ❌ WRONG — rejected on save: Response nested under foreach
+for (const file of ctx.body('GetFiles')) {
+  if (ctx.equals(file.missing, true)) {
+    await ctx.response('Respond_FileNotFound', 404, { error: 'not found' });
+  }
+}
+
+// ❌ WRONG — rejected on save: Terminate nested under foreach
+for (const item of ctx.body('GetItems')) {
+  if (ctx.equals(item.status, 'bad')) {
+    await ctx.terminate('Stop', 'Failed', { code: 'BAD', message: 'bad item' });
+  }
+}
+
+// ✅ CORRECT — decide inside the loop, act after it
+let missingFile = '';
+for (const file of ctx.body('GetFiles')) {
+  if (ctx.equals(file.missing, true)) {
+    missingFile = file.name;
+  }
+}
+if (!ctx.empty(missingFile)) {
+  await ctx.response('Respond_FileNotFound', 404, { error: `File ${missingFile} not found` });
+} else {
+  await ctx.response('Respond_OK', 200, { ok: true });
+}
+```
+
+Alternatives that keep the decision inside the loop: use `Filter array` (`ctx.filterArray`) before the loop so the failing case never enters it, or move the loop body into a child flow and respond/terminate in the parent.
+
+`flowforger validate <file.ff.ts>` reports these as **DSL037** (error — `ctx.response()`/`ctx.terminate()` inside a loop) and **DSL038** (error — `ctx.response()` without a request trigger); the IR / Logic Apps JSON validators report `RESPONSE_NESTED`, `TERMINATE_NESTED`, `RESPONSE_TRIGGER`, `RESPONSE_PARALLEL` (warning) and `NESTING_DEPTH` (warning). Fix them before pushing.
+
+### 11. Stay inside the Power Automate definition limits
+
+The workflow service rejects a flow on save when it exceeds these limits. All of them are checked by `flowforger validate` (DSL codes in the editors and CLI, IR / JSON codes in the CLI and web app):
+
+| Limit | Value | DSL code | IR / JSON code |
+|-------|-------|----------|----------------|
+| Action or trigger name length | 80 characters | DSL039 | `ACTION_NAME_LENGTH` |
+| Actions per flow | 500 | DSL040 (warning) | `ACTION_COUNT` |
+| Cases per `switch` | 25 | DSL041 | `SWITCH_CASES` |
+| Variables per flow (`let` declarations) | 250 | DSL042 | `VARIABLE_COUNT` |
+| `@runtimeConfig` foreach `concurrency.repetitions` | 1–50 | DSL043 | `FOREACH_CONCURRENCY` |
+| `@retryPolicy` | `type` none/fixed/exponential, `count` 1–90, `interval` PT5S–P1D | DSL043 | `RETRY_POLICY` |
+| `@limit` on until loops | `count` 1–5000, `timeout` ISO 8601 (`PT1H`) | DSL043 | `UNTIL_COUNT`, `UNTIL_TIMEOUT` |
+| `@RecurrenceTrigger` interval | Month 1–16, Day 1–500, Hour 1–12,000, Minute 1–72,000 | DSL045 | `RECURRENCE` |
+| `@RecurrenceTrigger` schedule | `hours`/`minutes` only for Day/Week, `weekDays` only for Week | DSL046 (warning) | `RECURRENCE_SCHEDULE` |
+| Nesting depth | 8 | — | `NESTING_DEPTH` (warning) |
+
+Two more pairings the portal enforces: a `ctx.response(..., 'PowerApp')` response belongs with `@ManualTrigger`, and a `'VirtualAgent'` response with `@HttpTrigger({ triggerKind: 'VirtualAgent' })` — **DSL044** / `RESPONSE_KIND` (warnings). The JSON validators additionally check what the DSL diagnostics already guarantee for `.ff.ts` files: unique action names across scopes (case-insensitive), `outputs()`/`body()`/`items()`/`parameters()` references that resolve, `runAfter` targets that are siblings with valid statuses and no cycles, `Until` loops with a body and a limit, `runError` only with `Failed`, and OpenApiConnection `connectionName`s that exist in `connectionReferences`.
 
 ## Control Flow Summary
 
@@ -498,5 +584,5 @@ See [Connectors Reference](connectors.md) for all operations and parameters.
 - [DSL Syntax Reference](dsl-syntax.md) - Triggers, actions, variables, control flow, expressions
 - [Connectors Reference](connectors.md) - All connector operations and parameters
 - [Examples](examples.md) - Common flow patterns
-- [Formal Grammar & Conformance](https://github.com/tomdam/flowforger/blob/main/docs/grammar/README.md) - EBNF for the recognized subset and JSDoc tags, the 14 conformance rules (spec-style restatement of this file), and a fully-annotated [canonical example](https://github.com/tomdam/flowforger/blob/main/docs/grammar/canonical-example.ff.ts)
+- [Formal Grammar & Conformance](https://github.com/tomdam/flowforger/blob/main/docs/grammar/README.md) - EBNF for the recognized subset and JSDoc tags, the 17 conformance rules (spec-style restatement of this file), and a fully-annotated [canonical example](https://github.com/tomdam/flowforger/blob/main/docs/grammar/canonical-example.ff.ts)
 

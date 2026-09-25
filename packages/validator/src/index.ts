@@ -1,5 +1,11 @@
 import type { FlowIR, Node } from '@flowforger/ir';
+import { DESCRIPTION_OVERFLOW_METADATA_KEY } from '@flowforger/ir';
 import { collectExpressionIssues } from './expressions.js';
+import { collectIrPlacementIssues, collectLogicAppsPlacementIssues } from './placement.js';
+import { collectIrStructureIssues, collectLogicAppsStructureIssues } from './structure.js';
+
+export { MAX_ACTION_NESTING_DEPTH } from './placement.js';
+export { LIMITS, parseIsoDurationMs } from './structure.js';
 
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -13,6 +19,36 @@ export interface ValidationIssue {
 export interface ValidationResult {
   ok: boolean;
   issues: ValidationIssue[];
+}
+
+/**
+ * Descriptions (action/trigger notes, the flow description) are plain text to FlowForger, but
+ * Power Automate runs them through the same template parser as every other string in the
+ * definition: "@{...}" anywhere is an interpolation and a leading "@" starts an expression.
+ * Either makes the cloud reject the flow on save (InvalidTemplate). In the DSL, descriptions
+ * come from comments — see DSL035/DSL036 in @flowforger/dsl-language-service.
+ */
+function collectDescriptionIssues(description: unknown, path: string, what: string): ValidationIssue[] {
+  if (typeof description !== 'string') return [];
+  const issues: ValidationIssue[] = [];
+  const interpolation = description.match(/@\{[^}\n]*\}?/);
+  if (interpolation) {
+    issues.push({
+      level: 'error',
+      code: 'DESCRIPTION_EXPRESSION',
+      message: `${what} contains '${interpolation[0]}'. Power Automate parses "@{...}" in a description as a template expression and rejects the flow on save. Remove the "@".`,
+      path,
+    });
+  }
+  if (/^\s*@(?!@)/.test(description)) {
+    issues.push({
+      level: 'warning',
+      code: 'DESCRIPTION_LEADING_AT',
+      message: `${what} starts with "@". Power Automate parses a description that begins with "@" as a template expression. Start it with a word instead.`,
+      path,
+    });
+  }
+  return issues;
 }
 
 export function validateFlowIR(ir: FlowIR): ValidationResult {
@@ -35,12 +71,14 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
       });
     }
   }
-  const triggers = ir.nodes.filter((n) => n.type === 'trigger');
+  const triggers = ir.nodes.filter((n) => n.type === 'trigger' || n.type === 'recurrence');
   if (triggers.length !== 1) {
     issues.push({ level: 'error', code: 'IR_TRIGGER', message: 'Flow must have exactly one trigger' });
   }
   const actions = ir.nodes.filter((n) => n.type === 'action');
-  if (actions.length === 0) {
+  // Connector / control nodes are actions too — only a trigger-only flow is empty
+  const executable = ir.nodes.filter((n) => n.type !== 'trigger' && n.type !== 'recurrence');
+  if (executable.length === 0) {
     issues.push({ level: 'warning', code: 'IR_ACTIONS', message: 'Flow has no actions' });
   }
   for (const a of actions) {
@@ -57,9 +95,12 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   // PA rejects two InitializeVariable actions targeting the same variable name on import.
   const initVarNames = new Map<string, string[]>(); // variableName -> [actionName, actionName, ...]
 
+  issues.push(...collectDescriptionIssues(ir.description, 'description', 'Flow description'));
+
   // control constructs
   function walk(nodes: Node[], isNested = false) {
     for (const n of nodes) {
+      issues.push(...collectDescriptionIssues((n as any).description, `nodes.${n.name}.description`, `Description of ${n.type} '${n.name}'`));
       // Check for initializevariable inside nested structures (not allowed in Logic Apps)
       if (n.type === 'action' && (n as any).kind === 'initializevariable' && isNested) {
         issues.push({
@@ -188,6 +229,14 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   }
   walk(ir.nodes as any);
 
+  // Placement rules the cloud enforces on save: Response/Terminate not inside loops, Response
+  // needs a request trigger and no parallel branch, nesting depth ≤ 8
+  issues.push(...collectIrPlacementIssues(ir));
+
+  // Structural rules and definition limits: duplicate/long names, counts, runAfter integrity,
+  // until/terminate/retry/recurrence shapes, expression references to actions/loops/parameters
+  issues.push(...collectIrStructureIssues(ir));
+
   // Expression syntax + unknown-function checks across every node value
   issues.push(...collectExpressionIssues(ir.nodes, 'nodes'));
 
@@ -265,8 +314,53 @@ export function validateLogicApps(def: any): ValidationResult {
     }
   }
 
+  // Descriptions (notes) anywhere in the definition tree
+  issues.push(...collectDescriptionIssues(definition.description, 'definition.description', 'Flow description'));
+  for (const triggerName of triggerKeys) {
+    const trigger = definition.triggers[triggerName];
+    if (trigger && typeof trigger === 'object') {
+      issues.push(...collectLogicAppsNodeDescriptionIssues(trigger, `definition.triggers.${triggerName}`, `Description of trigger "${triggerName}"`));
+    }
+  }
+  walkLogicAppsActions(definition.actions, 'definition.actions', issues);
+
+  // Placement rules the cloud enforces on save: Response/Terminate not inside loops, Response
+  // needs a request trigger and no parallel branch, InitializeVariable at root, nesting depth ≤ 8
+  issues.push(...collectLogicAppsPlacementIssues(definition));
+
+  // Structural rules and definition limits (see structure.ts); `def` carries connectionReferences
+  issues.push(...collectLogicAppsStructureIssues(def, definition));
+
   // Expression syntax + unknown-function checks across the whole definition
   issues.push(...collectExpressionIssues(definition, 'definition'));
 
   return { ok: issues.find((i) => i.level === 'error') === undefined, issues };
+}
+
+function collectLogicAppsNodeDescriptionIssues(node: any, path: string, what: string): ValidationIssue[] {
+  const issues = collectDescriptionIssues(node.description, `${path}.description`, what);
+  // The emitter stores a >255-char description's full text in metadata; the cloud parses that too.
+  const overflow = node.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY];
+  if (typeof overflow === 'string') {
+    issues.push(...collectDescriptionIssues(overflow, `${path}.metadata.${DESCRIPTION_OVERFLOW_METADATA_KEY}`, `${what} (full text in metadata)`));
+  }
+  return issues;
+}
+
+/** Walk the actions tree (scope/if/foreach/until/switch nesting) and check every action's description. */
+function walkLogicAppsActions(actions: any, path: string, issues: ValidationIssue[]): void {
+  if (!actions || typeof actions !== 'object') return;
+  for (const [name, action] of Object.entries<any>(actions)) {
+    if (!action || typeof action !== 'object') continue;
+    const actionPath = `${path}.${name}`;
+    issues.push(...collectLogicAppsNodeDescriptionIssues(action, actionPath, `Description of action "${name}"`));
+    walkLogicAppsActions(action.actions, `${actionPath}.actions`, issues);
+    walkLogicAppsActions(action.else?.actions, `${actionPath}.else.actions`, issues);
+    walkLogicAppsActions(action.default?.actions, `${actionPath}.default.actions`, issues);
+    if (action.cases && typeof action.cases === 'object') {
+      for (const [caseName, c] of Object.entries<any>(action.cases)) {
+        walkLogicAppsActions(c?.actions, `${actionPath}.cases.${caseName}.actions`, issues);
+      }
+    }
+  }
 }

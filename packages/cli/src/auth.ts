@@ -79,6 +79,79 @@ const SUBSUMPTION_RULES: Array<[string, string]> = [
   ['GroupMember.Read.All', 'GroupMember.ReadWrite.All'],
 ];
 
+/**
+ * The Entra ID APIs the CLI can request delegated permissions from, keyed by
+ * the resource key used in CONNECTOR_RESOURCE_MAP. `appId` is what to search
+ * for under "APIs my organization uses" when the API is not listed by name.
+ */
+export const RESOURCE_APIS: Record<
+  'graph' | 'sharepoint' | 'dataverse' | 'flowservice',
+  { label: string; appId: string; defaultResource?: string }
+> = {
+  graph: {
+    label: 'Microsoft Graph',
+    appId: '00000003-0000-0000-c000-000000000000',
+    defaultResource: 'https://graph.microsoft.com',
+  },
+  sharepoint: { label: 'SharePoint', appId: '00000003-0000-0ff1-ce00-000000000000' },
+  dataverse: { label: 'Dynamics CRM', appId: '00000007-0000-0000-c000-000000000000' },
+  flowservice: {
+    label: 'Microsoft Flow Service',
+    appId: '7df0a125-d3be-4c96-aa54-591f83ff541c',
+    defaultResource: FLOW_SERVICE_RESOURCE,
+  },
+};
+
+/** Map a resolved resource URL back to its API key (`resolveRequiredScopes` output → RESOURCE_APIS). */
+export function resourceKeyForUrl(
+  url: string,
+  authConfig: Pick<AuthConfig, 'resources'>
+): keyof typeof RESOURCE_APIS | undefined {
+  if (url === RESOURCE_APIS.graph.defaultResource) return 'graph';
+  if (authConfig.resources?.sharepoint && url === authConfig.resources.sharepoint) return 'sharepoint';
+  if (authConfig.resources?.dataverse && url === authConfig.resources.dataverse) return 'dataverse';
+  if (url === (authConfig.resources?.flowservice ?? FLOW_SERVICE_RESOURCE)) return 'flowservice';
+  if (/\.sharepoint\.com$/i.test(url)) return 'sharepoint';
+  if (/\.dynamics\.com$/i.test(url)) return 'dataverse';
+  return undefined;
+}
+
+/**
+ * Every delegated permission any connector may request, per connector, with
+ * the API it belongs to. This is the full set an app registration needs to
+ * cover all connectors — no subsumption is applied, because Entra ID consent
+ * is per scope (granting `Mail.ReadWrite` does not satisfy a request for
+ * `Mail.Read`, which a read-only flow will make).
+ */
+export async function collectAllConnectorScopes(): Promise<
+  Array<{ connector: string; resource: keyof typeof RESOURCE_APIS; scopes: string[] }>
+> {
+  const union = (map: Record<string, string[]>) => [...new Set(Object.values(map).flat())].sort();
+  const [o365, dv, sp, word, excel, teams, groups, users, onedrive] = await Promise.all([
+    import('@flowforger/connectors-office365'),
+    import('@flowforger/connectors-dataverse'),
+    import('@flowforger/connectors-sharepoint'),
+    import('@flowforger/connectors-wordonline'),
+    import('@flowforger/connectors-excelonline'),
+    import('@flowforger/connectors-teams'),
+    import('@flowforger/connectors-office365groups'),
+    import('@flowforger/connectors-office365users'),
+    import('@flowforger/connectors-onedrive'),
+  ]);
+  return [
+    { connector: 'office365', resource: 'graph', scopes: union(o365.office365Scopes) },
+    { connector: 'office365users', resource: 'graph', scopes: union(users.office365usersScopes) },
+    { connector: 'office365groups', resource: 'graph', scopes: union(groups.office365groupsScopes) },
+    { connector: 'teams', resource: 'graph', scopes: union(teams.teamsScopes) },
+    { connector: 'wordonline', resource: 'graph', scopes: [...word.wordonlineScopes.default].sort() },
+    { connector: 'excelonline', resource: 'graph', scopes: [...excel.excelonlineScopes.default].sort() },
+    { connector: 'onedrive', resource: 'graph', scopes: [...onedrive.onedriveScopes.default].sort() },
+    { connector: 'sharepoint', resource: 'sharepoint', scopes: [...sp.sharepointScopes.default].sort() },
+    { connector: 'dataverse', resource: 'dataverse', scopes: [...dv.dataverseScopes.default].sort() },
+    { connector: 'listCallbackUrl()', resource: 'flowservice', scopes: FLOW_SERVICE_SCOPES.map((s) => s.replace(`${FLOW_SERVICE_RESOURCE}/`, '')) },
+  ];
+}
+
 const CACHE_DIR = join(homedir(), '.flowforger');
 const CACHE_PATH = join(CACHE_DIR, 'token-cache.json');
 

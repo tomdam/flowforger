@@ -100,6 +100,14 @@ export interface DiagnosticsOptions {
   checkSelfRefArrayReassign?: boolean;
   /** Check Power Automate expressions inside ctx.eval(`...`) literals (DSL033, DSL034) */
   checkEvalExpressions?: boolean;
+  /** Check comments (future action descriptions) for Power Automate template syntax (DSL035, DSL036) */
+  checkDescriptionComments?: boolean;
+  /** Check ctx.response()/ctx.terminate() placement: not inside loops (DSL037), response needs a request trigger (DSL038) */
+  checkActionPlacement?: boolean;
+  /** Check definition limits: name length, action/switch-case/variable counts (DSL039-DSL042) */
+  checkLimits?: boolean;
+  /** Check response kind vs trigger (DSL044) and @RecurrenceTrigger options (DSL045, DSL046) */
+  checkTriggerOptions?: boolean;
 }
 
 const defaultOptions: DiagnosticsOptions = {
@@ -124,6 +132,10 @@ const defaultOptions: DiagnosticsOptions = {
   checkQuotedSpread: true,
   checkSelfRefArrayReassign: true,
   checkEvalExpressions: true,
+  checkDescriptionComments: true,
+  checkActionPlacement: true,
+  checkLimits: true,
+  checkTriggerOptions: true,
 };
 
 /**
@@ -223,6 +235,26 @@ export function getDiagnostics(
   // Check Power Automate expressions inside ctx.eval literals (DSL033, DSL034)
   if (opts.checkEvalExpressions) {
     diagnostics.push(...checkEvalExpressions(sourceFile));
+  }
+
+  // Check comments for "@{...}" / leading "@" that would break the description in the cloud (DSL035, DSL036)
+  if (opts.checkDescriptionComments) {
+    diagnostics.push(...checkDescriptionComments(sourceFile));
+  }
+
+  // Check Response/Terminate placement: not inside loops, Response needs a request trigger (DSL037, DSL038)
+  if (opts.checkActionPlacement) {
+    diagnostics.push(...checkActionPlacement(sourceFile));
+  }
+
+  // Check definition limits (DSL039-DSL042)
+  if (opts.checkLimits) {
+    diagnostics.push(...checkLimits(sourceFile, index));
+  }
+
+  // Check response kind vs trigger and @RecurrenceTrigger options (DSL044-DSL046)
+  if (opts.checkTriggerOptions) {
+    diagnostics.push(...checkTriggerOptions(sourceFile));
   }
 
   // Check for quoted spread / self-referential array reassignment (DSL028, DSL029)
@@ -1296,23 +1328,318 @@ function checkJSDocAnnotations(sourceFile: ts.SourceFile): Diagnostic[] {
 
       while ((annMatch = annotationRegex.exec(jsDocText)) !== null) {
         const jsonStr = annMatch[1];
+        const absOffset = jsDocStart + annMatch.index;
+        const range = {
+          start: sourceFile.getLineAndCharacterOfPosition(absOffset),
+          end: sourceFile.getLineAndCharacterOfPosition(absOffset + annMatch[0].length),
+        };
+        let parsed: unknown;
         try {
-          JSON.parse(jsonStr);
+          parsed = JSON.parse(jsonStr);
         } catch {
-          const absOffset = jsDocStart + annMatch.index;
-          const startPos = sourceFile.getLineAndCharacterOfPosition(absOffset);
-          const endPos = sourceFile.getLineAndCharacterOfPosition(
-            absOffset + annMatch[0].length
-          );
           diagnostics.push({
             code: DiagnosticCodes.DSL027.code,
             severity: DiagnosticCodes.DSL027.severity,
             message: DiagnosticCodes.DSL027.format!(annotation),
-            range: { start: startPos, end: endPos },
+            range,
+            source: 'flowforger',
+          });
+          continue;
+        }
+        // DSL043: the JSON parsed — check the values against Power Automate's limits
+        for (const detail of annotationValueProblems(annotation, parsed)) {
+          diagnostics.push({
+            code: DiagnosticCodes.DSL043.code,
+            severity: DiagnosticCodes.DSL043.severity,
+            message: DiagnosticCodes.DSL043.format!(annotation, detail),
+            range,
             source: 'flowforger',
           });
         }
       }
+    }
+
+    // DSL043: @limit on a loop — `@limit 100` or `@limit {"count":100,"timeout":"PT1H"}`
+    const limitMatch = jsDocText.match(/@limit\s+(\{[^}]*\}|\d+)/);
+    if (limitMatch) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(limitMatch[1]);
+      } catch {
+        parsed = undefined; // malformed JSON is not this rule's concern
+      }
+      if (parsed !== undefined) {
+        const absOffset = jsDocStart + limitMatch.index!;
+        const range = {
+          start: sourceFile.getLineAndCharacterOfPosition(absOffset),
+          end: sourceFile.getLineAndCharacterOfPosition(absOffset + limitMatch[0].length),
+        };
+        for (const detail of annotationValueProblems('limit', parsed)) {
+          diagnostics.push({
+            code: DiagnosticCodes.DSL043.code,
+            severity: DiagnosticCodes.DSL043.severity,
+            message: DiagnosticCodes.DSL043.format!('limit', detail),
+            range,
+            source: 'flowforger',
+          });
+        }
+      }
+    }
+  }
+
+  return diagnostics;
+}
+
+/** Power Automate definition limits (learn.microsoft.com/power-automate/limits-and-config). */
+const PA_LIMITS = {
+  nameLength: 80,
+  actionsPerFlow: 500,
+  switchCases: 25,
+  variablesPerFlow: 250,
+  foreachConcurrency: { min: 1, max: 50 },
+  untilCount: { min: 1, max: 5000 },
+  retryCount: { min: 1, max: 90 },
+  retryIntervalMs: { min: 5_000, max: 86_400_000 }, // PT5S .. P1D
+  recurrenceIntervalMax: { month: 16, day: 500, hour: 12_000, minute: 72_000, second: 9_999_999 } as Record<string, number>,
+};
+
+/** Parse an ISO 8601 duration (P[nW][nD][T[nH][nM][nS]]) to milliseconds; undefined if malformed. */
+function isoDurationMs(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const m = value.match(/^P(?:(\d+(?:\.\d+)?)W)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/i);
+  if (!m) return undefined;
+  const [, w, d, h, min, s] = m;
+  if (!w && !d && !h && !min && !s) return undefined;
+  return (Number(w || 0) * 7 + Number(d || 0)) * 86_400_000 + Number(h || 0) * 3_600_000 + Number(min || 0) * 60_000 + Number(s || 0) * 1000;
+}
+
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
+
+/**
+ * Value checks for parsed JSDoc annotations (DSL043): @runtimeConfig concurrency, @retryPolicy
+ * type/count/interval, @limit count/timeout. Returns one human-readable problem per finding.
+ */
+function annotationValueProblems(annotation: string, value: unknown): string[] {
+  const problems: string[] = [];
+  const obj = value && typeof value === 'object' ? (value as Record<string, any>) : undefined;
+  if (annotation === 'runtimeConfig') {
+    const reps = obj?.concurrency?.repetitions;
+    if (reps !== undefined && (!isInt(reps) || reps < PA_LIMITS.foreachConcurrency.min || reps > PA_LIMITS.foreachConcurrency.max)) {
+      problems.push(`concurrency.repetitions is ${JSON.stringify(reps)}; allowed range is ${PA_LIMITS.foreachConcurrency.min}-${PA_LIMITS.foreachConcurrency.max}.`);
+    }
+    const runs = obj?.concurrency?.runs;
+    if (runs !== undefined && (!isInt(runs) || runs < 1 || runs > 100)) {
+      problems.push(`concurrency.runs is ${JSON.stringify(runs)}; allowed range is 1-100.`);
+    }
+  } else if (annotation === 'retryPolicy') {
+    if (!obj) return ['retryPolicy must be a JSON object.'];
+    const type = typeof obj.type === 'string' ? obj.type.toLowerCase() : undefined;
+    if (type === undefined || !['none', 'fixed', 'exponential'].includes(type)) {
+      problems.push(`type is ${JSON.stringify(obj.type)}; allowed values are none, fixed and exponential.`);
+    }
+    if (type !== 'none') {
+      if (obj.count !== undefined && (!isInt(obj.count) || obj.count < PA_LIMITS.retryCount.min || obj.count > PA_LIMITS.retryCount.max)) {
+        problems.push(`count is ${JSON.stringify(obj.count)}; allowed range is ${PA_LIMITS.retryCount.min}-${PA_LIMITS.retryCount.max}.`);
+      }
+      for (const key of ['interval', 'minimumInterval', 'maximumInterval']) {
+        if (obj[key] === undefined) continue;
+        const ms = isoDurationMs(obj[key]);
+        if (ms === undefined) problems.push(`${key} is ${JSON.stringify(obj[key])}, which is not an ISO 8601 duration (e.g. "PT20S").`);
+        else if (ms < PA_LIMITS.retryIntervalMs.min || ms > PA_LIMITS.retryIntervalMs.max) problems.push(`${key} is "${obj[key]}"; allowed range is PT5S to P1D.`);
+      }
+    }
+  } else if (annotation === 'limit') {
+    const count = isInt(value) ? value : obj?.count;
+    if (count !== undefined && (!isInt(count) || count < PA_LIMITS.untilCount.min || count > PA_LIMITS.untilCount.max)) {
+      problems.push(`count is ${JSON.stringify(count)}; allowed range is ${PA_LIMITS.untilCount.min}-${PA_LIMITS.untilCount.max}.`);
+    }
+    if (obj?.timeout !== undefined && isoDurationMs(obj.timeout) === undefined) {
+      problems.push(`timeout is ${JSON.stringify(obj.timeout)}, which is not an ISO 8601 duration (e.g. "PT1H").`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Definition limits that are visible in the source (DSL039-DSL042): action name length, number
+ * of actions, cases per switch, number of variables.
+ */
+function checkLimits(sourceFile: ts.SourceFile, index: SymbolIndex): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const flowClass = findFlowClass(sourceFile);
+  const flowRange = flowClass?.name ? getNodeRange(sourceFile, flowClass.name) : { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+
+  for (const action of index.actions) {
+    if (action.name.length > PA_LIMITS.nameLength) {
+      diagnostics.push({
+        code: DiagnosticCodes.DSL039.code,
+        severity: DiagnosticCodes.DSL039.severity,
+        message: DiagnosticCodes.DSL039.format!(action.name, String(action.name.length)),
+        range: action.nameRange,
+        source: 'flowforger',
+      });
+    }
+  }
+
+  if (index.actions.length > PA_LIMITS.actionsPerFlow) {
+    diagnostics.push({
+      code: DiagnosticCodes.DSL040.code,
+      severity: DiagnosticCodes.DSL040.severity,
+      message: DiagnosticCodes.DSL040.format!(String(index.actions.length)),
+      range: flowRange,
+      source: 'flowforger',
+    });
+  }
+
+  const variableCount = index.variables.filter((v) => v.isInitialDeclaration).length;
+  if (variableCount > PA_LIMITS.variablesPerFlow) {
+    diagnostics.push({
+      code: DiagnosticCodes.DSL042.code,
+      severity: DiagnosticCodes.DSL042.severity,
+      message: DiagnosticCodes.DSL042.format!(String(variableCount)),
+      range: flowRange,
+      source: 'flowforger',
+    });
+  }
+
+  function visit(node: ts.Node): void {
+    if (ts.isSwitchStatement(node)) {
+      const cases = node.caseBlock.clauses.filter((c) => ts.isCaseClause(c)).length;
+      if (cases > PA_LIMITS.switchCases) {
+        diagnostics.push({
+          code: DiagnosticCodes.DSL041.code,
+          severity: DiagnosticCodes.DSL041.severity,
+          message: DiagnosticCodes.DSL041.format!(String(cases)),
+          range: getNodeRange(sourceFile, node.expression),
+          source: 'flowforger',
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+
+  return diagnostics;
+}
+
+/** The object-literal argument of a decorator on a class member, if any. */
+function decoratorObjectArgument(member: ts.Node, decoratorName: string): ts.ObjectLiteralExpression | undefined {
+  const decorators = ts.canHaveDecorators(member) ? ts.getDecorators(member) : undefined;
+  for (const d of decorators || []) {
+    if (!ts.isCallExpression(d.expression)) continue;
+    const callee = d.expression.expression;
+    if (!ts.isIdentifier(callee) || callee.text !== decoratorName) continue;
+    const arg = d.expression.arguments[0];
+    return arg && ts.isObjectLiteralExpression(arg) ? arg : undefined;
+  }
+  return undefined;
+}
+
+function literalProperty(obj: ts.ObjectLiteralExpression | undefined, name: string): ts.Expression | undefined {
+  if (!obj) return undefined;
+  for (const p of obj.properties) {
+    if (ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === name) {
+      return p.initializer;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Response kind vs trigger (DSL044) and @RecurrenceTrigger option ranges (DSL045, DSL046).
+ * Only literal values are checked; anything computed is left alone.
+ */
+function checkTriggerOptions(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const flowClass = findFlowClass(sourceFile);
+  if (!flowClass) return diagnostics;
+
+  let triggerName: string | undefined;
+  let triggerOptions: ts.ObjectLiteralExpression | undefined;
+  for (const member of flowClass.members) {
+    if (!ts.isMethodDeclaration(member)) continue;
+    for (const name of ['HttpTrigger', 'ManualTrigger', 'RecurrenceTrigger', 'ConnectorTrigger']) {
+      if (hasDecorator(member, name)) {
+        triggerName = name;
+        triggerOptions = decoratorObjectArgument(member, name);
+      }
+    }
+  }
+  if (!triggerName) return diagnostics;
+
+  // DSL044 — ctx.response(name, status, body, headers, schema, kind)
+  const triggerKindLit = literalProperty(triggerOptions, 'triggerKind');
+  const triggerKind = triggerKindLit && ts.isStringLiteralLike(triggerKindLit) ? triggerKindLit.text : undefined;
+  function visit(node: ts.Node): void {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'ctx' &&
+      node.expression.name.text === 'response'
+    ) {
+      const kindArg = node.arguments[5];
+      const kind = kindArg && ts.isStringLiteralLike(kindArg) ? kindArg.text : undefined;
+      let expected: string | undefined;
+      let ok = true;
+      if (kind === 'PowerApp') {
+        expected = '@ManualTrigger (Power Apps / button / child-flow trigger)';
+        ok = triggerName === 'ManualTrigger';
+      } else if (kind === 'VirtualAgent') {
+        expected = "@HttpTrigger({ triggerKind: 'VirtualAgent' })";
+        ok = triggerName === 'HttpTrigger' && triggerKind === 'VirtualAgent';
+      }
+      if (expected && !ok) {
+        const actual = `@${triggerName}` + (triggerKind ? `({ triggerKind: '${triggerKind}' })` : '');
+        diagnostics.push({
+          code: DiagnosticCodes.DSL044.code,
+          severity: DiagnosticCodes.DSL044.severity,
+          message: DiagnosticCodes.DSL044.format!(kind!, expected, actual),
+          range: getNodeRange(sourceFile, kindArg!),
+          source: 'flowforger',
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(flowClass);
+
+  // DSL045 / DSL046 — @RecurrenceTrigger({ frequency, interval, schedule })
+  if (triggerName === 'RecurrenceTrigger' && triggerOptions) {
+    const push = (code: 'DSL045' | 'DSL046', node: ts.Node, detail: string) =>
+      diagnostics.push({
+        code: DiagnosticCodes[code].code,
+        severity: DiagnosticCodes[code].severity,
+        message: DiagnosticCodes[code].format!(detail),
+        range: getNodeRange(sourceFile, node),
+        source: 'flowforger',
+      });
+    const freqLit = literalProperty(triggerOptions, 'frequency');
+    const freq = freqLit && ts.isStringLiteralLike(freqLit) ? freqLit.text : undefined;
+    const freqLower = freq?.toLowerCase();
+    if (freqLit && freq !== undefined && !['second', 'minute', 'hour', 'day', 'week', 'month', 'year'].includes(freqLower!)) {
+      push('DSL045', freqLit, `frequency '${freq}' is not one of Second, Minute, Hour, Day, Week, Month, Year.`);
+    }
+    const intervalLit = literalProperty(triggerOptions, 'interval');
+    if (intervalLit) {
+      const text = intervalLit.getText(sourceFile);
+      const n = ts.isNumericLiteral(intervalLit) ? Number(intervalLit.text) : ts.isPrefixUnaryExpression(intervalLit) ? Number(text) : undefined;
+      const max = freqLower ? PA_LIMITS.recurrenceIntervalMax[freqLower] : undefined;
+      if (n !== undefined && (!Number.isInteger(n) || n < 1 || (max !== undefined && n > max))) {
+        push('DSL045', intervalLit, `interval ${text} must be an integer from 1 to ${max ?? '…'} for frequency '${freq ?? '?'}'.`);
+      }
+    }
+    const scheduleLit = literalProperty(triggerOptions, 'schedule');
+    if (scheduleLit && ts.isObjectLiteralExpression(scheduleLit) && freqLower) {
+      const has = (k: string) => literalProperty(scheduleLit, k);
+      const hoursOrMinutes = has('hours') ?? has('minutes');
+      if (hoursOrMinutes && freqLower !== 'day' && freqLower !== 'week') {
+        push('DSL046', hoursOrMinutes, `hours/minutes only apply to frequency Day or Week (this trigger uses '${freq}').`);
+      }
+      const weekDays = has('weekDays');
+      if (weekDays && freqLower !== 'week') push('DSL046', weekDays, `weekDays only applies to frequency Week (this trigger uses '${freq}').`);
+      const monthDays = has('monthDays');
+      if (monthDays && freqLower !== 'month') push('DSL046', monthDays, `monthDays only applies to frequency Month (this trigger uses '${freq}').`);
     }
   }
 
@@ -1558,6 +1885,242 @@ export function getDiagnosticCounts(
  * from raw source text), inner offsets would be misaligned, so findings fall
  * back to squiggling the whole literal.
  */
+/**
+ * Structural JSDoc tags the transformer strips from descriptions. Mirrors the tag list in
+ * `parseDescriptionFromJSDoc` (@flowforger/dsl-native) plus `@trigger`.
+ */
+const STRUCTURAL_JSDOC_TAGS =
+  'metadata|runAfter|action|type|parallel|limit|originalName|retryPolicy|runtimeConfig|conditionFormat|varType|trackedProperties|operationOptions|paramsOmitted|valueArrayForm|varNameCase|trigger';
+
+interface CommentInfo {
+  pos: number;
+  end: number;
+  text: string;
+  kind: 'line' | 'block' | 'jsdoc';
+}
+
+/**
+ * Collect every real comment in the file via the AST's trivia (never regex over the raw text,
+ * which would mistake `//` or `@{` inside string/template literals for a comment).
+ */
+function collectComments(sourceFile: ts.SourceFile): CommentInfo[] {
+  const text = sourceFile.text;
+  const seen = new Set<number>();
+  const out: CommentInfo[] = [];
+
+  const add = (ranges: ts.CommentRange[] | undefined) => {
+    for (const r of ranges ?? []) {
+      if (seen.has(r.pos)) continue;
+      seen.add(r.pos);
+      const commentText = text.slice(r.pos, r.end);
+      const kind =
+        r.kind === ts.SyntaxKind.SingleLineCommentTrivia
+          ? 'line'
+          : commentText.startsWith('/**')
+            ? 'jsdoc'
+            : 'block';
+      out.push({ pos: r.pos, end: r.end, text: commentText, kind });
+    }
+  };
+
+  const visit = (node: ts.Node) => {
+    // Leading ranges skip same-line comments after the previous token; trailing ranges catch those.
+    add(ts.getLeadingCommentRanges(text, node.pos));
+    add(ts.getTrailingCommentRanges(text, node.pos));
+    for (const child of node.getChildren(sourceFile)) visit(child);
+  };
+  visit(sourceFile);
+
+  return out.sort((a, b) => a.pos - b.pos);
+}
+
+/**
+ * The part of a comment that the transformer turns into a description, as
+ * `{ offset, prose }` where `offset` is the index inside `comment.text` at which the
+ * prose starts. Returns undefined when nothing from this comment becomes a description.
+ *
+ * Mirrors the transformer:
+ * - `//` comments and plain block comments: the whole text.
+ * - JSDoc with `@description`: the text after the tag, up to the next structural tag.
+ * - JSDoc directly above the flow class (or above the imports): the whole text.
+ * - Any other JSDoc (structural tags only): nothing — free prose there is dropped.
+ */
+function descriptionProse(
+  comment: CommentInfo,
+  sourceText: string,
+): { offset: number; prose: string } | undefined {
+  const { text, kind } = comment;
+  if (kind === 'line') {
+    return { offset: 2, prose: text.slice(2) };
+  }
+  const innerOffset = kind === 'jsdoc' ? 3 : 2;
+  const inner = text.slice(innerOffset, text.endsWith('*/') ? -2 : undefined);
+  if (kind === 'block') {
+    return { offset: innerOffset, prose: inner.replace(/^\s*\*\s?/gm, '') };
+  }
+  const descMatch = inner.match(
+    new RegExp(`@description\\s+([\\s\\S]*?)(?=\\s*@(?:${STRUCTURAL_JSDOC_TAGS})\\b|$)`),
+  );
+  if (descMatch && descMatch.index !== undefined) {
+    const proseStart = descMatch.index + descMatch[0].indexOf(descMatch[1]);
+    return { offset: innerOffset + proseStart, prose: descMatch[1] };
+  }
+  // Class-level (or file-level) JSDoc: the transformer keeps the whole block as the flow description.
+  const following = sourceText.slice(comment.end).replace(/^\s+/, '');
+  if (/^(@Flow\b|export\b|class\b|abstract\b|import\b)/.test(following)) {
+    return { offset: innerOffset, prose: inner.replace(/^\s*\*? ?/gm, '') };
+  }
+  return undefined;
+}
+
+/**
+ * Check comments — which become action / trigger / flow descriptions in the emitted
+ * Logic Apps JSON — for Power Automate template syntax the cloud would try to parse:
+ *
+ * - DSL035 (error): "@{" anywhere in a comment. Flagged in every comment, even ones that
+ *   don't currently become a description, so the file never carries the hazard.
+ * - DSL036 (warning): a description that starts with "@" (but not "@@").
+ */
+/**
+ * Placement of ctx.response() / ctx.terminate().
+ *
+ * Logic Apps rejects a Response or Terminate action nested (at any depth) under a Foreach or
+ * Until action — the DSL's `for...of`, `while` and `do...while` — with
+ * "The workflow run action 'X' has type 'Response' that could not be nested under an action of
+ * type 'foreach'" (DSL037). A Response action is also only valid when the workflow starts with a
+ * Request-type trigger: @HttpTrigger / @ManualTrigger, never @RecurrenceTrigger or
+ * @ConnectorTrigger (DSL038). Mirrors RESPONSE_NESTED / TERMINATE_NESTED / RESPONSE_TRIGGER in
+ * @flowforger/validator.
+ */
+function checkActionPlacement(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  // Which trigger decorator the flow uses (undefined when there is none — DSL002 covers that)
+  let triggerDecorator: string | undefined;
+  const flowClass = findFlowClass(sourceFile);
+  if (flowClass) {
+    for (const member of flowClass.members) {
+      if (!ts.isMethodDeclaration(member)) continue;
+      for (const name of ['HttpTrigger', 'ManualTrigger', 'RecurrenceTrigger', 'ConnectorTrigger']) {
+        if (hasDecorator(member, name)) triggerDecorator = name;
+      }
+    }
+  }
+  const triggerAllowsResponse =
+    triggerDecorator === undefined || triggerDecorator === 'HttpTrigger' || triggerDecorator === 'ManualTrigger';
+
+  function loopLabel(node: ts.Node): string | undefined {
+    if (ts.isForOfStatement(node)) return 'for...of loop (foreach / Apply to each)';
+    if (ts.isWhileStatement(node) || ts.isDoStatement(node)) return 'while / do...while loop (until)';
+    return undefined;
+  }
+
+  function ctxMethodName(node: ts.Node): string | undefined {
+    if (!ts.isCallExpression(node)) return undefined;
+    const expr = node.expression;
+    if (
+      ts.isPropertyAccessExpression(expr) &&
+      ts.isIdentifier(expr.expression) &&
+      expr.expression.text === 'ctx'
+    ) {
+      return expr.name.text;
+    }
+    return undefined;
+  }
+
+  function visit(node: ts.Node, enclosingLoop: string | undefined): void {
+    const loop = loopLabel(node) ?? enclosingLoop;
+
+    const method = ctxMethodName(node);
+    if (method === 'response' || method === 'terminate') {
+      const range = getNodeRange(sourceFile, node);
+      if (enclosingLoop) {
+        diagnostics.push({
+          code: DiagnosticCodes.DSL037.code,
+          severity: DiagnosticCodes.DSL037.severity,
+          message: DiagnosticCodes.DSL037.format!(method, enclosingLoop),
+          range,
+          source: 'flowforger',
+        });
+      }
+      if (method === 'response' && !triggerAllowsResponse) {
+        diagnostics.push({
+          code: DiagnosticCodes.DSL038.code,
+          severity: DiagnosticCodes.DSL038.severity,
+          message: DiagnosticCodes.DSL038.format!(triggerDecorator!),
+          range,
+          source: 'flowforger',
+        });
+      }
+    }
+
+    ts.forEachChild(node, (child) => visit(child, loop));
+  }
+
+  visit(sourceFile, undefined);
+  return diagnostics;
+}
+
+function checkDescriptionComments(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const sourceText = sourceFile.text;
+  const comments = collectComments(sourceFile);
+
+  const push = (code: 'DSL035' | 'DSL036', snippet: string, start: number, end: number) => {
+    diagnostics.push({
+      code: DiagnosticCodes[code].code,
+      severity: DiagnosticCodes[code].severity,
+      message: DiagnosticCodes[code].format!(snippet),
+      range: {
+        start: sourceFile.getLineAndCharacterOfPosition(start),
+        end: sourceFile.getLineAndCharacterOfPosition(end),
+      },
+      source: 'flowforger',
+    });
+  };
+
+  for (let i = 0; i < comments.length; i++) {
+    const comment = comments[i];
+
+    // DSL035: every "@{" in the comment.
+    const interpolation = /@\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = interpolation.exec(comment.text)) !== null) {
+      const start = comment.pos + m.index;
+      // Squiggle through the closing brace when it sits on the same line, else just "@{".
+      const lineEnd = comment.text.indexOf('\n', m.index);
+      const sameLine = comment.text.slice(m.index, lineEnd === -1 ? undefined : lineEnd);
+      const close = sameLine.indexOf('}');
+      const snippet = close === -1 ? '@{' : sameLine.slice(0, close + 1);
+      push('DSL035', snippet.length > 40 ? snippet.slice(0, 37) + '…' : snippet, start, start + snippet.length);
+    }
+
+    // DSL036: description text starting with "@". A `//` line that continues a run of `//`
+    // lines is joined into the previous one, so only the first line of a run can "start".
+    if (comment.kind === 'line' && i > 0) {
+      const prev = comments[i - 1];
+      const between = sourceText.slice(prev.end, comment.pos);
+      if (prev.kind === 'line' && /^[ \t]*\r?\n[ \t]*$/.test(between)) continue;
+    }
+    // A trailing `//` comment after code on the same line never becomes a description.
+    if (comment.kind === 'line') {
+      const lineStart = sourceText.lastIndexOf('\n', comment.pos - 1) + 1;
+      if (/\S/.test(sourceText.slice(lineStart, comment.pos))) continue;
+    }
+    const desc = descriptionProse(comment, sourceText);
+    if (!desc) continue;
+    const leading = desc.prose.match(/^\s*(@(?!@)\S*)/);
+    if (!leading) continue;
+    const token = leading[1];
+    const atIndex = comment.text.indexOf('@', desc.offset);
+    if (atIndex === -1) continue;
+    const start = comment.pos + atIndex;
+    push('DSL036', token, start, start + token.length);
+  }
+
+  return diagnostics;
+}
+
 function checkEvalExpressions(sourceFile: ts.SourceFile): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
 

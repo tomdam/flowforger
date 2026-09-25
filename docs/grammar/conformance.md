@@ -358,6 +358,116 @@ A plain HTTP response (no Power Apps / Virtual Agent consumer) does not need the
 
 ---
 
+## R15 — Comments must not contain `@{…}` or start with `@` 🔴
+
+Comments become the emitted `description` of the action/trigger (see R9), and Power Automate
+runs **every** string in the definition — descriptions included — through its template parser:
+`@{…}` anywhere is an interpolation, a leading `@` starts an expression. Either makes the cloud
+reject the flow on push/save (`InvalidTemplate`) even though the DSL transforms and compiles
+locally.
+
+```ts
+// ❌ WRONG — rejected on push
+// Build the payload using @{triggerBody()?['name']}
+await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+
+// ✅ CORRECT — mention the expression without the "@"
+// Build the payload using triggerBody()?['name']
+await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+```
+
+Applies to `//` and `/* */` comments, `@description` text, and the class-level flow description.
+A literal leading `@` can be written as `@@`.
+
+*Origin:* Logic Apps template parser. *Enforced by:* `DSL035` (error) / `DSL036` (warning) in
+`@flowforger/dsl-language-service` (`flowforger validate <file.ff.ts>`, Monaco, VS Code), and
+`DESCRIPTION_EXPRESSION` / `DESCRIPTION_LEADING_AT` in `@flowforger/validator` for IR and
+Logic Apps JSON.
+
+---
+
+## R16 — `ctx.response()` / `ctx.terminate()` never inside a loop; `ctx.response()` needs a request trigger 🔴
+
+The workflow service validates action *placement* on save and rejects the flow with
+`InvalidWorkflowRunAction` ("The workflow run action 'X' has type 'Response' that could not be
+nested under an action of type 'foreach'"):
+
+- `Response` and `Terminate` cannot be nested under a `Foreach` or `Until` action at any depth —
+  the DSL's `for...of`, `while` and `do...while` bodies, including `if`/`switch`/scope blocks
+  inside them. Outside a loop, `if`/`switch`/scope placement is fine.
+- `Response` is only valid when the workflow starts with a Request-type trigger
+  (`@HttpTrigger`, `@ManualTrigger`). `@RecurrenceTrigger` / `@ConnectorTrigger` flows have no
+  caller to answer.
+- `Response` must not sit in a parallel branch (a sibling with the same explicit `@runAfter`
+  predecessor *and* an overlapping status). Two responses after one scope on disjoint statuses
+  (`Succeeded` / `Failed`) are the try/catch pattern and are fine.
+- Actions nest at most 8 levels deep.
+
+```ts
+// ❌ WRONG — rejected on save
+for (const file of ctx.body('GetFiles')) {
+  if (ctx.equals(file.missing, true)) {
+    await ctx.response('Respond_FileNotFound', 404, { error: 'not found' });
+  }
+}
+
+// ✅ CORRECT — record the decision in the loop, respond after it
+let missingFile = '';
+for (const file of ctx.body('GetFiles')) {
+  if (ctx.equals(file.missing, true)) { missingFile = file.name; }
+}
+if (!ctx.empty(missingFile)) {
+  await ctx.response('Respond_FileNotFound', 404, { error: `File ${missingFile} not found` });
+} else {
+  await ctx.response('Respond_OK', 200, { ok: true });
+}
+```
+
+*Origin:* Logic Apps workflow validation
+([Response](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#response-action),
+[Terminate](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#terminate-action),
+[nesting limit](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#definition-limits)).
+*Enforced by:* `DSL037` (loop) / `DSL038` (trigger) in `@flowforger/dsl-language-service`
+(`flowforger validate <file.ff.ts>`, Monaco, VS Code), and `RESPONSE_NESTED` / `TERMINATE_NESTED` /
+`RESPONSE_TRIGGER` (errors), `RESPONSE_PARALLEL` / `NESTING_DEPTH` (warnings) in
+`@flowforger/validator` for IR and Logic Apps JSON. `flowforger validate <file.ff.ts>` also runs
+the IR validator after a clean DSL pass, so the two warnings reach DSL authors as well.
+
+---
+
+## R17 — Stay inside the Power Automate definition limits 🔴
+
+The workflow service rejects a flow on save when a definition limit is exceeded
+([Power Automate limits](https://learn.microsoft.com/power-automate/limits-and-config),
+[Logic Apps schema reference](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers)):
+
+| Limit | Value |
+|-------|-------|
+| Action or trigger name length | 80 characters |
+| Actions per flow | 500 |
+| Cases per `switch` | 25 |
+| Variables per flow | 250 |
+| Foreach `concurrency.repetitions` (`@runtimeConfig`) | 1–50 |
+| `@retryPolicy` | `type` none/fixed/exponential, `count` 1–90, `interval` PT5S–P1D |
+| `@limit` on until loops | `count` 1–5000, `timeout` an ISO 8601 duration |
+| `@RecurrenceTrigger` interval | Month 1–16, Day 1–500, Hour 1–12,000, Minute 1–72,000, Second 1–9,999,999 |
+| `@RecurrenceTrigger` schedule | `hours`/`minutes` only for Day/Week, `weekDays` only for Week, `monthDays` only for Month |
+
+A `ctx.response(..., 'PowerApp')` response pairs with `@ManualTrigger`; a `'VirtualAgent'` response
+pairs with `@HttpTrigger({ triggerKind: 'VirtualAgent' })`.
+
+*Enforced by:* `DSL039`–`DSL043`, `DSL045` (errors), `DSL040`, `DSL044`, `DSL046` (warnings) in
+`@flowforger/dsl-language-service`; `ACTION_NAME_LENGTH`, `ACTION_COUNT`, `SWITCH_CASES`,
+`VARIABLE_COUNT`, `FOREACH_CONCURRENCY`, `RETRY_POLICY`, `UNTIL_COUNT`, `UNTIL_TIMEOUT`, `RECURRENCE`,
+`RECURRENCE_SCHEDULE`, `RESPONSE_KIND` in `@flowforger/validator`. The JSON validators also enforce
+what the DSL diagnostics already guarantee for `.ff.ts` files: `ACTION_NAME_DUPLICATE`,
+`EXPR_UNKNOWN_ACTION`, `EXPR_LOOP_REFERENCE`, `EXPR_UNKNOWN_PARAMETER`, `VARIABLE_UNDEFINED`,
+`RUNAFTER_UNKNOWN` / `RUNAFTER_STATUS` / `RUNAFTER_SELF` / `RUNAFTER_CYCLE`, `UNTIL_EMPTY` /
+`UNTIL_LIMIT`, `TERMINATE_STATUS` / `TERMINATE_RUNERROR`, `TRIGGER_COUNT`, `TRIGGER_CONCURRENCY`,
+`CONNECTION_REF_MISSING`, `EXPR_LENGTH`, `PARAMETER_COUNT`.
+
+---
+
 ### Quick reference
 
 | Rule | Summary | Severity |
@@ -376,3 +486,6 @@ A plain HTTP response (no Power Apps / Virtual Agent consumer) does not need the
 | R12 | `body()` for HTTP/connector/child-flow, `outputs()` for Compose | 🟠 |
 | R13 | `@ManualTrigger` inputs need `"x-ms-dynamically-added": true` | 🔴 |
 | R14 | `ctx.response` PowerApp/VirtualAgent schema needs `"x-ms-dynamically-added": true` | 🔴 |
+| R15 | No `@{…}` in comments; comments must not start with `@` | 🔴 |
+| R16 | No `ctx.response()`/`ctx.terminate()` inside loops; `ctx.response()` needs a request trigger | 🔴 |
+| R17 | Stay inside the definition limits (80-char names, 500 actions, 25 cases, 250 variables, concurrency/retry/until/recurrence ranges) | 🔴 |

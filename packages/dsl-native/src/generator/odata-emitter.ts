@@ -57,7 +57,17 @@ function valueToCode(v: ODataValue): string {
       // literal — the transformer re-quotes it on round-trip. (Historical
       // emission path; the caller's verifier guarantees byte-exactness.)
       if (v.text.length >= 2 && v.text.startsWith("'") && v.text.endsWith("'") && v.text.includes('@{')) {
-        return parseStringValue(v.text.slice(1, -1)).code;
+        const inner = v.text.slice(1, -1);
+        const result = parseStringValue(inner);
+        // A pure '@{...}' (no prefix/suffix) comes back as ctx.braced(...),
+        // which the transformer serializes UNQUOTED — dropping the OData
+        // quotes. Force a template literal instead: the transformer re-quotes
+        // template literals, so the quotes survive the round-trip.
+        const braced = /^ctx\.braced\((.*)\)$/s.exec(result.code);
+        if (result.success && braced) {
+          return `\`\${${braced[1]}}\``;
+        }
+        return result.code;
       }
       // Barewords have no faithful builder representation — preserve the
       // whole filter instead.

@@ -12,7 +12,7 @@ import { DataverseClient } from '@flowforger/dataverse-sdk';
 import { buildConnectors } from '@flowforger/debug-node';
 import { parseLogicAppsToIR, generateNativeDslFromIR } from '@flowforger/dsl-native';
 import { getDiagnostics, getDiagnosticCounts, type Diagnostic } from '@flowforger/dsl-language-service';
-import { resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTriggerCallbackUrl, flowUsesListCallbackUrl, type AuthConfig } from './auth.js';
+import { resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTriggerCallbackUrl, flowUsesListCallbackUrl, collectAllConnectorScopes, resourceKeyForUrl, RESOURCE_APIS, type AuthConfig } from './auth.js';
 import { checkParity, ParityTransformError } from './parity.js';
 import { runPush, PushError } from './push.js';
 import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from './cli-args.js';
@@ -234,6 +234,9 @@ Usage:
   flowforger sp-discover --token <graph-token> [--site <site-url>] [--list <list-name>]
   flowforger optimize <input.ff.ts> [--out <output.ff.ts>] [--report <report.json>]
   flowforger init --url <dataverseUrl> --client-id <azureAdClientId> [--tenant-id <id>] [--sp-url <sharepointUrl>] [--out <config.json>]
+  flowforger scopes <input.ff.ts|input.ir.json> [--config flowforger.config.json] [--json]
+                    Print the delegated permissions your app registration needs for this flow
+  flowforger scopes --all [--json]              Print every permission any connector can request
   flowforger skills install [--dir <targetDir>] [--bundled] [--repo <owner/repo>] [--ref <branch>] [--path <repoPath>]
   flowforger mcp [--auth] [--budget N]            Run the debug MCP server over stdio (for AI agents)
 
@@ -701,12 +704,7 @@ async function main() {
         const code = readFileSync(filePath, 'utf-8');
         const diagnostics = getDiagnostics(code);
         const counts = getDiagnosticCounts(diagnostics);
-        const hasErrors = counts.error > 0;
-
-        if (diagnostics.length === 0) {
-          console.log('✓ No issues found.');
-          process.exit(0);
-        }
+        let hasErrors = counts.error > 0;
 
         // Sort by line number
         diagnostics.sort((a: Diagnostic, b: Diagnostic) => a.range.start.line - b.range.start.line);
@@ -719,7 +717,43 @@ async function main() {
           console.log(`${file}:${line}:${col} ${sev} [${d.code}] ${d.message}`);
         }
 
-        console.log(`\n${diagnostics.length} issue(s): ${counts.error} error(s), ${counts.warning} warning(s), ${counts.info} info, ${counts.hint} hint(s)`);
+        // When the DSL itself is clean enough to transform, also run the IR validator: some
+        // placement rules (Response in a parallel branch, nesting depth, connector params) are
+        // only checked on the IR. Codes with a DSL twin are skipped so nothing is reported twice.
+        let irIssueCount = 0;
+        if (!hasErrors) {
+          const DSL_COVERED_IR_CODES = new Set([
+            'EXPR_UNKNOWN_ACTION', 'ACTION_NAME_DUPLICATE', 'VARIABLE_UNDEFINED', // DSL004, DSL005, DSL007
+            'EXPR_LOOP_REFERENCE', 'VAR_INIT_NESTED', 'EXPR_UNKNOWN_PARAMETER', // DSL012/013, DSL014, DSL015
+            'RUNAFTER_STATUS', 'RUNAFTER_UNKNOWN', 'RUNAFTER_SELF', // DSL021, DSL022
+            'VAR_INIT_DUPLICATE', 'EXPR_SYNTAX', 'EXPR_UNKNOWN_FUNCTION', // DSL030, DSL033, DSL034
+            'DESCRIPTION_EXPRESSION', 'DESCRIPTION_LEADING_AT', // DSL035, DSL036
+            'RESPONSE_NESTED', 'TERMINATE_NESTED', 'RESPONSE_TRIGGER', // DSL037, DSL038
+            'ACTION_NAME_LENGTH', 'ACTION_COUNT', 'SWITCH_CASES', 'VARIABLE_COUNT', // DSL039-DSL042
+            'FOREACH_CONCURRENCY', 'RETRY_POLICY', 'UNTIL_COUNT', 'UNTIL_TIMEOUT', // DSL043
+            'RESPONSE_KIND', 'RECURRENCE', 'RECURRENCE_SCHEDULE', // DSL044, DSL045
+          ]);
+          try {
+            const { transformFile } = await import('@flowforger/dsl-native');
+            const ir = await transformFile(filePath);
+            const res = validateFlowIR(ir);
+            const irIssues = res.issues.filter((i) => !DSL_COVERED_IR_CODES.has(i.code) && i.level !== 'info');
+            irIssueCount = irIssues.length;
+            for (const i of irIssues) {
+              console.log(`${file} ${i.level.toUpperCase()} [${i.code}] ${i.message}${i.path ? ` (${i.path})` : ''}`);
+              if (i.level === 'error') hasErrors = true;
+            }
+          } catch (e: any) {
+            console.log(`${file} WARNING [IR_TRANSFORM] Could not transform the DSL to IR for the IR-level checks: ${e?.message ?? e}`);
+          }
+        }
+
+        if (diagnostics.length === 0 && irIssueCount === 0) {
+          console.log('✓ No issues found.');
+          process.exit(hasErrors ? 1 : 0);
+        }
+
+        console.log(`\n${diagnostics.length + irIssueCount} issue(s): ${counts.error} error(s), ${counts.warning} warning(s), ${counts.info} info, ${counts.hint} hint(s)${irIssueCount ? `, ${irIssueCount} IR-level` : ''}`);
         process.exit(hasErrors ? 1 : 0);
       } else {
         // JSON validation (IR or Logic Apps)
@@ -1729,6 +1763,93 @@ async function main() {
       });
       return;
     }
+    case 'scopes': {
+      const input = args._ as string | undefined;
+      const wantAll = Boolean(args['all']);
+      if (!input && !wantAll) return help();
+
+      // Config is optional here: without one, SharePoint/Dataverse resources
+      // are shown as placeholders so the command still answers "which
+      // permissions do I add to the app registration".
+      let authConfig: AuthConfig;
+      try {
+        authConfig = loadAuthConfig(args);
+      } catch {
+        authConfig = { clientId: '', tenantId: '' };
+      }
+      authConfig = {
+        ...authConfig,
+        resources: {
+          sharepoint: authConfig.resources?.sharepoint ?? 'https://<tenant>.sharepoint.com',
+          dataverse: authConfig.resources?.dataverse ?? 'https://<org>.crm.dynamics.com',
+          ...(authConfig.resources?.flowservice ? { flowservice: authConfig.resources.flowservice } : {}),
+        },
+      };
+
+      type ApiEntry = { api: string; appId: string; resource: string; scopes: string[]; connectors?: string[] };
+      const entries: ApiEntry[] = [];
+      let title: string;
+
+      if (wantAll) {
+        title = 'All delegated permissions FlowForger connectors can request';
+        const byResource = new Map<keyof typeof RESOURCE_APIS, { scopes: Set<string>; connectors: Set<string> }>();
+        for (const { connector, resource, scopes } of await collectAllConnectorScopes()) {
+          if (!byResource.has(resource)) byResource.set(resource, { scopes: new Set(), connectors: new Set() });
+          const slot = byResource.get(resource)!;
+          for (const sc of scopes) slot.scopes.add(sc);
+          slot.connectors.add(connector);
+        }
+        for (const [key, { scopes, connectors }] of byResource) {
+          const api = RESOURCE_APIS[key];
+          const resource = api.defaultResource ?? (authConfig.resources as any)[key];
+          entries.push({ api: api.label, appId: api.appId, resource, scopes: [...scopes].sort(), connectors: [...connectors] });
+        }
+      } else {
+        let ir: FlowIR;
+        if (input!.endsWith('.ts')) {
+          const { transformFile } = await import('@flowforger/dsl-native');
+          ir = await transformFile(resolve(input!));
+        } else {
+          ir = JSON.parse(readFileSync(resolve(input!), 'utf-8'));
+        }
+        title = `Delegated permissions required by ${input}`;
+        const scopesByResource = await resolveRequiredScopes(ir, authConfig);
+        if (flowUsesListCallbackUrl(ir)) {
+          const fs = authConfig.resources?.flowservice ?? RESOURCE_APIS.flowservice.defaultResource!;
+          scopesByResource.set(fs, [`${fs}/User`]);
+        }
+        for (const [resource, scopes] of scopesByResource) {
+          const key = resourceKeyForUrl(resource, authConfig);
+          const api = key ? RESOURCE_APIS[key] : { label: resource, appId: '' };
+          // Non-Graph scopes are resource-prefixed for MSAL; show the bare permission name.
+          const bare = scopes.map((sc) => (sc.startsWith(`${resource}/`) ? sc.slice(resource.length + 1) : sc)).sort();
+          entries.push({ api: api.label, appId: api.appId, resource, scopes: bare });
+        }
+      }
+
+      if (args['json']) {
+        console.log(JSON.stringify(entries, null, 2));
+        break;
+      }
+
+      console.log(title);
+      if (entries.length === 0) {
+        console.log('\n  (none — this flow uses no connector that needs a token)');
+        break;
+      }
+      for (const e of entries) {
+        console.log('');
+        console.log(e.appId ? `${e.api}  (App ID ${e.appId})` : e.api);
+        if (e.resource !== e.api) console.log(`  resource: ${e.resource}`);
+        if (e.connectors) console.log(`  used by:  ${e.connectors.join(', ')}`);
+        for (const sc of e.scopes) console.log(`    ${sc}`);
+      }
+      console.log(`
+Add these as Delegated permissions on the app registration (${authConfig.clientId || '<clientId>'}),
+then grant admin consent. The CLI requests only the subset a given flow needs at run time.`);
+      break;
+    }
+
     case 'skills': {
       const sub = (args._ as string) || 'install';
       if (sub !== 'install') {

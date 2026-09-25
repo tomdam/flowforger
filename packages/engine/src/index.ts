@@ -302,6 +302,30 @@ function deepEvalValue(value: any, ctx: RunContext): any {
   return value;
 }
 
+/**
+ * Copy arrays and plain objects (recursively) so a value the engine stores
+ * never shares structure with anything else. Variables are the only state the
+ * engine mutates in place (AppendToArrayVariable pushes), so without this:
+ * - an initializer literal is the flow IR's own object, and appending grows
+ *   the IR itself: a second run of the same in-memory flow (debugger restart,
+ *   Edit & Continue, web re-run) starts from the previous run's items;
+ * - a variable initialized from `outputs('X')` would grow action X's outputs;
+ * - every trace entry would alias the live array and show its final state.
+ * Non-plain objects (Buffers, typed arrays, Dates) are returned as-is.
+ */
+function copyValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(copyValue) as T;
+  if (value !== null && typeof value === 'object') {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) {
+      const result: any = {};
+      for (const [key, val] of Object.entries(value)) result[key] = copyValue(val);
+      return result;
+    }
+  }
+  return value;
+}
+
 const MAX_PARALLEL_CONCURRENCY = 50;
 const DEFAULT_PARALLEL_CONCURRENCY = 20;
 
@@ -704,10 +728,10 @@ export async function executeNode(
         const value = typeof inputs.value === 'string' && inputs.value.startsWith('@')
           ? evalExpression(inputs.value, ctx)
           : inputs.value;
-        ctx.variables[inputs.variableName] = value;
+        ctx.variables[inputs.variableName] = copyValue(value);
         return {
           status: 'Succeeded',
-          outputs: value,
+          outputs: copyValue(ctx.variables[inputs.variableName]),
           variables: { ...ctx.variables },
         };
       } else if (action.kind === 'setvariable') {
@@ -715,10 +739,10 @@ export async function executeNode(
         const value = typeof inputs.value === 'string' && inputs.value.startsWith('@')
           ? evalExpression(inputs.value, ctx)
           : inputs.value;
-        ctx.variables[inputs.name] = value;
+        ctx.variables[inputs.name] = copyValue(value);
         return {
           status: 'Succeeded',
-          outputs: value,
+          outputs: copyValue(ctx.variables[inputs.name]),
           variables: { ...ctx.variables },
         };
       } else if (action.kind === 'incrementvariable') {
@@ -746,10 +770,12 @@ export async function executeNode(
         if (!Array.isArray(ctx.variables[inputs.name])) {
           ctx.variables[inputs.name] = [];
         }
-        ctx.variables[inputs.name].push(value);
+        ctx.variables[inputs.name].push(copyValue(value));
         return {
           status: 'Succeeded',
-          outputs: ctx.variables[inputs.name],
+          // Snapshot: later appends must not rewrite this step's recorded output.
+          // Shallow is enough: the engine never mutates array elements in place.
+          outputs: [...ctx.variables[inputs.name]],
           variables: { ...ctx.variables },
         };
       } else if (action.kind === 'appendtostringvariable') {

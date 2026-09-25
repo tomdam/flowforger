@@ -4,6 +4,15 @@ FlowForger ships two artifacts at the same version: the [`flowforger` CLI on npm
 
 ## Unreleased
 
+- **Fixed: appending to an array variable mutated the flow definition itself.** The engine stored the initializer's `[]` literal from the flow as the variable and pushed into it in place, which had three effects:
+  - Running the same in-memory flow a second time started from the previous run's items. This affected debugger restarts, Edit & Continue and re-runs in the web app.
+  - A variable initialized from another action's outputs (e.g. `outputs('Team')?['members']`) also grew that action's outputs.
+  - Every trace step showed the array's final value instead of its value at that step.
+
+  Variables are now copied when stored, and each step records a snapshot. Affects both the CLI and the VS Code extension's debugger.
+
+## 0.3.1 — 2026-09-25 (CLI only; the VS Code extension stays at 0.3.0, it was not affected)
+
 - **Fixed: the CLI crashed on startup on Linux machines without libsecret.** This included slim Docker images and GitHub-hosted Ubuntu runners, and affected every command, even `--version`. The encrypted token cache is now loaded only when `--auth` or `init` needs it, and a missing libsecret produces install instructions instead of a stack trace.
 
 ## 0.3.0 — 2026-09-25

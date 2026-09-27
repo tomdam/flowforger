@@ -29,7 +29,7 @@ export async function resolve(specifier, context, next) {
 }
 `;
 
-function runWithoutLibsecret(script: string) {
+function runWithoutLibsecret(script: string, extraEnv: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ff-no-libsecret-"));
   const preload = join(dir, "no-libsecret.cjs");
   const hooks = join(dir, "no-libsecret-hooks.mjs");
@@ -44,7 +44,7 @@ function runWithoutLibsecret(script: string) {
       cwd: cliRoot,
       encoding: "utf8",
       // Never let a test touch the real ~/.flowforger token cache.
-      env: { ...process.env, HOME: dir, USERPROFILE: dir },
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, ...extraEnv },
     },
   );
 }
@@ -73,22 +73,39 @@ describe("token cache is loaded lazily (Linux without libsecret)", () => {
 });
 
 describe("FLOWFORGER_TOKEN_CACHE=file (headless Linux with a locked keyring)", () => {
-  it("uses a plaintext cache file in ~/.flowforger instead of the OS keyring", () => {
-    const home = mkdtempSync(join(tmpdir(), "ff-file-cache-"));
-    const r = spawnSync(
-      process.execPath,
-      ["--import", "tsx", "--input-type=module", "-e", `
-        const { createCachePlugin, PLAINTEXT_CACHE_PATH } = await import('./src/token-cache.ts');
-        const { existsSync } = await import('node:fs');
-        const logs = [];
-        const plugin = await createCachePlugin((m) => logs.push(m));
-        console.log(typeof plugin.beforeCacheAccess, existsSync(PLAINTEXT_CACHE_PATH), logs.join('|'));
-      `],
-      { cwd: cliRoot, encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, FLOWFORGER_TOKEN_CACHE: "file" } },
-    );
+  // Runs with keytar blocked, like a GitHub Ubuntu runner: file mode must not need libsecret,
+  // because a machine without it is exactly where the file cache is wanted.
+  it("stores and reloads the cache in a plaintext file, without loading keytar", () => {
+    const r = runWithoutLibsecret(`
+      const { createCachePlugin, PLAINTEXT_CACHE_PATH } = await import('./src/token-cache.ts');
+      const { readFileSync, statSync } = await import('node:fs');
+      const logs = [];
+      const plugin = await createCachePlugin((m) => logs.push(m));
+      await plugin.afterCacheAccess({ cacheHasChanged: true, tokenCache: { serialize: () => '{"saved":1}' } });
+      let loaded;
+      await plugin.beforeCacheAccess({ tokenCache: { deserialize: (s) => { loaded = s; } } });
+      const mode = process.platform === 'win32' ? 'n/a' : (statSync(PLAINTEXT_CACHE_PATH).mode & 0o777).toString(8);
+      console.log(JSON.stringify({ logs, file: readFileSync(PLAINTEXT_CACHE_PATH, 'utf8'), loaded, mode, path: PLAINTEXT_CACHE_PATH }));
+    `, { FLOWFORGER_TOKEN_CACHE: "file" });
     assert.equal(r.status, 0, r.stderr);
-    assert.ok(r.stdout.startsWith("function true Auth: Using plaintext token cache "), r.stdout);
-    assert.ok(r.stdout.includes(join(".flowforger", "token-cache.plaintext.json")), r.stdout);
+    const out = JSON.parse(r.stdout.trim());
+    assert.match(out.logs[0], /^Auth: Using plaintext token cache /);
+    assert.ok(out.path.endsWith(join(".flowforger", "token-cache.plaintext.json")), out.path);
+    assert.equal(out.file, '{"saved":1}');
+    assert.equal(out.loaded, '{"saved":1}');
+    if (out.mode !== "n/a") assert.equal(out.mode, "600");
+  });
+
+  it("does not write the file when the cache did not change", () => {
+    const r = runWithoutLibsecret(`
+      const { createCachePlugin, PLAINTEXT_CACHE_PATH } = await import('./src/token-cache.ts');
+      const { existsSync } = await import('node:fs');
+      const plugin = await createCachePlugin();
+      await plugin.afterCacheAccess({ cacheHasChanged: false, tokenCache: { serialize: () => 'x' } });
+      console.log(existsSync(PLAINTEXT_CACHE_PATH));
+    `, { FLOWFORGER_TOKEN_CACHE: "file" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), "false");
   });
 
   it("is what the keyring-timeout error tells you to set", () => {

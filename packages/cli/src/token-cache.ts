@@ -11,7 +11,7 @@
  */
 
 import type { ICachePlugin } from '@azure/msal-node';
-import { chmodSync, mkdirSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -35,6 +35,14 @@ export const KEYRING_TIMEOUT_MS = 15_000;
  *   unencrypted on disk.
  */
 export async function createCachePlugin(log: (msg: string) => void = () => {}): Promise<ICachePlugin> {
+  // Checked before loading msal-node-extensions: that library requires keytar (libsecret)
+  // eagerly, and a machine without libsecret is exactly where the file cache is needed.
+  if (process.env.FLOWFORGER_TOKEN_CACHE === 'file') {
+    mkdirSync(CACHE_DIR, { recursive: true });
+    log(`Auth: Using plaintext token cache ${PLAINTEXT_CACHE_PATH} (FLOWFORGER_TOKEN_CACHE=file)`);
+    return createPlaintextCachePlugin(PLAINTEXT_CACHE_PATH);
+  }
+
   let ext: typeof import('@azure/msal-node-extensions');
   try {
     ext = await import('@azure/msal-node-extensions');
@@ -43,13 +51,6 @@ export async function createCachePlugin(log: (msg: string) => void = () => {}): 
   }
 
   mkdirSync(CACHE_DIR, { recursive: true });
-
-  if (process.env.FLOWFORGER_TOKEN_CACHE === 'file') {
-    const persistence = await ext.FilePersistence.create(PLAINTEXT_CACHE_PATH);
-    chmodSync(PLAINTEXT_CACHE_PATH, 0o600);
-    log(`Auth: Using plaintext token cache ${PLAINTEXT_CACHE_PATH} (FLOWFORGER_TOKEN_CACHE=file)`);
-    return new ext.PersistenceCachePlugin(persistence);
-  }
 
   const creating = ext.PersistenceCreator.createPersistence({
     cachePath: CACHE_PATH,
@@ -66,6 +67,21 @@ export async function createCachePlugin(log: (msg: string) => void = () => {}): 
 
   log('Auth: Using OS-level encrypted token cache');
   return new ext.PersistenceCachePlugin(persistence);
+}
+
+/** Plain JSON file cache, readable only by the current user (the file is created 0600). */
+function createPlaintextCachePlugin(path: string): ICachePlugin {
+  return {
+    beforeCacheAccess: async (cacheContext) => {
+      if (existsSync(path)) cacheContext.tokenCache.deserialize(readFileSync(path, 'utf-8'));
+    },
+    afterCacheAccess: async (cacheContext) => {
+      if (cacheContext.cacheHasChanged) {
+        writeFileSync(path, cacheContext.tokenCache.serialize(), { mode: 0o600 });
+        chmodSync(path, 0o600); // `mode` only applies when the file is created
+      }
+    },
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
@@ -97,6 +113,9 @@ export function tokenCacheUnavailableMessage(err: unknown, platform: NodeJS.Plat
       '  Alpine:         apk add libsecret',
     );
   }
-  lines.push('Alternatively, skip --auth and pass tokens explicitly (--graph-token, --sp-token, --dv-token).');
+  lines.push(
+    'Or keep the token cache in an unencrypted file readable only by you: export FLOWFORGER_TOKEN_CACHE=file',
+    'Alternatively, skip --auth and pass tokens explicitly (--graph-token, --sp-token, --dv-token).',
+  );
   return lines.join('\n');
 }

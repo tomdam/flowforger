@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { run, type BaseConnector, type RunContext } from '../index.js';
+import { run, flattenTrace, type BaseConnector, type RunContext } from '../index.js';
 import type { FlowIR } from '@flowforger/ir';
 
 /**
@@ -23,7 +23,7 @@ const TRIGGER = { id: 'trg_1', name: 'manual', type: 'trigger', inputs: {} } as 
 const compose = (id: string, name: string, value: unknown, runAfter?: Record<string, string[]>) =>
   ({ id, name, type: 'action', kind: 'compose', inputs: { value }, ...(runAfter ? { runAfter } : {}) }) as any;
 
-const statusOf = (trace: any[], name: string) => trace.find(t => t.name === name)?.status;
+const statusOf = (trace: any[], name: string) => flattenTrace(trace).find(t => t.name === name)?.status;
 
 describe('runAfter with multiple dependencies', () => {
   it('skips the action when only some dependencies match their accepted statuses', async () => {

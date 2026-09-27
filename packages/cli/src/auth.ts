@@ -7,7 +7,7 @@
  */
 
 import type { FlowIR, Node } from '@flowforger/ir';
-import { PublicClientApplication } from '@azure/msal-node';
+import { PublicClientApplication, type AccountInfo, type AuthenticationResult } from '@azure/msal-node';
 import { createCachePlugin } from './token-cache.js';
 
 export interface AuthConfig {
@@ -361,6 +361,7 @@ export async function acquireTokens(
 
     const token = await acquireTokenForResource(
       pca,
+      authConfig.tenantId,
       scopes,
       shortResource,
       scopeList,
@@ -402,7 +403,7 @@ export async function acquireFlowServiceToken(
     cache: { cachePlugin },
   });
   try {
-    return await acquireTokenForResource(pca, FLOW_SERVICE_SCOPES, 'service.flow.microsoft.com', FLOW_SERVICE_SCOPES.join(', '), log);
+    return await acquireTokenForResource(pca, authConfig.tenantId, FLOW_SERVICE_SCOPES, 'service.flow.microsoft.com', FLOW_SERVICE_SCOPES.join(', '), log);
   } catch (err) {
     log(`  ✗ flow service token acquisition failed: ${err instanceof Error ? err.message : String(err)}`);
     return undefined;
@@ -482,25 +483,49 @@ export function flowUsesListCallbackUrl(ir: FlowIR): boolean {
   return walk(ir.nodes);
 }
 
+/**
+ * Silent token acquisition across every cached account. The token cache file is shared by
+ * all configs, so once you have signed in to a second tenant it holds several accounts and
+ * `accounts[0]` may belong to the wrong one — silent acquisition then fails and every run
+ * falls back to a device-code login. Tries the configured tenant's accounts first, then the
+ * rest (a guest account can still hold a token for it). Throws the last error when no
+ * account works silently.
+ */
+export async function acquireTokenSilentAnyAccount(
+  pca: Pick<PublicClientApplication, 'getTokenCache' | 'acquireTokenSilent'>,
+  scopes: string[],
+  tenantId: string
+): Promise<AuthenticationResult> {
+  const accounts = await pca.getTokenCache().getAllAccounts();
+  const inTenant = (a: AccountInfo) => a.tenantId === tenantId || a.homeAccountId.endsWith(`.${tenantId}`);
+  const ordered = [...accounts.filter(inTenant), ...accounts.filter((a) => !inTenant(a))];
+  let lastError: unknown = new Error('No cached account');
+  for (const account of ordered) {
+    try {
+      return await pca.acquireTokenSilent({ scopes, account });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 async function acquireTokenForResource(
   pca: PublicClientApplication,
+  tenantId: string,
   scopes: string[],
   shortResource: string,
   scopeList: string,
   log: (msg: string) => void,
   silentOnly?: boolean
 ): Promise<string> {
-  const accounts = await pca.getTokenCache().getAllAccounts();
-
   // Try silent acquisition first
-  if (accounts.length > 0) {
-    try {
-      const result = await pca.acquireTokenSilent({ scopes, account: accounts[0] });
-      log(`  ✓ ${shortResource} [${scopeList}] (cached)`);
-      return result.accessToken;
-    } catch {
-      // Silent failed — fall through to interactive
-    }
+  try {
+    const result = await acquireTokenSilentAnyAccount(pca, scopes, tenantId);
+    log(`  ✓ ${shortResource} [${scopeList}] (cached)`);
+    return result.accessToken;
+  } catch {
+    // Silent failed — fall through to interactive
   }
 
   if (silentOnly) {

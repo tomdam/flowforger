@@ -187,7 +187,7 @@ describe('resolved action inputs', () => {
     // Scope children are recorded by runChildNodes, a different code path than
     // the top-level loop, so it gets its own assertion.
     assert.deepEqual(dataverse.ctx!.actions.get('Create_account')?.inputs, { entityName: 'accounts' });
-    const entry = result.trace.find((t) => t.name === 'Create_account');
+    const entry = result.trace.find((t) => t.name === 'Try')?.children?.find((t) => t.name === 'Create_account');
     assert.deepEqual(entry?.inputs, { entityName: 'accounts' });
   });
 

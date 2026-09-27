@@ -136,6 +136,31 @@ export interface TraceEntry {
   outputs?: any;
   error?: any;
   iterations?: IterationTraceEntry[];
+  /**
+   * Scope/if/switch only: the entries of the actions that ran (or were
+   * skipped) inside the block, in execution order. The block's own entry comes
+   * first in the trace; its body lives here, the way a loop's lives in `iterations`.
+   */
+  children?: TraceEntry[];
+}
+
+/** Visit each entry and, depth-first, its scope/if/switch `children` (not loop iterations). */
+function walkTraceChildren(entries: TraceEntry[], visit: (entry: TraceEntry) => void): void {
+  for (const entry of entries) {
+    visit(entry);
+    if (entry.children) walkTraceChildren(entry.children, visit);
+  }
+}
+
+/**
+ * The entries plus all their scope/if/switch descendants, each block before its
+ * body. Loop bodies stay inside `iterations` — they run once per item, so they
+ * have no single place in a flat list.
+ */
+export function flattenTrace(entries: TraceEntry[]): TraceEntry[] {
+  const flat: TraceEntry[] = [];
+  walkTraceChildren(entries, (entry) => flat.push(entry));
+  return flat;
 }
 
 export interface IterationTraceEntry {
@@ -424,14 +449,11 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
 
     const result = await executeNode(node as Node, ctx, options);
 
-    // For scope/if/switch, child trace entries should appear before the parent in the trace
-    // This matches the original runNodes behavior where children were pushed to the same trace array
+    // Record scope/if/switch descendants for runAfter tracking
     if (result._childTrace) {
-      for (const childEntry of result._childTrace) {
-        trace.push(childEntry);
-        // Also record child action results for runAfter tracking
-        recordActionResult(childEntry.name, childEntry.status, childEntry.outputs, childEntry.error, childEntry.inputs);
-      }
+      walkTraceChildren(result._childTrace, (childEntry) =>
+        recordActionResult(childEntry.name, childEntry.status, childEntry.outputs, childEntry.error, childEntry.inputs),
+      );
     }
 
     // Build trace entry from executeNode result
@@ -445,6 +467,9 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
     };
     if (result.iterations) {
       entry.iterations = result.iterations;
+    }
+    if (result._childTrace) {
+      entry.children = result._childTrace;
     }
     trace.push(entry);
 
@@ -487,7 +512,7 @@ export interface ExecuteNodeResult {
   iterations?: IterationTraceEntry[];
   /** @internal Used by run() to detect terminate actions */
   _terminate?: string;
-  /** @internal Child trace entries for scope/if/switch that should be flattened into parent trace */
+  /** @internal Child trace entries for scope/if/switch; the caller nests them as the entry's `children` */
   _childTrace?: TraceEntry[];
   /** @internal Indicates a child node failed, requiring failure propagation even when this node's status is 'Succeeded' */
   _childFailed?: boolean;
@@ -580,12 +605,9 @@ export async function executeNode(
         // Merge variables back
         ctx.variables = { ...ctx.variables, ...childResult.variables };
 
-        // For scope/if/switch children, flatten their child trace entries before the parent entry
+        // Record scope/if/switch descendants for runAfter tracking
         if (childResult._childTrace) {
-          for (const nestedEntry of childResult._childTrace) {
-            childTrace.push(nestedEntry);
-            statuses.set(nestedEntry.name, nestedEntry.status);
-          }
+          walkTraceChildren(childResult._childTrace, (nestedEntry) => statuses.set(nestedEntry.name, nestedEntry.status));
         }
 
         // Build trace entry
@@ -599,6 +621,9 @@ export async function executeNode(
         };
         if (childResult.iterations) {
           entry.iterations = childResult.iterations;
+        }
+        if (childResult._childTrace) {
+          entry.children = childResult._childTrace;
         }
         childTrace.push(entry);
 
@@ -1425,17 +1450,15 @@ export async function executeNode(
                   // Merge child variables back into iteration context
                   iterCtx.variables = { ...iterCtx.variables, ...childResult.variables };
 
-                  // For scope/if/switch children, flatten their child trace entries
-                  // and register in iterCtx.actions for runAfter resolution
+                  // Register scope/if/switch descendants in iterCtx.actions for runAfter resolution
                   if (childResult._childTrace) {
-                    for (const nestedEntry of childResult._childTrace) {
-                      iterationActions.push(nestedEntry);
+                    walkTraceChildren(childResult._childTrace, (nestedEntry) =>
                       iterCtx.actions.set(nestedEntry.name, {
                         status: nestedEntry.status,
                         outputs: nestedEntry.outputs,
                         error: nestedEntry.error,
-                      });
-                    }
+                      }),
+                    );
                   }
 
                   // Build trace entry
@@ -1448,6 +1471,9 @@ export async function executeNode(
                   };
                   if (childResult.iterations) {
                     entry.iterations = childResult.iterations;
+                  }
+                  if (childResult._childTrace) {
+                    entry.children = childResult._childTrace;
                   }
                   iterationActions.push(entry);
 

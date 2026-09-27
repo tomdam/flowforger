@@ -2,7 +2,7 @@
 
 FlowForger ships two artifacts at the same version: the [`flowforger` CLI on npm](https://www.npmjs.com/package/flowforger) and the [FlowForger VS Code extension](https://marketplace.visualstudio.com/items?itemName=FlowForger.flowforger-vscode). Library packages (`@flowforger/*`) are bundled into both and not published separately.
 
-## Unreleased
+## 0.3.2 — 2026-09-25 (CLI + VS Code extension)
 
 - **Fixed: appending to an array variable mutated the flow definition itself.** The engine stored the initializer's `[]` literal from the flow as the variable and pushed into it in place, which had three effects:
   - Running the same in-memory flow a second time started from the previous run's items. This affected debugger restarts, Edit & Continue and re-runs in the web app.

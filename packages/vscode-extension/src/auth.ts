@@ -7,7 +7,7 @@
  */
 
 import type { FlowIR, Node } from '@flowforger/ir';
-import type { ICachePlugin, TokenCacheContext } from '@azure/msal-node';
+import type { AccountInfo, AuthenticationResult, ICachePlugin, TokenCacheContext } from '@azure/msal-node';
 import { PublicClientApplication } from '@azure/msal-node';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -256,18 +256,15 @@ export async function acquireTokens(
 
   for (const [resourceUrl, scopes] of scopesByResource) {
     const shortResource = resourceUrl.replace('https://', '');
-    const accounts = await pca.getTokenCache().getAllAccounts();
 
     // Try silent acquisition
-    if (accounts.length > 0) {
-      try {
-        const result = await pca.acquireTokenSilent({ scopes, account: accounts[0] });
-        callbacks.onLog(`  ✓ ${shortResource} (cached)`);
-        assignToken(tokens, resourceUrl, authConfig, result.accessToken);
-        continue;
-      } catch {
-        // Silent failed — fall through to device code
-      }
+    try {
+      const result = await acquireTokenSilentAnyAccount(pca, scopes, authConfig.tenantId);
+      callbacks.onLog(`  ✓ ${shortResource} (cached)`);
+      assignToken(tokens, resourceUrl, authConfig, result.accessToken);
+      continue;
+    } catch {
+      // Silent failed — fall through to device code
     }
 
     // Device code flow
@@ -292,6 +289,33 @@ export async function acquireTokens(
   }
 
   return tokens;
+}
+
+/**
+ * Silent token acquisition across every cached account. The token cache file is shared by
+ * all configs, so once you have signed in to a second tenant it holds several accounts and
+ * `accounts[0]` may belong to the wrong one — silent acquisition then fails and every debug
+ * session falls back to a device-code login. Tries the configured tenant's accounts first,
+ * then the rest (a guest account can still hold a token for it). Throws the last error when
+ * no account works silently. Twin of the CLI's helper in packages/cli/src/auth.ts.
+ */
+export async function acquireTokenSilentAnyAccount(
+  pca: Pick<PublicClientApplication, 'getTokenCache' | 'acquireTokenSilent'>,
+  scopes: string[],
+  tenantId: string
+): Promise<AuthenticationResult> {
+  const accounts = await pca.getTokenCache().getAllAccounts();
+  const inTenant = (a: AccountInfo) => a.tenantId === tenantId || a.homeAccountId.endsWith(`.${tenantId}`);
+  const ordered = [...accounts.filter(inTenant), ...accounts.filter((a) => !inTenant(a))];
+  let lastError: unknown = new Error('No cached account');
+  for (const account of ordered) {
+    try {
+      return await pca.acquireTokenSilent({ scopes, account });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }
 
 /** One PCA per app registration — the silent path runs on completion cache misses. */
@@ -327,9 +351,7 @@ export async function acquireTokenSilentOnly(
 ): Promise<string | null> {
   try {
     const pca = getSilentPca(authConfig);
-    const accounts = await pca.getTokenCache().getAllAccounts();
-    if (accounts.length === 0) return null;
-    const result = await pca.acquireTokenSilent({ scopes, account: accounts[0] });
+    const result = await acquireTokenSilentAnyAccount(pca, scopes, authConfig.tenantId);
     return result.accessToken;
   } catch {
     return null;

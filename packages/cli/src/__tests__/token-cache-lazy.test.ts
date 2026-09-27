@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { tokenCacheUnavailableMessage } from "../token-cache.js";
+import { keyringTimeoutMessage, tokenCacheUnavailableMessage } from "../token-cache.js";
 
 const cliRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -69,6 +69,33 @@ describe("token cache is loaded lazily (Linux without libsecret)", () => {
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /could not be loaded: libsecret-1\.so\.0/);
     assert.match(r.stdout, /--graph-token/);
+  });
+});
+
+describe("FLOWFORGER_TOKEN_CACHE=file (headless Linux with a locked keyring)", () => {
+  it("uses a plaintext cache file in ~/.flowforger instead of the OS keyring", () => {
+    const home = mkdtempSync(join(tmpdir(), "ff-file-cache-"));
+    const r = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "-e", `
+        const { createCachePlugin, PLAINTEXT_CACHE_PATH } = await import('./src/token-cache.ts');
+        const { existsSync } = await import('node:fs');
+        const logs = [];
+        const plugin = await createCachePlugin((m) => logs.push(m));
+        console.log(typeof plugin.beforeCacheAccess, existsSync(PLAINTEXT_CACHE_PATH), logs.join('|'));
+      `],
+      { cwd: cliRoot, encoding: "utf8", env: { ...process.env, HOME: home, USERPROFILE: home, FLOWFORGER_TOKEN_CACHE: "file" } },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.startsWith("function true Auth: Using plaintext token cache "), r.stdout);
+    assert.ok(r.stdout.includes(join(".flowforger", "token-cache.plaintext.json")), r.stdout);
+  });
+
+  it("is what the keyring-timeout error tells you to set", () => {
+    const msg = keyringTimeoutMessage();
+    assert.match(msg, /did not respond within 15s/);
+    assert.match(msg, /export FLOWFORGER_TOKEN_CACHE=file/);
+    assert.match(msg, /--sp-token/);
   });
 });
 

@@ -459,10 +459,17 @@ export class SharePointConnector implements BaseConnector {
     // For create/update operations, transform item/* to fields object.
     // UpdateFileProperties is here because the cloud's PatchFileItem carries its
     // column values as item/* keys exactly like PatchItem does.
+    // A whole `item` object also counts: the transformer flattens an object literal into
+    // item/* keys, but an expression (`item: invoice`, `item: body('X')`) evaluates to a
+    // nested object, which would otherwise be dropped and create/patch an empty item.
     if (['PostItem', 'CreateItem', 'PatchItem', 'UpdateItem', 'UpdateFileProperties'].includes(operation)) {
       const existingFields = (inputs.fields || {}) as Record<string, unknown>;
+      const nestedItem =
+        inputs.item && typeof inputs.item === 'object' && !Array.isArray(inputs.item)
+          ? (inputs.item as Record<string, unknown>)
+          : {};
       const itemFields = extractItemFields(inputs);
-      normalized.fields = { ...existingFields, ...itemFields };
+      normalized.fields = { ...existingFields, ...nestedItem, ...itemFields };
     }
 
     // For SendHttpRequest

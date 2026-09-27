@@ -179,7 +179,7 @@ In CI, add `--no-create` to any push that should fail rather than quietly create
 | `*.ff.ts` | Flow source code in TypeScript DSL |
 | `*.ir.json` | Intermediate representation (optional, for debugging) |
 | `clientdata.json` | Compiled Logic Apps JSON (what Dataverse expects) |
-| `~/.flowforger/token-cache.json` | Cached refresh tokens, encrypted for the current OS user (DPAPI on Windows, Keychain on macOS, libsecret on Linux) |
+| `~/.flowforger/token-cache.json` | Cached refresh tokens, encrypted for the current OS user (DPAPI on Windows, Keychain on macOS, libsecret on Linux). With `FLOWFORGER_TOKEN_CACHE=file`, `token-cache.plaintext.json` instead (unencrypted, 0600) |
 
 The token cache is readable by anything running as your user account, which is the same protection level as the Azure CLI or your browser's sign-in. Copied to another machine or user it is unreadable. To revoke it, delete the file, or revoke the user's sessions in Entra ID.
 
@@ -187,6 +187,12 @@ The token cache is readable by anything running as your user account, which is t
 
 **Linux: "The encrypted token cache used by --auth could not be loaded: libsecret-1.so.0 ..."**
 - `--auth` stores tokens through libsecret on Linux. Install it (`sudo apt-get install libsecret-1-0` on Debian/Ubuntu, `sudo dnf install libsecret` on Fedora), or skip `--auth` and pass tokens explicitly (`--graph-token`, `--sp-token`, `--dv-token`). Every other command works without it.
+
+**Linux (WSL, SSH, CI): "The system keyring did not respond within 15s ..."**
+- libsecret is installed, but the keyring is locked and there is no desktop session to unlock it, so it never answers. Either unlock it, or keep the token cache in a plain file readable only by you: `export FLOWFORGER_TOKEN_CACHE=file` (stored as `~/.flowforger/token-cache.plaintext.json`, mode 0600, **not** encrypted), then sign in once more.
+
+**Every `--auth` run asks you to sign in again, after you signed in to a second tenant**
+- Fixed in 0.3.3. Earlier versions always tried the first cached account, so with accounts from two tenants in the cache, every run against the other tenant fell back to a device-code sign-in. Upgrade with `npm install -g flowforger@latest`.
 
 **"AADSTS65001: The user or administrator has not consented to use the application"**
 - Go back to Step 3 and click **Grant admin consent**, or a permission the flow needs is missing. Run `flowforger scopes <flow>` to see the list.

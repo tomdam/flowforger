@@ -10,6 +10,7 @@
 import { DataverseClient, type ConnectionReferenceRecord } from '@flowforger/dataverse-sdk';
 import { PublicClientApplication } from '@azure/msal-node';
 import { createCachePlugin } from './token-cache.js';
+import { acquireTokenSilentAnyAccount } from './auth.js';
 
 /**
  * Mapping from FlowForger connector short names to Dataverse connectorid suffixes.
@@ -82,15 +83,12 @@ export async function acquireInitToken(
   const scopes = [`${dataverseUrl.replace(/\/$/, '')}/user_impersonation`];
 
   // Try silent first
-  const accounts = await pca.getTokenCache().getAllAccounts();
-  if (accounts.length > 0) {
-    try {
-      const result = await pca.acquireTokenSilent({ scopes, account: accounts[0] });
-      log('  Authenticated (cached token)');
-      return result.accessToken;
-    } catch {
-      // Fall through to interactive
-    }
+  try {
+    const result = await acquireTokenSilentAnyAccount(pca, scopes, tenantId);
+    log('  Authenticated (cached token)');
+    return result.accessToken;
+  } catch {
+    // Fall through to interactive
   }
 
   // Interactive: device code flow

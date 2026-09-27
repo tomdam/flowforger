@@ -510,6 +510,47 @@ describe('SharePointConnector cloud item/* payloads', () => {
     const call = fetchCalls.find((c) => c.url.includes('items(9)'));
     assert.ok(call, `never patched items(9); called: ${fetchCalls.map((c) => c.url).join(', ')}`);
   });
+
+  // `item: invoice` / `item: body('X')` is an expression, not an object literal, so the
+  // transformer cannot flatten it into item/* keys: the evaluated object arrives nested.
+  it('sends the fields of a nested item object on PostItem (not an empty item)', async () => {
+    const bodies: Array<{ url: string; body: any }> = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      if (opts?.body) bodies.push({ url, body: JSON.parse(opts.body) });
+      return jsonResponse({ ListItemEntityTypeFullName: 'SP.Data.InvoicesListItem', Id: 1 });
+    };
+
+    await connector.invoke(
+      'PostItem',
+      { dataset: SITE, table: LIST, item: { Title: 'INV-1041', Amount: 320, Status: 'Open' } },
+      ctx,
+    );
+
+    const post = bodies.find((b) => b.url.endsWith('/items'));
+    assert.ok(post, 'never posted to /items');
+    assert.equal(post.body.Title, 'INV-1041');
+    assert.equal(post.body.Amount, 320);
+    assert.equal(post.body.Status, 'Open');
+  });
+
+  it('lets item/* keys win over the same field in a nested item object', async () => {
+    const bodies: Array<{ url: string; body: any }> = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      if (opts?.body) bodies.push({ url, body: JSON.parse(opts.body) });
+      return jsonResponse({ ListItemEntityTypeFullName: 'SP.Data.InvoicesListItem' });
+    };
+
+    await connector.invoke(
+      'PatchItem',
+      { dataset: SITE, table: LIST, id: 4, item: { Status: 'Open', Title: 'kept' }, 'item/Status': 'Escalated' },
+      ctx,
+    );
+
+    const patch = bodies.find((b) => b.url.includes('items(4)'));
+    assert.ok(patch, 'never patched items(4)');
+    assert.equal(patch.body.Status, 'Escalated');
+    assert.equal(patch.body.Title, 'kept');
+  });
 });
 
 describe('SharePointConnector file identifiers', () => {

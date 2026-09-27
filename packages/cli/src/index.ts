@@ -7,7 +7,7 @@ import { emitLogicAppsJson } from '@flowforger/emitter-logicapps';
 import { validateFlowIR, validateLogicApps } from '@flowforger/validator';
 import type { FlowIR, FlowForgerConfig, ChildFlowDefinition, ChildFlowParameter } from '@flowforger/ir';
 import { parseConfigFromJson, DEFAULT_CONFIG } from '@flowforger/ir';
-import { run as runEngine, WorkflowLoader, type FileArtifact } from '@flowforger/engine';
+import { run as runEngine, flattenTrace, WorkflowLoader, type FileArtifact } from '@flowforger/engine';
 import { DataverseClient } from '@flowforger/dataverse-sdk';
 import { buildConnectors } from '@flowforger/debug-node';
 import { parseLogicAppsToIR, generateNativeDslFromIR } from '@flowforger/dsl-native';
@@ -17,6 +17,7 @@ import { checkParity, ParityTransformError } from './parity.js';
 import { runPush, PushError } from './push.js';
 import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from './cli-args.js';
 import { resolveRunParameterOverrides } from './env-var-overrides.js';
+import { printPrettyRunResult } from './pretty-trace.js';
 
 /**
  * Resolve the CLI's own package root (one level above dist/), working in both
@@ -204,6 +205,7 @@ Usage:
   flowforger validate <file.json|file.ff.ts>
   flowforger run <input.ir.json|input.ff.ts> [--in payload.json]
                     [--pretty | --json]  (default: pretty on a terminal, JSON when piped)
+                    [--verbose]  (pretty mode: also print connector request/response logs)
                     [--vars vars.json] [--var k=v] [--param k=v]
                     [--auth] [--config flowforger.config.json]
                     [--sp-token <sharepoint-token>]
@@ -401,110 +403,6 @@ async function installSkillsFromGitHub(
   } finally {
     rmSync(staging, { recursive: true, force: true });
   }
-}
-
-// ── Pretty trace rendering for `run` ─────────────────────────────────────────
-
-const useColor = !!process.stdout.isTTY && !process.env.NO_COLOR;
-const paint = (code: string) => (s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
-const clr = {
-  green: paint('32'),
-  red: paint('31'),
-  yellow: paint('33'),
-  cyan: paint('36'),
-  dim: paint('2'),
-  bold: paint('1'),
-};
-
-function summarizeValue(value: any, max = 100): string {
-  if (value === undefined || value === null) return '';
-  let s: string;
-  try {
-    s = JSON.stringify(value);
-  } catch {
-    s = String(value);
-  }
-  if (s === '{}' || s === '[]') return '';
-  if (s.length > max) s = s.slice(0, max - 1) + '…';
-  return s;
-}
-
-function traceStatusIcon(status: string): string {
-  if (status === 'Succeeded') return clr.green('✓');
-  if (status === 'Failed') return clr.red('✗');
-  if (status === 'Skipped') return clr.dim('↷');
-  return ' ';
-}
-
-function printTraceEntry(entry: any, indent: number): void {
-  const pad = '  '.repeat(indent);
-  const kind = typeof entry.nodeId === 'string' ? entry.nodeId.split('_')[0] : '';
-
-  if (kind === 'trg') {
-    console.log(`${pad}${clr.yellow('⚡')} ${clr.bold(entry.name)} ${clr.dim('(trigger)')}`);
-    return;
-  }
-
-  if (kind === 'if' && entry.outputs && 'conditionResult' in entry.outputs) {
-    const branch = entry.outputs.branchTaken === 'elseActions' ? 'else' : 'then';
-    console.log(
-      `${pad}${traceStatusIcon(entry.status)} ${clr.bold(entry.name)} ${clr.dim(`condition → ${entry.outputs.conditionResult} (${branch} branch)`)}`
-    );
-    return;
-  }
-
-  if (Array.isArray(entry.iterations)) {
-    const n = entry.iterations.length;
-    console.log(
-      `${pad}${traceStatusIcon(entry.status)} ${clr.bold(entry.name)} ${clr.dim(`— ${n} iteration${n === 1 ? '' : 's'}`)}`
-    );
-    for (const it of entry.iterations) {
-      const label = it.item !== undefined ? summarizeValue(it.item, 40) : `#${it.index}`;
-      console.log(`${pad}  ${clr.cyan(`[${it.index + 1}/${n}]`)} ${clr.dim(label)}`);
-      for (const a of it.actions ?? []) printTraceEntry(a, indent + 2);
-    }
-    return;
-  }
-
-  const out = summarizeValue(entry.outputs);
-  console.log(
-    `${pad}${traceStatusIcon(entry.status)} ${clr.bold(entry.name)}${out ? ` ${clr.dim('→ ' + out)}` : ''}`
-  );
-  if (entry.status === 'Failed' && entry.error) {
-    const msg =
-      entry.error instanceof Error
-        ? entry.error.message
-        : typeof entry.error === 'string'
-          ? entry.error
-          : summarizeValue(entry.error, 200);
-    console.log(`${pad}  ${clr.red(msg)}`);
-  }
-}
-
-function countTraceActions(entries: any[]): number {
-  let n = 0;
-  for (const e of entries ?? []) {
-    if (typeof e.nodeId === 'string' && e.nodeId.startsWith('trg_')) continue;
-    n++;
-    for (const it of e.iterations ?? []) n += countTraceActions(it.actions);
-  }
-  return n;
-}
-
-function printPrettyRunResult(flowName: string, result: any): void {
-  console.log('');
-  console.log(clr.bold(`▶ ${flowName}`));
-  console.log('');
-  for (const entry of result.trace ?? []) printTraceEntry(entry, 1);
-  console.log('');
-  const n = countTraceActions(result.trace ?? []);
-  if (result.status === 'Succeeded') {
-    console.log(`${clr.green(clr.bold('✓ Flow succeeded'))} ${clr.dim(`— ${n} action${n === 1 ? '' : 's'} executed`)}`);
-  } else {
-    const msg = result.error instanceof Error ? result.error.message : result.error ? String(result.error) : '';
-    console.log(`${clr.red(clr.bold('✗ Flow failed'))}${msg ? ` ${clr.dim('— ' + msg)}` : ''}`);
-  }
-  console.log('');
 }
 
 interface SharePointSite {
@@ -962,12 +860,21 @@ async function main() {
         }
       }
 
+      // Output: human-readable trace on a terminal, raw JSON when piped.
+      // --pretty / --json force either mode explicitly.
+      const wantJson = !!args.json || (!args.pretty && !process.stdout.isTTY);
+
+      // Engine/connector logs (every REST request and response) go to stderr. The pretty
+      // trace already shows each step and its error, so on a terminal they are only noise
+      // in front of it; --verbose brings them back.
+      const logger = wantJson || args.verbose ? (e: unknown) => console.error('[LOG]', e) : () => {};
+
       const result = await runEngine(ir, {
         connectors,
         input: payload,
         variables,
         parameterOverrides,
-        logger: (e) => console.error('[LOG]', e),
+        logger,
         loadChildFlow,
         strictWorkflows: !!args['strict-workflows'],
         callbackUrl,
@@ -990,10 +897,6 @@ async function main() {
         }
       }
 
-      // Output: human-readable trace on a terminal, raw JSON when piped.
-      // --pretty / --json force either mode explicitly.
-      const wantJson = !!args.json || (!args.pretty && !process.stdout.isTTY);
-
       // Enhanced error reporting (JSON mode only — pretty mode shows errors inline)
       if (wantJson && result.status === 'Failed') {
         console.error('\n=== FLOW FAILED ===');
@@ -1004,7 +907,7 @@ async function main() {
           }
         }
         console.error('\nTrace:');
-        for (const step of result.trace) {
+        for (const step of flattenTrace(result.trace)) {
           if (step.status === 'Failed') {
             console.error(`\n  ❌ ${step.name}:`);
             if (step.error) {

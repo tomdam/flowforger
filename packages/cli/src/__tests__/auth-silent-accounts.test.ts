@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AccountInfo, AuthenticationResult } from '@azure/msal-node';
-import { acquireTokenSilentAnyAccount } from '../auth.js';
+import { acquireTokenSilentAnyAccount, deferredLog } from '../auth.js';
 
 /**
  * The token cache file is shared across configs, so after signing in to two tenants it
@@ -57,5 +57,36 @@ describe('acquireTokenSilentAnyAccount', () => {
   it('throws when the cache is empty', async () => {
     const { pca } = fakePca([], []);
     await assert.rejects(acquireTokenSilentAnyAccount(pca, ['s'], 'tenant-demo'), /No cached account/);
+  });
+});
+
+/**
+ * `--auth` progress lines are noise when every token comes from the cache (they showed on camera
+ * in the promo recordings), but useful context before a device-code sign-in or an error.
+ */
+describe('deferredLog', () => {
+  it('holds lines until flushed, then prints them in order and passes later ones through', () => {
+    const out: string[] = [];
+    const { log, flush } = deferredLog((m) => out.push(m));
+    log('a');
+    log('b');
+    assert.deepEqual(out, []);
+    flush();
+    assert.deepEqual(out, ['a', 'b']);
+    log('c');
+    flush();
+    assert.deepEqual(out, ['a', 'b', 'c']);
+  });
+
+  it('prints nothing when never flushed (all tokens cached)', () => {
+    const out: string[] = [];
+    deferredLog((m) => out.push(m)).log('Auth: Acquiring tokens for 1 resource(s)...');
+    assert.deepEqual(out, []);
+  });
+
+  it('passes everything straight through with verbose', () => {
+    const out: string[] = [];
+    deferredLog((m) => out.push(m), true).log('a');
+    assert.deepEqual(out, ['a']);
   });
 });

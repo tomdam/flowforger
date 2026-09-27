@@ -332,18 +332,57 @@ export async function resolveRequiredScopes(
  * Tries silent acquisition first (cached refresh tokens), falls back to device code flow.
  * Token cache is encrypted at rest using OS-level protection (DPAPI / Keychain / libsecret).
  */
+/**
+ * A logger that holds lines back until `flush()`, then passes them (and every later line)
+ * through; `verbose` passes everything through from the start. `acquireTokens` uses it so a
+ * run whose tokens all come from the cache prints nothing, while a sign-in or a failure still
+ * shows the lines leading up to it.
+ */
+export function deferredLog(log: (msg: string) => void, verbose = false) {
+  let open = verbose;
+  const held: string[] = [];
+  return {
+    log: (msg: string) => {
+      if (open) log(msg);
+      else held.push(msg);
+    },
+    flush: () => {
+      if (open) return;
+      open = true;
+      for (const msg of held.splice(0)) log(msg);
+    },
+  };
+}
+
 export async function acquireTokens(
   authConfig: AuthConfig,
   scopesByResource: Map<string, string[]>,
   logger?: (msg: string) => void,
-  options?: { silentOnly?: boolean }
+  options?: { silentOnly?: boolean; verbose?: boolean }
 ): Promise<ResolvedTokens> {
   if (scopesByResource.size === 0) return {};
 
-  const log = logger || (() => {});
+  const out = logger || (() => {});
+  const { log, flush } = deferredLog(out, options?.verbose);
+  try {
+    return await acquireTokensLogged(authConfig, scopesByResource, log, flush, out, options?.silentOnly);
+  } catch (err) {
+    flush();
+    throw err;
+  }
+}
+
+async function acquireTokensLogged(
+  authConfig: AuthConfig,
+  scopesByResource: Map<string, string[]>,
+  log: (msg: string) => void,
+  flush: () => void,
+  notify: (msg: string) => void,
+  silentOnly?: boolean
+): Promise<ResolvedTokens> {
   log(`Auth: Acquiring tokens for ${scopesByResource.size} resource(s)...`);
 
-  const cachePlugin = await createCachePlugin(log);
+  const cachePlugin = await createCachePlugin(log, notify);
 
   const pca = new PublicClientApplication({
     auth: {
@@ -366,7 +405,8 @@ export async function acquireTokens(
       shortResource,
       scopeList,
       log,
-      options?.silentOnly
+      silentOnly,
+      flush
     );
 
     // Map resource URL to token slot
@@ -517,7 +557,9 @@ async function acquireTokenForResource(
   shortResource: string,
   scopeList: string,
   log: (msg: string) => void,
-  silentOnly?: boolean
+  silentOnly?: boolean,
+  /** Called before a device-code sign-in starts, so held-back progress lines show first. */
+  onInteractive: () => void = () => {}
 ): Promise<string> {
   // Try silent acquisition first
   try {
@@ -535,6 +577,7 @@ async function acquireTokenForResource(
   }
 
   // Interactive: device code flow
+  onInteractive();
   log(`  → ${shortResource} [${scopeList}]`);
   const result = await pca.acquireTokenByDeviceCode({
     scopes,

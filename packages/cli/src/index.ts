@@ -191,7 +191,7 @@ async function acquireDataverseAuth(
   authConfig.resources.dataverse = dvResource;
   if (!token) {
     const scopes = new Map([[dvResource, [`${dvResource}/user_impersonation`]]]);
-    const tokens = await acquireTokens(authConfig, scopes, (msg) => console.error(msg));
+    const tokens = await acquireTokens(authConfig, scopes, (msg) => console.error(msg), { verbose: !!args.verbose });
     if (tokens.dataverse) token = tokens.dataverse;
   }
   return { url, token };
@@ -205,7 +205,7 @@ Usage:
   flowforger validate <file.json|file.ff.ts>
   flowforger run <input.ir.json|input.ff.ts> [--in payload.json]
                     [--pretty | --json]  (default: pretty on a terminal, JSON when piped)
-                    [--verbose]  (pretty mode: also print connector request/response logs)
+                    [--verbose]  (also print sign-in progress, and in pretty mode connector request/response logs)
                     [--vars vars.json] [--var k=v] [--param k=v]
                     [--auth] [--config flowforger.config.json]
                     [--sp-token <sharepoint-token>]
@@ -684,7 +684,9 @@ async function main() {
       if (args['auth']) {
         const authConfig = loadAuthConfig(args);
         const scopesByResource = await resolveRequiredScopes(ir, authConfig);
-        const tokens = await acquireTokens(authConfig, scopesByResource, (msg) => console.error(msg));
+        const tokens = await acquireTokens(authConfig, scopesByResource, (msg) => console.error(msg), {
+          verbose: !!args.verbose,
+        });
 
         // Set token args — existing connector init code will pick these up.
         // Explicit --xxx-token flags override --auth tokens.

@@ -188,8 +188,8 @@ The token cache is readable by anything running as your user account, which is t
 **Linux: "The encrypted token cache used by --auth could not be loaded: libsecret-1.so.0 ..."**
 - `--auth` stores tokens through libsecret on Linux. Install it (`sudo apt-get install libsecret-1-0` on Debian/Ubuntu, `sudo dnf install libsecret` on Fedora), or skip `--auth` and pass tokens explicitly (`--graph-token`, `--sp-token`, `--dv-token`). Every other command works without it.
 
-**Linux (WSL, SSH, CI): "The system keyring did not respond within 15s ..."**
-- libsecret is installed, but the keyring is locked and there is no desktop session to unlock it, so it never answers. Either unlock it, or keep the token cache in a plain file readable only by you: `export FLOWFORGER_TOKEN_CACHE=file` (stored as `~/.flowforger/token-cache.plaintext.json`, mode 0600, **not** encrypted), then sign in once more.
+**Linux: "Waiting for the system keyring" / "The system keyring did not respond within 120s ..."**
+- The keyring is locked. On a desktop (and in WSL, which shows it on the Windows desktop) an unlock prompt opens: enter your keyring password there. With no session to show it (SSH, CI, WSL without a GUI) it never answers. Either unlock it, or keep the token cache in a plain file readable only by you: `export FLOWFORGER_TOKEN_CACHE=file` (stored as `~/.flowforger/token-cache.plaintext.json`, mode 0600, **not** encrypted), then sign in once more.
 
 **Every `--auth` run asks you to sign in again, after you signed in to a second tenant**
 - Fixed in 0.3.3. Earlier versions always tried the first cached account, so with accounts from two tenants in the cache, every run against the other tenant fell back to a device-code sign-in. Upgrade with `npm install -g flowforger@latest`.

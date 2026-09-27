@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { keyringTimeoutMessage, tokenCacheUnavailableMessage } from "../token-cache.js";
+import { KEYRING_WAITING_HINT, keyringTimeoutMessage, tokenCacheUnavailableMessage, waitForKeyring } from "../token-cache.js";
 
 const cliRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -110,9 +110,34 @@ describe("FLOWFORGER_TOKEN_CACHE=file (headless Linux with a locked keyring)", (
 
   it("is what the keyring-timeout error tells you to set", () => {
     const msg = keyringTimeoutMessage();
-    assert.match(msg, /did not respond within 15s/);
+    assert.match(msg, /did not respond within 120s/);
+    assert.match(msg, /unlock prompt was not answered/);
     assert.match(msg, /export FLOWFORGER_TOKEN_CACHE=file/);
     assert.match(msg, /--sp-token/);
+  });
+});
+
+// A locked keyring waits on an unlock dialog (desktop Linux, WSL shows it on Windows), so the
+// wait must allow typing a password, with a hint so the dialog gets noticed.
+describe("waitForKeyring", () => {
+  const sleep = (ms: number, value?: unknown) => new Promise((r) => setTimeout(() => r(value), ms));
+  const opts = { hintAfterMs: 20, timeoutMs: 80 };
+
+  it("passes a quick answer through without a hint", async () => {
+    const hints: string[] = [];
+    assert.equal(await waitForKeyring(sleep(1, "ok"), (m) => hints.push(m), opts), "ok");
+    await sleep(40); // past the hint time: the timer must have been cleared
+    assert.deepEqual(hints, []);
+  });
+
+  it("hints once while waiting on an unlock prompt, then passes the answer through", async () => {
+    const hints: string[] = [];
+    assert.equal(await waitForKeyring(sleep(50, "ok"), (m) => hints.push(m), opts), "ok");
+    assert.deepEqual(hints, [KEYRING_WAITING_HINT]);
+  });
+
+  it("fails with the actionable message when the keyring never answers", async () => {
+    await assert.rejects(waitForKeyring(new Promise(() => {}), () => {}, opts), /did not respond within 0\.08s[\s\S]*FLOWFORGER_TOKEN_CACHE=file/);
   });
 });
 

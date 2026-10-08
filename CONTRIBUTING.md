@@ -22,6 +22,7 @@ cd flowforger
 npm install
 npm run build     # tsc -b across all packages (TypeScript project references)
 npm test          # runs every workspace's test suite
+npm run ci:local  # everything CI runs (install, build, tests, CLI bundle check) — run before pushing
 ```
 
 Run the CLI from your build:

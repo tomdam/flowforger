@@ -21,7 +21,8 @@
     "clean": "rimraf **/dist || true",
     "format": "prettier -w .",
     "test": "npm -ws run test || true",
-    "test:ci": "npm -ws --if-present run test"
+    "test:ci": "npm -ws --if-present run test",
+    "ci:local": "npm install --no-audit --no-fund && npm run build && npm run test:ci && node scripts/check-cli-bundle.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.7.7",

@@ -40,31 +40,11 @@ jobs:
 
       # A tree-shaken expression function registry fails neither the build nor
       # the tests — every expression would silently evaluate to its own source
-      # text. Guard the shipped bundle directly.
+      # text. The script guards the shipped bundle directly; `npm run ci:local`
+      # runs the same check.
       #
       # Do NOT install libsecret on the Ubuntu runner: its absence is what makes
       # this step also prove the CLI starts on Linux without it (0.3.0 crashed
       # on startup there because keytar was loaded eagerly).
       - name: Check CLI bundle keeps the expression registry
-        shell: bash
-        run: |
-          node packages/cli/esbuild.config.mjs
-          count=$(grep -c "expects the property to not exist in the object" packages/cli/dist/bundle.cjs || true)
-          if [ "$count" != "1" ]; then
-            echo "::error::Expected 1 addProperty error-message marker in the CLI bundle, found $count — the expression registry was tree-shaken."
-            exit 1
-          fi
-          cat > ci-smoke.ff.ts <<'EOF'
-          @Flow('ci-smoke')
-          class CiSmoke {
-            @ManualTrigger()
-            trigger() {}
-
-            @Action()
-            async run(ctx: FlowContext) {
-              await ctx.compose('Joined', "@concat('a','b')");
-            }
-          }
-          EOF
-          node packages/cli/dist/bundle.cjs run ci-smoke.ff.ts --json > smoke.json
-          grep -q '"ab"' smoke.json || { echo "::error::Expression smoke test failed"; cat smoke.json; exit 1; }
+        run: node scripts/check-cli-bundle.mjs

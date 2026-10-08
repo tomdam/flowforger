@@ -104,8 +104,9 @@ function escapeString(str: string): string {
 // Helper: Check if a string value is a Power Automate expression
 function isExpression(value: any): boolean {
   if (typeof value !== 'string') return false;
-  // Check for @ prefix or @{} template expressions
-  if (value.startsWith('@@')) return false; return value.startsWith('@') || value.includes('@{');
+  // Check for @ prefix or @{} template expressions; '@@' is an escaped '@' ("a@@{b}" is the text "a@{b}")
+  if (value.startsWith('@@')) return false;
+  return value.startsWith('@') || value.replace(/@@/g, '').includes('@{');
 }
 
 // Helper: Check if we're at top level (in main run method)
@@ -515,6 +516,15 @@ function getExpressionOptions(variableMap?: VariableNameMap): ParseExpressionOpt
   };
 }
 
+/** Words a loop variable cannot be named: JS/TS reserved words, and `ctx`. */
+const RESERVED_IDENTIFIERS = new Set([
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else',
+  'enum', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in', 'instanceof',
+  'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void',
+  'while', 'with', 'yield', 'let', 'static', 'implements', 'interface', 'package', 'private', 'protected',
+  'public', 'await', 'arguments', 'eval', 'undefined', 'ctx',
+]);
+
 /**
  * Derive a unique loop variable name from a foreach action name.
  */
@@ -542,6 +552,8 @@ function deriveLoopVariableName(loopName: string): string {
   }
   // Ensure starts with lowercase
   baseName = baseName[0].toLowerCase() + baseName.slice(1);
+  // "ForEach_default" must not declare `const default` (nor shadow ctx).
+  if (RESERVED_IDENTIFIERS.has(baseName)) baseName += 'Item';
 
   // Ensure uniqueness
   let name = baseName;
@@ -1365,13 +1377,13 @@ function generateActionStatement(node: ActionNode, indent: string, previousActio
       const headers = inputs.headers;
       const schema = inputs.schema;
       const kind = inputs.kind;
-      const hasHeaders = headers && Object.keys(headers).length > 0;
+      const hasHeaders = typeof headers === 'string' ? headers !== '' : headers && Object.keys(headers).length > 0;
       const hasSchema = schema !== undefined;
       const hasKind = kind && (kind === 'VirtualAgent' || kind === 'PowerApp');
 
       // Build args: ctx.response(name, statusCode, body?, headers?, schema?, kind?)
       // Positional args require placeholders when later args exist
-      const args: string[] = [`"${escapeString(name)}"`, String(statusCode)];
+      const args: string[] = [`"${escapeString(name)}"`, typeof statusCode === 'number' ? String(statusCode) : formatValue(statusCode, indent, variableMap)];
 
       // Body: include if present, or placeholder if headers/schema/kind exist
       if (body !== undefined) {
@@ -1675,7 +1687,6 @@ function generateIfStatement(node: IfNode, indent: string, previousActionName?: 
 
   // Generate the if statement with JSDoc @action annotation
   lines.push(`${indent}${buildJSDocComment(node.name, {
-    type: 'if',
     description: node.description,
     runAfter: node.runAfter,
     previousActionName,
@@ -1743,7 +1754,6 @@ function generateForeachStatement(node: ForeachNode, indent: string, previousAct
     foreachExtraAnnotations.push(`@typeCase ${JSON.stringify(foreachTypeCase)}`);
   }
   lines.push(`${indent}${buildJSDocComment(node.name, {
-    type: 'foreach',
     description: node.description,
     runAfter: node.runAfter,
     trackedProperties: node.trackedProperties,
@@ -1790,7 +1800,6 @@ function generateSwitchStatement(node: SwitchNode, indent: string, previousActio
 
   // Generate the switch with JSDoc @action annotation
   lines.push(`${indent}${buildJSDocComment(node.name, {
-    type: 'switch',
     description: node.description,
     runAfter: node.runAfter,
     previousActionName,
@@ -1852,7 +1861,6 @@ function generateDoUntilStatement(node: DoUntilNode, indent: string, previousAct
 
   // Generate the do-until with JSDoc @action annotation (includes limit for metadata)
   lines.push(`${indent}${buildJSDocComment(node.name, {
-    type: 'dountil',
     description: node.description,
     limit: Object.keys(limitObj).length > 0 ? limitObj : undefined,
     runAfter: node.runAfter,

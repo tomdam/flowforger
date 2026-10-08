@@ -1,44 +1,73 @@
 /**
- * String functions.
+ * String functions. Behaviour verified against the cloud (conformance/flows/expressions.ff.ts):
+ * indexOf/lastIndexOf/nthIndexOf/startsWith/endsWith ignore case; replace/split/contains don't.
  */
 
 import { register, eager } from '../evaluator.js';
-import { formatNumberValue } from '../helpers.js';
+import { formatNumberValue } from '../dotnet-number.js';
+import { ExpressionError, lowerInvariant, toText, typeName, upperInvariant } from '../values.js';
 
-register('concat', eager(vals => vals.map(v => String(v ?? '')).join('')));
+const USAGE = (fn: string) => ` Please see https://aka.ms/logicexpressions#${fn} for usage details.`;
+
+/** The argument as a string, or the cloud's type error when it isn't one. */
+function requireString(fn: string, v: unknown): string {
+  if (typeof v === 'string') return v;
+  throw new ExpressionError(
+    `The template language function '${fn}' expects its parameter to be a string. The provided value is of type '${typeName(v)}'.${USAGE(fn)}`,
+  );
+}
+
+register('concat', eager(vals => vals.map(toText).join('')));
 
 register('substring', eager(vals => {
   const s = String(vals[0] ?? '');
-  const st = Number(vals[1]);
-  const l = vals.length >= 3 ? Number(vals[2]) : undefined;
-  return l !== undefined ? s.substring(st, st + l) : s.substring(st);
+  const start = Number(vals[1]);
+  if (!Number.isInteger(start) || start < 0 || start >= s.length) {
+    throw new ExpressionError(
+      `The template language function 'substring' parameter is out of range: 'start index' must be non-negative integer and should be less than the length of the string.${USAGE('substring')}`,
+    );
+  }
+  if (vals.length < 3) return s.substring(start);
+  const length = Number(vals[2]);
+  if (!Number.isInteger(length) || length < 0 || start + length > s.length) {
+    throw new ExpressionError(
+      `The template language function 'substring' parameters are out of range: 'start index' and 'length' must be non-negative integers and their sum must be no larger than the length of the string.${USAGE('substring')}`,
+    );
+  }
+  return s.substring(start, start + length);
 }));
 
-register('replace', eager(([str, old, newVal]) => {
-  const s = String(str ?? '');
-  const o = String(old);
-  const n = String(newVal);
-  const escaped = o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return s.replace(new RegExp(escaped, 'g'), n);
-}));
+register('replace', eager(([str, old, newVal]) => String(str ?? '').split(String(old)).join(String(newVal ?? ''))));
 
-register('toLower', eager(([v]) => String(v ?? '').toLowerCase()));
-register('toUpper', eager(([v]) => String(v ?? '').toUpperCase()));
+register('toLower', eager(([v]) => lowerInvariant(requireString('toLower', v))));
+register('toUpper', eager(([v]) => upperInvariant(requireString('toUpper', v))));
 register('trim', eager(([v]) => String(v ?? '').trim()));
 
-register('split', eager(([str, delim]) => String(str ?? '').split(String(delim))));
-
-register('join', eager(([arr, delim]) => {
-  const d = String(delim ?? ',');
-  return Array.isArray(arr) ? arr.join(d) : '';
+// An empty delimiter doesn't split.
+register('split', eager(([str, delim]) => {
+  const s = String(str ?? '');
+  const d = String(delim ?? '');
+  return d === '' ? [s] : s.split(d);
 }));
 
-register('indexOf', eager(([str, search]) => String(str ?? '').indexOf(String(search))));
-register('lastIndexOf', eager(([str, search]) => String(str ?? '').lastIndexOf(String(search))));
+register('join', eager(([arr, delim]) => {
+  if (!Array.isArray(arr)) {
+    throw new ExpressionError(
+      `The template language function 'join' expects its first parameter to be an array. The provided value is of type '${typeName(arr)}'.${USAGE('join')}`,
+    );
+  }
+  return arr.map(toText).join(String(delim ?? ','));
+}));
+
+// Per-character casing keeps indexes aligned with the original string.
+const lower = (v: unknown) => lowerInvariant(String(v ?? ''));
+
+register('indexOf', eager(([str, search]) => lower(str).indexOf(lower(search))));
+register('lastIndexOf', eager(([str, search]) => lower(str).lastIndexOf(lower(search))));
 
 register('nthIndexOf', eager(([tv, sv, nv]) => {
-  const t = String(tv ?? '');
-  const s = String(sv ?? '');
+  const t = lower(tv);
+  const s = lower(sv);
   const n = Number(nv);
   if (n < 1 || s === '') return -1;
   let idx = -1, count = 0, pos = 0;
@@ -51,27 +80,49 @@ register('nthIndexOf', eager(([tv, sv, nv]) => {
   return idx;
 }));
 
-register('guid', () => crypto.randomUUID());
-
-register('string', eager(([v]) => (typeof v === 'string' ? v : JSON.stringify(v))));
-
-register('length', eager(([v]) =>
-  Array.isArray(v) || typeof v === 'string' ? (v as any).length : 0));
-
-register('slice', eager(vals => {
-  const v = vals[0];
-  const start = Number(vals[1]);
-  const end = vals.length >= 3 ? Number(vals[2]) : undefined;
-  if (typeof v === 'string') return v.slice(start, end);
-  if (Array.isArray(v)) return v.slice(start, end);
-  return v;
+// guid(format): D (default) 36 chars, N 32, B {…} and P (…) 38, lower-case like .NET.
+register('guid', eager(([format]) => {
+  const id = crypto.randomUUID();
+  switch (String(format ?? 'D').toUpperCase()) {
+    case 'N': return id.replace(/-/g, '');
+    case 'B': return `{${id}}`;
+    case 'P': return `(${id})`;
+    default: return id;
+  }
 }));
 
-register('chunk', eager(([arr, sizeV]) => {
+register('string', eager(([v]) => toText(v)));
+
+register('length', eager(([v]) => {
+  if (Array.isArray(v) || typeof v === 'string') return v.length;
+  throw new ExpressionError(
+    `The template language function 'length' expects its parameter to be an array or a string. The provided value is of type '${typeName(v)}'.${USAGE('length')}`,
+  );
+}));
+
+// slice works on strings only in the cloud.
+register('slice', eager(vals => {
+  const v = vals[0];
+  if (typeof v !== 'string') {
+    throw new ExpressionError(
+      `The template language function 'slice' expects its first parameter to be of type string. The provided value is of type '${typeName(v)}'.${USAGE('slice')}`,
+    );
+  }
+  const start = Number(vals[1]);
+  const end = vals.length >= 3 ? Number(vals[2]) : undefined;
+  return v.slice(start, end);
+}));
+
+register('chunk', eager(([v, sizeV]) => {
   const size = Number(sizeV);
-  if (!Array.isArray(arr) || size <= 0) return [];
+  if (!(size >= 1)) {
+    throw new ExpressionError(
+      `The template language function 'chunk' expects chunk size to be a positive integer. The provided value is less than 1.${USAGE('chunk')}`,
+    );
+  }
+  if (!Array.isArray(v) && typeof v !== 'string') return [];
   const out = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  for (let i = 0; i < v.length; i += size) out.push(v.slice(i, i + size));
   return out;
 }));
 

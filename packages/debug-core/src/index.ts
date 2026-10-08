@@ -6,6 +6,7 @@ export type {
   IterationContextInfo,
   DebugSessionOptions,
   JumpResult,
+  RunOutcome,
 } from './debug-session.js';
 export type { DebugFlowSource, DebugHost } from './host.js';
 export { ConnectorCallLog, stableStringify, wrapConnectorsForRecording, wrapConnectorsForReplay, MAX_RECORDED_CALLS, MAX_RECORDED_RESPONSE_BYTES } from './replay.js';

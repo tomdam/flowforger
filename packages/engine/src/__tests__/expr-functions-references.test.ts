@@ -25,7 +25,9 @@ describe('reference functions', () => {
   it('trigger family', () => {
     assert.equal(ok(`@triggerBody().id`), 'trg-1');
     assert.equal(ok(`@triggerOutputs()['body/nested/deep']`), 'yes');
-    assert.equal(ok(`@trigger().body.id`), 'trg-1');
+    // The cloud's trigger() record has no body of its own (conformance/flows/trigger.ff.ts).
+    assert.equal(ok(`@trigger().outputs.body.id`), 'trg-1');
+    assert.equal(ok(`@trigger().status`), 'Succeeded');
     assert.equal(ok(`@trigger().outputs.headers.h1`), 'v1');
   });
   it('workflow / parameters', () => {
@@ -43,10 +45,12 @@ describe('reference functions', () => {
   it('action() combines currentAction with stored status/outputs', () => {
     const c = makeExprContext();
     (c as any).currentAction = { name: 'HttpCall', inputs: { u: 1 }, startTime: 't0' };
+    (c as any).debugEvaluation = true; // the debugger console; a flow cannot use action()
     assert.equal(ok('@action().status', c), 'Failed'); // stored status wins
     assert.equal(ok('@action().inputs.u', c), 1);
     assert.equal(ok('@action().name', c), 'HttpCall');
     const empty = makeExprContext();
+    (empty as any).debugEvaluation = true;
     assert.equal(ok('@action()', empty), undefined); // no current action
   });
   it('result() returns scoped child results', () => {
@@ -74,27 +78,6 @@ describe('reference functions', () => {
     (c as any).callbackUrl = 'http://cb';
     assert.equal(ok('@listCallbackUrl()', c), 'http://cb');
   });
-  it('formDataValue / formDataMultiValues', () => {
-    const c = makeExprContext();
-    (c as any).actions.set('Form', { status: 'Succeeded', outputs: { body: { single: 'v1', multi: ['a', 'b'], one: ['x'] } } });
-    assert.equal(ok(`@formDataValue('Form', 'single')`, c), 'v1');
-    assert.equal(ok(`@formDataValue('Form', 'one')`, c), 'x');
-    assert.deepEqual(ok(`@formDataMultiValues('Form', 'multi')`, c), ['a', 'b']);
-    assert.deepEqual(ok(`@formDataMultiValues('Form', 'single')`, c), ['v1']);
-    assert.deepEqual(ok(`@formDataMultiValues('Form', 'missing')`, c), []);
-  });
-  it('multipartBody', () => {
-    const c = makeExprContext();
-    (c as any).actions.set('Multi', { status: 'Succeeded', outputs: { body: { $multipart: [{ body: 'part0' }, { content: 'part1' }] } } });
-    assert.equal(ok(`@multipartBody('Multi', 0)`, c), 'part0');
-    assert.equal(ok(`@multipartBody('Multi', 1)`, c), 'part1');
-    assert.equal(ok(`@multipartBody('Multi', 9)`, c), undefined);
-  });
-  it('trigger formData / multipart', () => {
-    const c = makeExprContext();
-    (c as any).triggerData = { body: { k: 'v', m: ['1', '2'], $multipart: [{ body: 'tp0' }] } };
-    assert.equal(ok(`@triggerFormDataValue('k')`, c), 'v');
-    assert.deepEqual(ok(`@triggerFormDataMultiValues('m')`, c), ['1', '2']);
-    assert.equal(ok(`@triggerMultipartBody(0)`, c), 'tp0');
-  });
+  // The form-data functions (formDataValue, multipartBody, triggerFormDataValue, ...) are covered
+  // against the cloud's stored shapes in formdata-expressions.test.ts.
 });

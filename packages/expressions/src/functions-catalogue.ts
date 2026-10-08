@@ -18,7 +18,7 @@ export const KNOWN_FUNCTIONS: ReadonlySet<string> = new Set([
   'formdatavalue', 'formdatamultivalues', 'multipartbody',
   'triggerformdatavalue', 'triggerformdatamultivalues', 'triggermultipartbody',
   // Comparison / logical / conditional
-  'equals', 'greater', 'less', 'greaterorequals', 'ge', 'lessorequals', 'le',
+  'equals', 'greater', 'less', 'greaterorequals', 'lessorequals',
   'and', 'or', 'not', 'if', 'coalesce',
   'contains', 'startswith', 'endswith', 'empty', 'bool', 'isfloat', 'isint',
   // Strings
@@ -31,7 +31,8 @@ export const KNOWN_FUNCTIONS: ReadonlySet<string> = new Set([
   'addproperty', 'setproperty', 'removeproperty',
   // Math
   'add', 'sub', 'mul', 'div', 'mod', 'min', 'max', 'rand',
-  'int', 'float', 'abs', 'ceil', 'floor', 'round', 'decimal',
+  'int', 'float', 'decimal',
+  // abs/ceil/floor/round are NOT cloud functions: the cloud fails with "not defined or not valid".
   // Date/time
   'utcnow', 'parsedatetime', 'formatdatetime',
   'adddays', 'addhours', 'addminutes', 'addseconds',

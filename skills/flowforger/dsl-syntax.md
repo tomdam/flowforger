@@ -299,7 +299,7 @@ Use native JavaScript control flow with JSDoc annotations.
 ### If/Else
 
 ```typescript
-/** @action Check_status @type if */
+/** @action Check_status */
 if (ctx.triggerBody()?.['status'] === 'active') {
   await ctx.compose('Active', { isActive: true });
 } else {
@@ -311,7 +311,7 @@ if (ctx.triggerBody()?.['status'] === 'active') {
 
 ```typescript
 // ✅ CORRECT — use && operator for compound conditions:
-/** @action ValidateInput @type if */
+/** @action ValidateInput */
 if (ctx.not(ctx.empty(item?.['name'])) && ctx.greater(item?.['quantity'], 0)) {
   // ...
 }
@@ -332,12 +332,12 @@ if (ctx.and(ctx.not(ctx.empty(item?.['name'])), ctx.greater(item?.['quantity'], 
 
 ```typescript
 // ✅ DEFAULT — omit the annotation, get designer-visible output:
-/** @action Check_filename @type if */
+/** @action Check_filename */
 if (ctx.contains(ctx.triggerOutputs()?.['body/{Name}'], iban)) { ... }
 
 // Opt-outs (only if preserving an existing source shape matters):
-/** @action Check_filename @type if @conditionFormat string */
-/** @action Check_filename @type if @conditionFormat object */
+/** @action Check_filename @conditionFormat string */
+/** @action Check_filename @conditionFormat object */
 ```
 
 The parser drops single-operand `and`/`or` when reverse-engineering Logic Apps JSON back to DSL, so generated flows come out clean (`if (ctx.contains(...))`, not `if (ctx.and(ctx.contains(...)))`); the default emitter re-wraps on the way back.
@@ -347,7 +347,7 @@ The parser drops single-operand `and`/`or` when reverse-engineering Logic Apps J
 **Important:** Action names inside each case must be unique across ALL cases — do not reuse the same action name in different branches. Suffix with the case value or a descriptor to differentiate.
 
 ```typescript
-/** @action Route_by_type @type switch */
+/** @action Route_by_type */
 switch (ctx.triggerBody()?.['type']) {
   /** @action Case_TypeA @type case */
   case 'A':
@@ -385,7 +385,7 @@ switch (ctx.body('GetRecord')?.['type']) {
 ### For Each Loop
 
 ```typescript
-/** @action Process_items @type foreach */
+/** @action Process_items */
 for (const item of ctx.body('GetItems')?.['value'] ?? []) {
   await ctx.http('ProcessItem', { method: 'POST', url: '...', body: item });
 }
@@ -395,18 +395,18 @@ Inside loops, action names don't need to be unique across iterations - the same 
 
 #### Parallel iterations (`@runtimeConfig`)
 
-By default, foreach iterations run **sequentially**. When iterations are independent (no shared variable mutation, no order dependency), enable parallel execution with `@runtimeConfig {"concurrency":{"repetitions":N}}` — N can go up to 50. This is the single biggest performance lever for loops that make HTTP/connector calls per iteration.
+A foreach with no concurrency setting runs its iterations **in parallel in the cloud** (up to 20 at a time — the Logic Apps default), while the local engine always runs them one after another. So a loop whose result depends on iteration order (appending to an array, building a string, incrementing a counter it also reads) must say `@runtimeConfig {"concurrency":{"repetitions":1}}` to behave the same once deployed. When iterations are independent (no shared variable mutation, no order dependency), raise the degree with `@runtimeConfig {"concurrency":{"repetitions":N}}` — N can go up to 50. This is the single biggest performance lever for loops that make HTTP/connector calls per iteration.
 
 ```typescript
-// Sequential — 4 users × ~500ms each = ~2s
-/** @action GrantPermissions @type foreach */
+// One at a time — 4 users × ~500ms each = ~2s
+/** @action GrantPermissions @runtimeConfig {"concurrency":{"repetitions":1}} */
 for (const email of ctx.outputs('UserEmails') ?? []) {
   await ctx.connectors.sharepoint.HttpRequest('EnsureUser', { /*...*/ });
   await ctx.connectors.sharepoint.HttpRequest('GrantUserEdit', { /*...*/ });
 }
 
 // Parallel — same 4 users now run concurrently, ~500ms total
-/** @action GrantPermissions @type foreach @runtimeConfig {"concurrency":{"repetitions":20}} */
+/** @action GrantPermissions @runtimeConfig {"concurrency":{"repetitions":20}} */
 for (const email of ctx.outputs('UserEmails') ?? []) {
   await ctx.connectors.sharepoint.HttpRequest('EnsureUser', { /*...*/ });
   await ctx.connectors.sharepoint.HttpRequest('GrantUserEdit', { /*...*/ });
@@ -415,12 +415,12 @@ for (const email of ctx.outputs('UserEmails') ?? []) {
 
 Actions **inside** the loop still run serially per iteration (correct — `GrantUserEdit` reads `EnsureUser`'s output). Only the iterations themselves fan out.
 
-**Do NOT use parallel iterations when:** the body appends to an array variable via `.push()`, increments a counter, or otherwise mutates shared state — Power Automate's `AppendToArrayVariable` / `SetVariable` are not safe under concurrency. The FlowForger optimizer warns about this pattern (see `packages/dsl-native/src/optimizer/patterns/parallelism-analyzer.ts`).
+**Do NOT use parallel iterations when:** the body appends to an array variable via `.push()`, increments a counter, or otherwise mutates shared state — Power Automate's `AppendToArrayVariable` / `SetVariable` are not safe under concurrency. Such loops need `{"concurrency":{"repetitions":1}}`: leaving the setting out is not sequential in the cloud. The FlowForger optimizer warns about this pattern (see `packages/dsl-native/src/optimizer/patterns/parallelism-analyzer.ts`).
 
 ### Do-Until Loop
 
 ```typescript
-/** @action PollUntilComplete @type until */
+/** @action PollUntilComplete */
 do {
   await ctx.http('CheckStatus', { method: 'GET', url: '...' });
 } while (ctx.body('CheckStatus')?.['status'] !== 'complete');
@@ -430,8 +430,8 @@ do {
 
 `@type scope` is **required** for a bare block — without it the block is flattened and its
 statements are inlined (a Scope node is created only when the `@type scope` tag is present).
-This is the one control construct where `@type` is mandatory; for `if`/`foreach`/`switch`/`until`
-it is optional (those are recognized structurally) though still recommended for clarity.
+This is the one control construct where `@type` is needed; `if`/`for...of`/`switch`/`do...while`
+are recognized structurally, so omit `@type` on them (generated DSL does too).
 
 ```typescript
 /** @action MainProcessing @type scope */

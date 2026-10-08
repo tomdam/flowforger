@@ -34,11 +34,11 @@ describe('DSL039-DSL042 — definition limits', () => {
     assert.deepEqual(only('DSL039')(flowWith([`await ctx.compose('${'A'.repeat(80)}', { a: 1 });`])), []);
   });
 
-  it('more than 500 actions → DSL040 warning', () => {
+  it('more than 500 actions → DSL040 error (the cloud rejects 501)', () => {
     const lines = Array.from({ length: 501 }, (_, i) => `await ctx.compose('A${i}', { a: ${i} });`);
     const d = only('DSL040')(flowWith(lines));
     assert.equal(d.length, 1);
-    assert.equal(d[0].severity, 'warning');
+    assert.equal(d[0].severity, 'error');
     assert.match(d[0].message, /501 actions/);
   });
 
@@ -163,11 +163,33 @@ describe('DSL045/DSL046 — @RecurrenceTrigger options', () => {
     assert.deepEqual(only('DSL045', 'DSL046')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Hour', interval: 12000 })`)), []);
   });
 
-  it('schedule fields that the frequency ignores → DSL046 warning', () => {
+  // Measured in conformance/save-rules/structure.mjs: the cloud rejects each of these.
+  it('a schedule with frequency Hour → DSL046 error', () => {
     const d = only('DSL046')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Hour', interval: 1, schedule: { hours: [8], weekDays: ['Monday'] } })`));
-    assert.equal(d.length, 2);
-    assert.equal(d[0].severity, 'warning');
-    assert.match(d[0].message, /hours\/minutes only apply to frequency Day or Week/);
-    assert.match(d[1].message, /weekDays only applies to frequency Week/);
+    assert.equal(d.length, 1);
+    assert.equal(d[0].severity, 'error');
+    assert.match(d[0].message, /a schedule needs frequency Day, Week or Month/);
+  });
+
+  it('weekDays with Day and monthDays with Week → DSL046; hours with Month → nothing', () => {
+    const day = only('DSL046')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Day', interval: 1, schedule: { weekDays: ['Monday'] } })`));
+    assert.equal(day.length, 1);
+    assert.match(day[0].message, /weekDays needs frequency Week/);
+    const week = only('DSL046')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Week', interval: 1, schedule: { monthDays: [1] } })`));
+    assert.match(week[0].message, /monthDays needs frequency Month/);
+    assert.deepEqual(only('DSL046')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Month', interval: 1, schedule: { hours: [8] } })`)), []);
+  });
+
+  it('a schedule starting more than 18 months ahead → DSL045', () => {
+    const d = only('DSL045')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Week', interval: 1, startTime: '2060-01-01T00:00:00Z', schedule: { weekDays: ['Monday'] } })`));
+    assert.equal(d.length, 1);
+    assert.match(d[0].message, /within 18 months/);
+    assert.deepEqual(only('DSL045')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Week', interval: 1, startTime: '2060-01-01T00:00:00Z' })`)), []);
+  });
+
+  it('a start more than 49 years ahead → DSL045', () => {
+    const d = only('DSL045')(flowWith(body, `@RecurrenceTrigger({ frequency: 'Week', interval: 1, startTime: '2099-01-01T00:00:00Z' })`));
+    assert.equal(d.length, 1);
+    assert.match(d[0].message, /more than 49 years ahead/);
   });
 });

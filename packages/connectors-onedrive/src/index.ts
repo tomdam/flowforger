@@ -405,7 +405,7 @@ export class OneDriveConnector extends BaseHttpClient implements BaseConnector {
     const top = getParam<number>(p, ['top', '$top']);
 
     const queryParams: Record<string, string | number | boolean | undefined> = {};
-    if (top !== undefined) queryParams['$top'] = top;
+    if (top != null) queryParams['$top'] = top;
 
     return this.get(
       `/me/drive/items/${encodeURIComponent(id)}/search(q='${encodeURIComponent(query)}')`,

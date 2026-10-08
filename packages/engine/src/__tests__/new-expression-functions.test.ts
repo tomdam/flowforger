@@ -41,7 +41,7 @@ describe('Cat 1: type conversion / inspection', () => {
 
   it('isFloat detects floats vs ints', () => {
     assert.equal(evalExpression(`@isFloat('3.14')`, ctx), true);
-    assert.equal(evalExpression(`@isFloat('3')`, ctx), false);
+    assert.equal(evalExpression(`@isFloat('3')`, ctx), true); // anything float() parses, like the cloud
     assert.equal(evalExpression(`@isFloat('foo')`, ctx), false);
   });
 
@@ -76,10 +76,10 @@ describe('Cat 2: collection helpers', () => {
     assert.equal(evalExpression(`@slice('hello world', 0, 5)`, ctx), 'hello');
   });
 
-  it('slice on array', () => {
-    assert.deepEqual(
-      evalExpression(`@slice(createArray('a', 'b', 'c', 'd'), 1, 3)`, ctx),
-      ['b', 'c']
+  it('slice rejects arrays (strings only in the cloud)', () => {
+    assert.throws(
+      () => evalExpression(`@slice(createArray('a', 'b', 'c', 'd'), 1, 3)`, ctx),
+      /'slice' expects its first parameter to be of type string/
     );
   });
 
@@ -91,8 +91,8 @@ describe('Cat 2: collection helpers', () => {
     assert.deepEqual(evalExpression(`@reverse(createArray(1, 2, 3))`, ctx), [3, 2, 1]);
   });
 
-  it('reverse reverses a string', () => {
-    assert.equal(evalExpression(`@reverse('hello')`, ctx), 'olleh');
+  it('reverse rejects a string (arrays only in the cloud)', () => {
+    assert.throws(() => evalExpression(`@reverse('hello')`, ctx), /of type array/);
   });
 });
 
@@ -147,15 +147,15 @@ describe('Cat 4: date/time — components & boundaries', () => {
   });
 
   it('startOfDay zeros out time-of-day', () => {
-    assert.equal(evalExpression(`@startOfDay('2026-01-15T12:34:56Z')`, ctx), '2026-01-15T00:00:00.000Z');
+    assert.equal(evalExpression(`@startOfDay('2026-01-15T12:34:56Z')`, ctx), '2026-01-15T00:00:00.0000000Z');
   });
 
   it('startOfHour zeros out minutes/seconds', () => {
-    assert.equal(evalExpression(`@startOfHour('2026-01-15T12:34:56Z')`, ctx), '2026-01-15T12:00:00.000Z');
+    assert.equal(evalExpression(`@startOfHour('2026-01-15T12:34:56Z')`, ctx), '2026-01-15T12:00:00.0000000Z');
   });
 
   it('startOfMonth zeros out the month', () => {
-    assert.equal(evalExpression(`@startOfMonth('2026-01-15T12:34:56Z')`, ctx), '2026-01-01T00:00:00.000Z');
+    assert.equal(evalExpression(`@startOfMonth('2026-01-15T12:34:56Z')`, ctx), '2026-01-01T00:00:00.0000000Z');
   });
 });
 
@@ -163,26 +163,30 @@ describe('Cat 4: date/time — arithmetic', () => {
   const ctx = makeContext('2026-01-15T12:00:00Z');
 
   it('addToTime adds days/hours/minutes', () => {
-    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 3, 'Day')`, ctx), '2026-01-18T12:00:00.000Z');
-    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 5, 'Hour')`, ctx), '2026-01-15T17:00:00.000Z');
+    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 3, 'Day')`, ctx), '2026-01-18T12:00:00.0000000Z');
+    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 5, 'Hour')`, ctx), '2026-01-15T17:00:00.0000000Z');
   });
 
   it('subtractFromTime subtracts intervals', () => {
-    assert.equal(evalExpression(`@subtractFromTime('2026-01-15T12:00:00Z', 1, 'Day')`, ctx), '2026-01-14T12:00:00.000Z');
+    assert.equal(evalExpression(`@subtractFromTime('2026-01-15T12:00:00Z', 1, 'Day')`, ctx), '2026-01-14T12:00:00.0000000Z');
+  });
+
+  it('addToTime Month clamps to the end of the month', () => {
+    assert.equal(evalExpression(`@addToTime('2026-01-31T12:00:00Z', 1, 'Month')`, ctx), '2026-02-28T12:00:00.0000000Z');
   });
 
   it('addToTime supports Month and Year', () => {
-    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 2, 'Month')`, ctx), '2026-03-15T12:00:00.000Z');
-    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 1, 'Year')`, ctx), '2027-01-15T12:00:00.000Z');
+    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 2, 'Month')`, ctx), '2026-03-15T12:00:00.0000000Z');
+    assert.equal(evalExpression(`@addToTime('2026-01-15T12:00:00Z', 1, 'Year')`, ctx), '2027-01-15T12:00:00.0000000Z');
   });
 
   it('getFutureTime offsets ctx.now()', () => {
     // ctx.now() = 2026-01-15T12:00:00Z, +1 hour → 13:00
-    assert.equal(evalExpression(`@getFutureTime(1, 'Hour')`, ctx), '2026-01-15T13:00:00.000Z');
+    assert.equal(evalExpression(`@getFutureTime(1, 'Hour')`, ctx), '2026-01-15T13:00:00.0000000Z');
   });
 
   it('getPastTime offsets ctx.now() backwards', () => {
-    assert.equal(evalExpression(`@getPastTime(1, 'Day')`, ctx), '2026-01-14T12:00:00.000Z');
+    assert.equal(evalExpression(`@getPastTime(1, 'Day')`, ctx), '2026-01-14T12:00:00.0000000Z');
   });
 
   it('dateDifference under one day', () => {
@@ -207,14 +211,14 @@ describe('Cat 4: date/time — timezone conversion', () => {
     // 2026-06-15T12:00:00Z → New York DST = -4h → 08:00 local
     assert.equal(
       evalExpression(`@convertFromUtc('2026-06-15T12:00:00Z', 'America/New_York')`, ctx),
-      '2026-06-15T08:00:00'
+      '2026-06-15T08:00:00.0000000'
     );
   });
 
   it('convertFromUtc with Windows name', () => {
     assert.equal(
       evalExpression(`@convertFromUtc('2026-06-15T12:00:00Z', 'Eastern Standard Time')`, ctx),
-      '2026-06-15T08:00:00'
+      '2026-06-15T08:00:00.0000000'
     );
   });
 
@@ -222,7 +226,7 @@ describe('Cat 4: date/time — timezone conversion', () => {
     // Local 08:00 EDT → UTC 12:00
     assert.equal(
       evalExpression(`@convertToUtc('2026-06-15T08:00:00', 'America/New_York')`, ctx),
-      '2026-06-15T12:00:00.000Z'
+      '2026-06-15T12:00:00.0000000Z'
     );
   });
 
@@ -230,7 +234,7 @@ describe('Cat 4: date/time — timezone conversion', () => {
     // 2026-06-15T12:00:00 in Berlin (CEST = UTC+2) → 10:00 UTC → 19:00 Tokyo (UTC+9)
     assert.equal(
       evalExpression(`@convertTimeZone('2026-06-15T12:00:00', 'W. Europe Standard Time', 'Tokyo Standard Time')`, ctx),
-      '2026-06-15T19:00:00'
+      '2026-06-15T19:00:00.0000000'
     );
   });
 });

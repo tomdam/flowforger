@@ -12,3 +12,11 @@ export {
   type TemplateError,
 } from './parser.js';
 export { KNOWN_FUNCTIONS } from './functions-catalogue.js';
+export {
+  expressionSaveErrors,
+  expressionRuntimeErrors,
+  argumentCountMessage,
+  type ExpressionSaveError,
+  type ExpressionRuntimeError,
+} from './save-checks.js';
+export { FUNCTION_ARITY } from './arity.js';

@@ -7,6 +7,7 @@
 
 import type { BaseConnector, RunContext } from '@flowforger/engine';
 import { extractItemFields, HttpError, buildODataQuery, parseStringList } from '@flowforger/connectors-shared';
+import { readZipEntries } from './zip.js';
 
 export interface SharePointConnectorOptions {
   token: string; // SharePoint access token with resource https://tenant.sharepoint.com
@@ -52,7 +53,7 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   msg: 'application/vnd.ms-outlook',
   eml: 'message/rfc822',
-  zip: 'application/x-zip-compressed',
+  zip: 'application/zip', // measured (sp-folders.ff.ts BlobMetadata), unlike .NET's x-zip-compressed
   gz: 'application/x-gzip',
   '7z': 'application/x-7z-compressed',
   png: 'image/png',
@@ -129,6 +130,8 @@ const OPERATION_ALIASES: Record<string, string> = {
   CopyFolderAsync: 'CopyFolder',
   MoveFolderAsync: 'MoveFolder',
   UnshareItem: 'StopSharing', // Stop sharing (unshare a link)
+  DiscardFileCheckOut: 'DiscardCheckOut', // Discard check out
+  ExtractFolderV2: 'ExtractFolder', // Extract folder
 };
 
 type LogFunction = (entry: Record<string, unknown>) => void;
@@ -180,6 +183,128 @@ const FIELD_KIND_MAP: Record<string, { kind: ExpandableFieldKind; multi: boolean
   User: { kind: 'user', multi: false },
   UserMulti: { kind: 'user', multi: true },
 };
+
+/** The cloud names the paging link `@odata.nextLink` (JSON light's is `odata.nextLink`). */
+function withCloudNextLink<T extends object>(body: T): T {
+  const b = body as Record<string, unknown>;
+  if (!('odata.nextLink' in b)) return body;
+  const { 'odata.nextLink': next, ...rest } = b;
+  return { ...rest, '@odata.nextLink': next } as T;
+}
+
+/** Columns a `$select=*` item query leaves out that the cloud's synthetic `{...}` fields and `@odata.etag` derive from. */
+const ITEM_SYSTEM_SELECTS = ['FileRef', 'FileLeafRef', 'FileDirRef', 'FSObjType', 'owshiddenversion', 'ContentType/Id', 'ContentType/Name'];
+
+/** Library items only: what `{IsCheckedOut}`, `{DriveId}`, `{DriveItemId}` and a file's `{Link}` derive from. */
+const LIBRARY_SYSTEM_SELECTS = ['UniqueId', 'CheckoutUserId', 'OData__DisplayName', 'File/VroomDriveID', 'File/VroomItemID'];
+
+/** Office files, whose cloud `{Link}` opens them in the browser (`?d=w<UniqueId>`); verified for .csv. */
+const OFFICE_EXTENSIONS = new Set([
+  'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm', 'xls', 'xlsx', 'xlsm', 'xlsb', 'xlt', 'xltx', 'xltm', 'csv',
+  'ppt', 'pptx', 'pptm', 'pps', 'ppsx', 'ppsm', 'pot', 'potx', 'potm', 'odt', 'ods', 'odp',
+]);
+
+/** Raw REST item properties the cloud connector does not return. */
+const ITEM_DROP_KEYS = new Set([
+  'Id', 'ID', 'FileSystemObjectType', 'ServerRedirectedEmbedUri', 'ServerRedirectedEmbedUrl', 'ContentTypeId',
+  'OData__ColorTag', 'ComplianceAssetId', 'GUID', 'Attachments', 'OData__UIVersionString',
+  'FileRef', 'FileLeafRef', 'FileDirRef', 'FSObjType', 'owshiddenversion', 'ContentType',
+  'UniqueId', 'CheckoutUserId',
+]);
+
+const SP_TYPE = '#Microsoft.Azure.Connectors.SharePoint';
+
+/**
+ * Fold the designer's slashed field keys into objects: `{ 'Status/Value': 'Open' }` →
+ * `{ Status: { Value: 'Open' } }`. The `item/` prefix is already stripped by then.
+ */
+function nestSlashedKeys(fields: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const slash = key.indexOf('/');
+    if (slash < 0) {
+      out[key] = value;
+      continue;
+    }
+    const head = key.slice(0, slash);
+    const existing = out[head];
+    const target = existing && typeof existing === 'object' && !Array.isArray(existing) ? (existing as Record<string, unknown>) : {};
+    target[key.slice(slash + 1)] = value;
+    out[head] = target;
+  }
+  return out;
+}
+
+/**
+ * The cloud connector's file/folder identifier for a site-relative path: each segment with
+ * spaces as '+' and percent-encoded (lower-case hex), segments joined by an encoded '%2f'
+ * ("Lists/My Items/1_.000" → "Lists%252fMy%2bItems%252f1_.000"). A leading '/' yields a
+ * leading '%252f', as in blob metadata ids.
+ */
+function encodeFileIdentifier(path: string): string {
+  return path
+    .split('/')
+    .map((s) => encodeURIComponent(s.replace(/ /g, '+')).replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()))
+    .join('%252f');
+}
+
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(bytes: Uint8Array): string {
+  let bits = '';
+  for (const b of bytes) bits += b.toString(2).padStart(8, '0');
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5) out += BASE32[parseInt(bits.slice(i, i + 5).padEnd(5, '0'), 2)];
+  return out;
+}
+
+// Byte helpers use Uint8Array, not Buffer: the connector also runs in the browser.
+function base32Decode(text: string): Uint8Array {
+  let bits = '';
+  for (const ch of text) bits += BASE32.indexOf(ch).toString(2).padStart(5, '0');
+  const bytes: number[] = [];
+  for (let i = 0; i + 8 <= bits.length; i += 8) bytes.push(parseInt(bits.slice(i, i + 8), 2));
+  return Uint8Array.from(bytes);
+}
+
+/** A GUID's 16 bytes in .NET order (first three groups little-endian). */
+function dotNetGuidBytes(guid: string): Uint8Array {
+  const hex = guid.replace(/[{}-]/g, '');
+  const b = Uint8Array.from({ length: 16 }, (_, i) => parseInt(hex.slice(i * 2, i * 2 + 2), 16));
+  return Uint8Array.from([b[3], b[2], b[1], b[0], b[5], b[4], b[7], b[6], ...b.subarray(8)]);
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+/** UTF-8 → base64 (btoa exists in browsers and Node 16+). */
+function utf8Base64(text: string): string {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(text)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+/** A choice value as the designer sends it (`{ Value }` or plain text) → the text REST expects. */
+function choiceText(v: unknown): unknown {
+  return v && typeof v === 'object' && 'Value' in v ? (v as { Value: unknown }).Value : v;
+}
+
+/** `{ Value: null }`, `{ Id: null }`, `{ Claims: null }`: a designer sub-field whose expression found nothing. */
+function isAllNullObject(v: unknown): boolean {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const values = Object.values(v);
+  return values.length > 0 && values.every((x) => x === null || x === undefined);
+}
+
+/** A lookup value as the designer sends it (`{ Id }`, `{ Id: '2' }` or a number) → the numeric id. */
+function lookupId(v: unknown): unknown {
+  const raw = v && typeof v === 'object' && 'Id' in v ? (v as { Id: unknown }).Id : v;
+  return typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : raw;
+}
 
 // Cross-platform base64 decoder: returns a Uint8Array of the decoded bytes.
 // Node uses Buffer (fast); browsers use atob (Buffer does not exist there).
@@ -404,6 +529,53 @@ export class SharePointConnector implements BaseConnector {
     }
   }
 
+  /**
+   * A GetItems/GetFileItems continuation page (the engine follows these for a pagination
+   * policy). The link repeats the first query's $select/$expand; shaping uses the same refs.
+   */
+  async nextPage(operation: string, inputs: Record<string, unknown>, nextLink: string, ctx: RunContext): Promise<unknown> {
+    const op = OPERATION_ALIASES[operation] ?? operation;
+    const normalized = this.normalizeInputs(op, inputs);
+    const siteUrl = this.normalizeSiteUrl(normalized.siteUrl);
+    const listId = this.normalizeValue(normalized.listId);
+    const body = await this.spGet<{ value?: unknown[] }>(nextLink, ctx.log);
+    if (Array.isArray(body?.value)) {
+      const aug = await this.resolveRefExpansion(siteUrl, listId, normalized.select as string | undefined, normalized.expand as string | undefined, ctx);
+      await this.applyCloudShape(siteUrl, listId, body.value, ctx, aug.refNames);
+    }
+    return withCloudNextLink(body);
+  }
+
+  successStatusCode(operation: string): number {
+    const op = OPERATION_ALIASES[operation] ?? operation;
+    return op === 'PostItem' || op === 'CreateItem' ? 201 : 200;
+  }
+
+  /**
+   * The cloud reports SharePoint failures as `{ status, message }` rather than the REST
+   * `odata.error` object, and rewrites some of them (seen in conformance runs):
+   * a missing item → 404 "Item Not Found", a missing list → 404 "List not found",
+   * a query naming an unknown column → 400 (REST answers 500). The cloud also appends
+   * "\r\nclientRequestId: ...\r\nserviceRequestId: ..." to the message, which has no local equivalent.
+   */
+  errorOutputs(operation: string, err: unknown): { statusCode: number; body: unknown } | undefined {
+    const e = err as { status?: number; message?: string; response?: unknown };
+    if (typeof e.status !== 'number') return undefined;
+    // Add attachment fails like a passed-through REST call: { status, message, source, errors }.
+    const op = OPERATION_ALIASES[operation] ?? operation;
+    if (op === 'HttpRequest' || op === 'SendHttpRequest' || op === 'AddAttachment') return httpRequestErrorOutputs(e);
+    const odata = (e.response as { 'odata.error'?: { code?: string; message?: { value?: string } } } | undefined)?.['odata.error'];
+    let status = e.status;
+    let message = odata?.message?.value ?? e.message ?? '';
+    if (status === 404 && odata?.code?.startsWith('-2130575338,')) message = 'Item Not Found';
+    else if (status === 404 && /^List does not exist\b/.test(message)) message = 'List not found';
+    else if (status === 500 && /^Column '.*' does not exist\b/.test(message)) status = 400;
+    // Check in / discard of a file that is not checked out: SharePoint's 423 Locked becomes 400.
+    else if (status === 423 && (op === 'CheckInFile' || op === 'DiscardCheckOut' || op === 'CheckOutFile')) status = 400;
+    else if (status === 404 && op === 'GetAttachmentContent') message = 'File not found';
+    return { statusCode: status, body: { status, message } };
+  }
+
   // ============= Input Normalization =============
 
   private normalizeInputs(operation: string, inputs: Record<string, unknown>): Record<string, unknown> {
@@ -427,11 +599,17 @@ export class SharePointConnector implements BaseConnector {
       // but like the other item-addressed ops above, the cloud parameter is
       // 'id' and must land in itemId, not fileId.
       'StopSharing'];
-    if (inputs.id && !inputs.itemId && listItemOps.includes(operation)) {
+    // The cloud's check in/out operations address the file by its library item (`table` + `id`);
+    // without a table, `id` is a file identifier (the local form).
+    const checkOps = ['CheckOutFile', 'CheckInFile', 'DiscardCheckOut'];
+    if (inputs.id && !inputs.itemId && (listItemOps.includes(operation) || (checkOps.includes(operation) && inputs.table))) {
       normalized.itemId = inputs.id;
     } else if (inputs.id && !inputs.fileId) {
       normalized.fileId = inputs.id;
     }
+    if (inputs['parameter/comment'] != null) normalized.comment = inputs['parameter/comment'];
+    if (inputs['parameter/checkinType'] != null) normalized.checkInType = inputs['parameter/checkinType'];
+    if (operation === 'AddAttachment' && inputs.displayName && !inputs.fileName) normalized.fileName = inputs.displayName;
     if (inputs['parameters/folderPath']) normalized.folderPath = inputs['parameters/folderPath'];
     if (inputs['parameters/name']) normalized.fileName = inputs['parameters/name'];
     if (inputs.name && !inputs.fileName) normalized.fileName = inputs.name;
@@ -453,7 +631,7 @@ export class SharePointConnector implements BaseConnector {
       if (inputs['parameters/$top']) normalized.top = inputs['parameters/$top'];
       if (inputs['parameters/$skip']) normalized.skip = inputs['parameters/$skip'];
       if (inputs['parameters/folderPath']) normalized.folderPath = inputs['parameters/folderPath'];
-      if (inputs['parameters/includeNestedItems'] !== undefined) normalized.includeNestedItems = inputs['parameters/includeNestedItems'];
+      if (inputs['parameters/includeNestedItems'] != null) normalized.includeNestedItems = inputs['parameters/includeNestedItems'];
     }
 
     // For create/update operations, transform item/* to fields object.
@@ -480,12 +658,13 @@ export class SharePointConnector implements BaseConnector {
       if (inputs['parameters/body']) normalized.body = inputs['parameters/body'];
     }
 
-    // For CopyFile / MoveFile
-    if (operation === 'CopyFile' || operation === 'MoveFile') {
+    // For CopyFile / MoveFile / CopyFolder / MoveFolder
+    if (['CopyFile', 'MoveFile', 'CopyFolder', 'MoveFolder'].includes(operation)) {
       if (inputs['parameters/sourceFileId']) normalized.fileId = inputs['parameters/sourceFileId'];
+      if (inputs['parameters/sourceFolderId']) normalized.folderId = inputs['parameters/sourceFolderId'];
       if (inputs['parameters/destinationDataset']) normalized.destSiteUrl = inputs['parameters/destinationDataset'];
       if (inputs['parameters/destinationFolderPath']) normalized.destFolderPath = inputs['parameters/destinationFolderPath'];
-      if (inputs['parameters/nameConflictBehavior'] !== undefined) normalized.nameConflictBehavior = inputs['parameters/nameConflictBehavior'];
+      if (inputs['parameters/nameConflictBehavior'] != null) normalized.nameConflictBehavior = inputs['parameters/nameConflictBehavior'];
     }
 
     return normalized;
@@ -585,6 +764,54 @@ export class SharePointConnector implements BaseConnector {
     return `GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`;
   }
 
+  /** Like fileResource, for folders (ListFolder, GetFolderMetadata). */
+  private folderResource(siteUrl: string, folderId: string): string {
+    if (/^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i.test(folderId)) {
+      return `GetFolderById('${folderId.replace(/[{}]/g, '')}')`;
+    }
+    const serverRelativePath = this.toServerRelativePath(siteUrl, this.decodeFileIdentifier(folderId));
+    return `GetFolderByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`;
+  }
+
+  /** The REST properties blob metadata is built from, for a file or folder resource. */
+  private async fetchBlobSource(siteUrl: string, resource: string, isFolder: boolean, ctx: RunContext): Promise<Record<string, unknown>> {
+    const select = isFolder
+      ? 'Name,ServerRelativeUrl,TimeLastModified,ListItemAllFields/Id'
+      : 'Name,ServerRelativeUrl,TimeLastModified,Length,ETag,ListItemAllFields/Id';
+    return this.spGet(`${siteUrl}/_api/web/${resource}?$select=${select}&$expand=ListItemAllFields`, ctx.log);
+  }
+
+  /**
+   * The cloud connector's BlobMetadata for a file or folder (what GetFileMetadata,
+   * GetFolderMetadata, ListFolder, CreateFile and UpdateFile return):
+   * { ItemId, Id, Name, DisplayName, Path, LastModified, Size, MediaType, IsFolder, ETag, FileLocator }
+   * with Id the identifier of the site-relative Path; folders have no MediaType/ETag/FileLocator.
+   */
+  private toBlobMetadata(siteUrl: string, raw: Record<string, unknown>, isFolder: boolean, itemId?: number): Record<string, unknown> {
+    const sitePath = new URL(siteUrl).pathname.replace(/\/+$/, '');
+    const serverRelative = String(raw.ServerRelativeUrl ?? '');
+    const path = sitePath && serverRelative.startsWith(`${sitePath}/`) ? serverRelative.slice(sitePath.length) : serverRelative;
+    const id = encodeFileIdentifier(path);
+    const name = String(raw.Name ?? path.split('/').pop() ?? '');
+    const listItem = raw.ListItemAllFields as { Id?: number; ID?: number } | undefined;
+    const out: Record<string, unknown> = {
+      ItemId: itemId ?? listItem?.Id ?? listItem?.ID ?? 0,
+      Id: id,
+      Name: name,
+      DisplayName: name,
+      Path: path,
+      LastModified: raw.TimeLastModified,
+      Size: isFolder ? 0 : Number(raw.Length ?? 0),
+    };
+    if (!isFolder) out.MediaType = inferFileContentType(name);
+    out.IsFolder = isFolder;
+    if (!isFolder) {
+      out.ETag = raw.ETag;
+      out.FileLocator = `dataset=${utf8Base64(siteUrl)},id=${utf8Base64(id)}`;
+    }
+    return out;
+  }
+
   /**
    * Decode a Power Automate SharePoint file identifier into a plain path.
    * The cloud connector encodes the path twice and represents spaces as `+`
@@ -647,7 +874,7 @@ export class SharePointConnector implements BaseConnector {
     const cached = this.fieldMetadataCache.get(cacheKey);
     if (cached) return cached;
 
-    const typeFilter = Object.keys(FIELD_KIND_MAP).map((t) => `TypeAsString eq '${t}'`).join(' or ');
+    const typeFilter = [...Object.keys(FIELD_KIND_MAP), 'DateTime', 'URL'].map((t) => `TypeAsString eq '${t}'`).join(' or ');
     const filter = encodeURIComponent(`(${typeFilter}) and Hidden eq false`);
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/fields?$filter=${filter}`;
     const data = await this.spGet<{ value?: Array<Record<string, unknown>> }>(url, log);
@@ -658,7 +885,13 @@ export class SharePointConnector implements BaseConnector {
     }
 
     const fields: ExpandableFieldInfo[] = [];
+    const scalar = { dateOnly: new Set<string>(), url: new Set<string>() };
     for (const f of data.value ?? []) {
+      if (typeof f.InternalName === 'string') {
+        // DisplayFormat 0 = "Date Only" (the cloud returns those as a yyyy-MM-dd site-local date)
+        if (f.TypeAsString === 'DateTime' && (f.DisplayFormat === 0 || f.DisplayFormat === 'DateOnly')) scalar.dateOnly.add(f.InternalName);
+        if (f.TypeAsString === 'URL') scalar.url.add(f.InternalName);
+      }
       const mapping = FIELD_KIND_MAP[String(f.TypeAsString)];
       if (!mapping || typeof f.InternalName !== 'string') continue;
       let primaryName: string | undefined;
@@ -681,7 +914,29 @@ export class SharePointConnector implements BaseConnector {
       });
     }
     this.fieldMetadataCache.set(cacheKey, fields);
+    this.scalarFieldCache.set(cacheKey, scalar);
     return fields;
+  }
+
+  /** Date-only and hyperlink columns of a list (filled by getExpandableFields' metadata fetch). */
+  private scalarFieldCache = new Map<string, { dateOnly: Set<string>; url: Set<string> }>();
+
+  private libraryCache = new Map<string, boolean>();
+
+  /** Whether the list is a document library (BaseType 1); cached, false when it cannot be read. */
+  private async isLibrary(siteUrl: string, listId: string, log?: LogFunction): Promise<boolean> {
+    const key = `${siteUrl}|${listId}`;
+    const cached = this.libraryCache.get(key);
+    if (cached !== undefined) return cached;
+    let library = false;
+    try {
+      const data = await this.spGet<{ BaseType?: number }>(`${siteUrl}/_api/web/lists(guid'${listId}')?$select=BaseType`, log);
+      library = data?.BaseType === 1;
+    } catch {
+      // unknown: treat as a list
+    }
+    this.libraryCache.set(key, library);
+    return library;
   }
 
   /**
@@ -713,9 +968,11 @@ export class SharePointConnector implements BaseConnector {
       const selected = new Set(userSelect.split(',').map((s) => s.trim().split('/')[0]));
       refFields = refFields.filter((f) => selected.has(f.internalName));
     }
-    if (refFields.length === 0) return passthrough;
+    // With no $select of the caller's, the query still needs the system columns the
+    // cloud's {Identifier}/{Path}/... fields are derived from, refs or not.
+    if (refFields.length === 0 && userSelect) return passthrough;
 
-    return this.buildRefQuery(refFields, userSelect, userExpand);
+    return this.buildRefQuery(refFields, userSelect, userExpand, await this.isLibrary(siteUrl, listId, ctx.log));
   }
 
   /** The nav property a ref field is materialized through (its own name, or the primary lookup's for dependent columns). */
@@ -735,11 +992,14 @@ export class SharePointConnector implements BaseConnector {
     refFields: ExpandableFieldInfo[],
     userSelect: string | undefined,
     userExpand: string | undefined,
+    library = false,
   ): { select: string; expand: string; augmented: true; refNames: string[] } {
     const userExpandParts = userExpand ? userExpand.split(',').map((s) => s.trim()) : [];
     // With no user $select, '*' covers scalar fields but not expanded
     // navigations — keep the user's own expansions selected as whole entities.
-    const selectParts = userSelect ? [userSelect] : ['*', ...userExpandParts];
+    const selectParts = userSelect
+      ? [userSelect]
+      : ['*', ...userExpandParts, ...ITEM_SYSTEM_SELECTS, ...(library ? LIBRARY_SYSTEM_SELECTS : [])];
     const expandParts = [...userExpandParts];
     for (const f of refFields) {
       const nav = this.refFieldNav(f);
@@ -747,6 +1007,10 @@ export class SharePointConnector implements BaseConnector {
       for (const s of this.refFieldSelects(f)) {
         if (!selectParts.includes(s)) selectParts.push(s);
       }
+    }
+    if (!userSelect) {
+      expandParts.push('ContentType');
+      if (library && !expandParts.includes('File')) expandParts.push('File');
     }
     return {
       select: selectParts.join(','),
@@ -836,7 +1100,7 @@ export class SharePointConnector implements BaseConnector {
       refFields = refFields.filter((f) => selected.has(f.internalName));
     }
     if (refFields.length === 0) return null;
-    return this.buildRefQuery(refFields, userSelect, userExpand);
+    return this.buildRefQuery(refFields, userSelect, userExpand, await this.isLibrary(siteUrl, listId, ctx.log));
   }
 
   private toExpandedReference(id: number, value: string | null): SPListExpandedReference {
@@ -854,7 +1118,8 @@ export class SharePointConnector implements BaseConnector {
       Claims: typeof o.Name === 'string' ? o.Name : null,
       DisplayName: typeof o.Title === 'string' ? o.Title : null,
       Email: email,
-      Picture: email ? `${siteUrl}/_layouts/15/UserPhoto.aspx?Size=L&AccountName=${encodeURIComponent(email)}` : null,
+      // The cloud leaves the address unencoded (AccountName=user@contoso.com).
+      Picture: email ? `${siteUrl}/_layouts/15/UserPhoto.aspx?Size=L&AccountName=${email}` : null,
       Department: null,
       JobTitle: null,
     };
@@ -928,15 +1193,252 @@ export class SharePointConnector implements BaseConnector {
     try {
       const allFields = await this.getExpandableFields(siteUrl, listId, ctx.log);
       const fields = allFields.filter((f) => f.kind === 'choice' || refNames.includes(f.internalName));
-      if (fields.length === 0) return;
-      for (const item of items) {
-        if (item && typeof item === 'object') {
-          this.expandItemFieldValues(siteUrl, item as Record<string, unknown>, fields);
+      const scalar = this.scalarFieldCache.get(`${siteUrl}|${listId}`) ?? { dateOnly: new Set<string>(), url: new Set<string>() };
+      const library = await this.isLibrary(siteUrl, listId, ctx.log);
+      if (library) {
+        // Learn the drive ids from the files first: a folder listed before any file needs them too.
+        for (const item of items) {
+          const file = (item as { File?: { VroomDriveID?: unknown; VroomItemID?: unknown } } | null)?.File;
+          if (file) this.driveIds(siteUrl, listId, file, undefined);
         }
+        await this.learnDriveInfo(siteUrl, listId, ctx);
+      }
+      for (const item of items) {
+        if (!item || typeof item !== 'object') continue;
+        const o = item as Record<string, unknown>;
+        this.expandItemFieldValues(siteUrl, o, fields);
+        const shaped = await this.toCloudItem(siteUrl, listId, o, fields, scalar, library, ctx);
+        // In place: callers hold references to these objects.
+        for (const k of Object.keys(o)) delete o[k];
+        Object.assign(o, shaped);
       }
     } catch (err) {
       ctx.log?.({ type: 'sp.cloud-shape-skipped', error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Lay an (already ref-wrapped) REST item out the way the cloud connector returns it:
+   * `@odata.etag`, `ItemInternalId` and `ID` first; each ref column followed by its
+   * `#Id`/`#Claims` sibling(s) and, when multi-valued, `@odata.type` annotations; empty
+   * multi-value columns as `[]`; null columns omitted; date-only columns as the site-local
+   * date; hyperlinks as their URL; then the synthetic `{Identifier}`, `{Path}`, ... fields.
+   * An expanded ref column takes the position of its raw `<Field>Id` key, which is where
+   * the cloud puts it (e.g. Author/Editor right after Created).
+   */
+  private async toCloudItem(
+    siteUrl: string,
+    listId: string,
+    item: Record<string, unknown>,
+    fields: ExpandableFieldInfo[],
+    scalar: { dateOnly: Set<string>; url: Set<string> },
+    library: boolean,
+    ctx: RunContext,
+  ): Promise<Record<string, unknown>> {
+    const byName = new Map(fields.filter((f) => !f.primaryName).map((f) => [f.internalName, f]));
+    // Ref columns in `fields` were expanded by the query (an empty multi-value one comes back
+    // with no key at all); their raw <Field>Id / <Field>StringId keys are dropped.
+    const idKeyToField = new Map<string, ExpandableFieldInfo>();
+    for (const f of byName.values()) {
+      if (f.kind !== 'choice') idKeyToField.set(`${f.internalName}Id`, f);
+    }
+    const out: Record<string, unknown> = {};
+    const emitted = new Set<string>();
+
+    const id = item.ID ?? item.Id;
+    if (item.owshiddenversion != null) out['@odata.etag'] = `"${item.owshiddenversion}"`;
+    if (id != null) {
+      out.ItemInternalId = String(id);
+      out.ID = id;
+    }
+
+    const emit = async (name: string, value: unknown) => {
+      emitted.add(name);
+      const f = byName.get(name);
+      if (f?.multi) {
+        const arr = Array.isArray(value) ? value : [];
+        out[name] = arr;
+        if (f.kind === 'user') {
+          out[`${name}@odata.type`] = `#Collection(${SP_TYPE.slice(1)}.SPListExpandedUser)`;
+          out[`${name}#Claims`] = arr.map((u) => (u as SPListExpandedUser)?.Claims ?? null);
+          out[`${name}#Claims@odata.type`] = '#Collection(String)';
+        } else {
+          out[`${name}@odata.type`] = `#Collection(${SP_TYPE.slice(1)}.SPListExpandedReference)`;
+          out[`${name}#Id`] = arr.map((r) => (r as SPListExpandedReference)?.Id ?? null);
+          out[`${name}#Id@odata.type`] = '#Collection(Int64)';
+        }
+        return;
+      }
+      if (value === null || value === undefined) return;
+      if (f && typeof value === 'object') {
+        out[name] = value;
+        if (f.kind === 'user') out[`${name}#Claims`] = (value as SPListExpandedUser).Claims;
+        else out[`${name}#Id`] = (value as SPListExpandedReference).Id;
+        return;
+      }
+      if (scalar.dateOnly.has(name) && typeof value === 'string') {
+        out[name] = await this.siteLocalDate(siteUrl, value, ctx);
+        return;
+      }
+      if (scalar.url.has(name) && typeof value === 'object') {
+        out[name] = (value as { Url?: unknown }).Url ?? null;
+        return;
+      }
+      out[name] = value;
+    };
+
+    for (const [key, value] of Object.entries(item)) {
+      // Before the drop list: CheckoutUserId is dropped, but places CheckoutUser (a checked-out file's).
+      const ref = idKeyToField.get(key);
+      if (ref) {
+        if (!emitted.has(ref.internalName)) await emit(ref.internalName, item[ref.internalName]);
+        continue;
+      }
+      // A library's File was expanded by the connector only for the drive ids.
+      if (ITEM_DROP_KEYS.has(key) || key.startsWith('odata.') || emitted.has(key) || (library && key === 'File')) continue;
+      if (key.endsWith('StringId') && idKeyToField.has(key.replace(/StringId$/, 'Id'))) continue;
+      // An expanded ref whose <Field>Id key comes later is emitted there.
+      if (byName.get(key)?.kind !== 'choice' && byName.has(key) && `${key}Id` in item) continue;
+      await emit(key, value);
+    }
+    for (const f of byName.values()) {
+      if (f.multi && !emitted.has(f.internalName)) {
+        await emit(f.internalName, []);
+      }
+    }
+
+    Object.assign(out, this.syntheticItemFields(siteUrl, listId, item, id, library));
+    return out;
+  }
+
+  /** The cloud connector's `{Identifier}`, `{Link}`, `{Path}`, ... fields, when the system columns were queried. */
+  private syntheticItemFields(
+    siteUrl: string,
+    listId: string,
+    item: Record<string, unknown>,
+    id: unknown,
+    library: boolean,
+  ): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    const fileRef = item.FileRef;
+    const leaf = typeof item.FileLeafRef === 'string' ? item.FileLeafRef : '';
+    if (typeof fileRef === 'string') {
+      const site = new URL(siteUrl);
+      const sitePath = site.pathname.replace(/\/+$/, '');
+      const rel = (p: string) => (p.startsWith(`${sitePath}/`) ? p.slice(sitePath.length + 1) : p.replace(/^\//, ''));
+      const fullPath = rel(fileRef);
+      const isFolder = String(item.FSObjType) === '1';
+      const isListItem = /^\d+_\.000$/.test(leaf);
+      const ct = item.ContentType as { Id?: unknown; Name?: unknown } | undefined;
+      const ctId = typeof ct?.Id === 'object' && ct.Id ? (ct.Id as { StringValue?: unknown }).StringValue : ct?.Id;
+      const title = (item.Title as string | null | undefined) ?? null;
+      const baseName = isFolder ? leaf : leaf.replace(/\.[^.]*$/, '');
+      // Each path segment: spaces → '+', percent-encoded (lower-case hex), segments joined by an encoded '%2f'.
+      const uniqueId = typeof item.UniqueId === 'string' ? item.UniqueId : undefined;
+      const extension = leaf.includes('.') ? (leaf.split('.').pop() ?? '').toLowerCase() : '';
+      out['{Identifier}'] = encodeFileIdentifier(fullPath);
+      out['{IsFolder}'] = isFolder;
+      if (library) out['{Thumbnail}'] = { Full: null, Large: null, Medium: null, Small: null };
+      out['{Link}'] = isListItem
+        ? `${siteUrl}/_layouts/15/listform.aspx?PageType=4&ListId=${listId.replace(/[{}]/g, '').toLowerCase().replace(/-/g, '%2D')}&ID=${id}` +
+          (ctId ? `&ContentTypeID=${ctId}` : '')
+        : `${site.origin}${encodeURI(fileRef)}` +
+          (!isFolder && uniqueId && OFFICE_EXTENSIONS.has(extension) ? `?d=w${uniqueId.replace(/[{}-]/g, '').toLowerCase()}` : '');
+      out['{Name}'] = isListItem ? title : baseName;
+      out['{FilenameWithExtension}'] = isListItem ? title : leaf;
+      out['{Path}'] = typeof item.FileDirRef === 'string' ? `${rel(item.FileDirRef)}/` : null;
+      out['{FullPath}'] = fullPath;
+      if (ct && ctId) {
+        out['{ContentType}'] = { '@odata.type': `${SP_TYPE}.SPListExpandedContentType`, Id: ctId, Name: ct.Name ?? null };
+        out['{ContentType}#Id'] = ctId;
+      }
+      if (library) {
+        if ('CheckoutUserId' in item) out['{IsCheckedOut}'] = item.CheckoutUserId != null;
+        const drive = this.driveIds(siteUrl, listId, item.File as { VroomDriveID?: unknown; VroomItemID?: unknown } | undefined, uniqueId);
+        if (drive.driveId) out['{DriveId}'] = drive.driveId;
+        if (drive.driveItemId) out['{DriveItemId}'] = drive.driveItemId;
+      }
+    }
+    if (typeof item.Attachments === 'boolean') out['{HasAttachments}'] = item.Attachments;
+    if (typeof item.OData__UIVersionString === 'string') out['{VersionNumber}'] = item.OData__UIVersionString;
+    return out;
+  }
+
+  /** Per library: its drive id and the 4-byte prefix of its drive item ids (both learned from files). */
+  private driveInfo = new Map<string, { driveId?: string; itemPrefix?: Uint8Array }>();
+  /** Libraries whose drive ids were already asked of the v2.0 API (asked once, even when it fails). */
+  private driveInfoAsked = new Set<string>();
+
+  /**
+   * When no file has taught a library's drive ids yet (e.g. only folders so far), ask SharePoint's
+   * own v2.0 (Graph-shaped) API with the same token: the library's drive id, and the drive item id
+   * prefix from its root folder's id.
+   */
+  private async learnDriveInfo(siteUrl: string, listId: string, ctx: RunContext): Promise<void> {
+    const key = `${siteUrl}|${listId}`;
+    const info = this.driveInfo.get(key) ?? {};
+    if ((info.driveId && info.itemPrefix) || this.driveInfoAsked.has(key)) return;
+    this.driveInfoAsked.add(key);
+    try {
+      const drive = `${siteUrl}/_api/v2.0/sites/root/lists/${listId.replace(/[{}]/g, '')}/drive`;
+      const [d, root] = await Promise.all([
+        this.spGet<{ id?: unknown }>(`${drive}?$select=id`, ctx.log),
+        this.spGet<{ id?: unknown }>(`${drive}/root?$select=id`, ctx.log),
+      ]);
+      if (!info.driveId && typeof d?.id === 'string') info.driveId = d.id;
+      if (!info.itemPrefix && typeof root?.id === 'string' && root.id.startsWith('01')) {
+        info.itemPrefix = base32Decode(root.id.slice(2)).subarray(0, 4);
+      }
+      this.driveInfo.set(key, info);
+    } catch (err) {
+      ctx.log?.({ type: 'sp.drive-info-skipped', error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * The cloud's `{DriveId}`/`{DriveItemId}` (Microsoft Graph ids). A file carries both
+   * (File/VroomDriveID, File/VroomItemID); a folder has no File, so its ids are rebuilt from
+   * what the library's files taught: the drive id is shared, and a drive item id is
+   * "01" + base32(4-byte drive prefix + the item's UniqueId in .NET byte order).
+   */
+  private driveIds(
+    siteUrl: string,
+    listId: string,
+    file: { VroomDriveID?: unknown; VroomItemID?: unknown } | undefined,
+    uniqueId: string | undefined,
+  ): { driveId?: string; driveItemId?: string } {
+    const key = `${siteUrl}|${listId}`;
+    const info = this.driveInfo.get(key) ?? {};
+    if (typeof file?.VroomDriveID === 'string') info.driveId = file.VroomDriveID;
+    if (typeof file?.VroomItemID === 'string' && file.VroomItemID.startsWith('01')) {
+      info.itemPrefix = base32Decode(file.VroomItemID.slice(2)).subarray(0, 4);
+    }
+    this.driveInfo.set(key, info);
+    if (typeof file?.VroomItemID === 'string') return { driveId: info.driveId, driveItemId: file.VroomItemID };
+    const driveItemId =
+      info.itemPrefix && uniqueId ? `01${base32Encode(concatBytes(info.itemPrefix, dotNetGuidBytes(uniqueId)))}` : undefined;
+    return { driveId: info.driveId, driveItemId };
+  }
+
+  private siteLocalDates = new Map<string, string>();
+
+  /** A date-only column's stored UTC instant → the site-local calendar date (yyyy-MM-dd), as the cloud returns it. */
+  private async siteLocalDate(siteUrl: string, utc: string, ctx: RunContext): Promise<string> {
+    const key = `${siteUrl}|${utc}`;
+    const cached = this.siteLocalDates.get(key);
+    if (cached) return cached;
+    let local = utc.slice(0, 10);
+    try {
+      const res = await this.spGet<{ value?: string }>(
+        `${siteUrl}/_api/web/RegionalSettings/TimeZone/utcToLocalTime(@date)?@date='${encodeURIComponent(utc)}'`,
+        ctx.log,
+      );
+      if (typeof res?.value === 'string') local = res.value.slice(0, 10);
+    } catch (err) {
+      ctx.log?.({ type: 'sp.local-date-skipped', error: err instanceof Error ? err.message : String(err) });
+    }
+    this.siteLocalDates.set(key, local);
+    return local;
   }
 
   // ============= List Item Operations =============
@@ -949,6 +1451,7 @@ export class SharePointConnector implements BaseConnector {
     const baseQuery = {
       filter: inputs.filter as string,
       top: inputs.top as number,
+      skip: inputs.skip as number | undefined,
       orderby: inputs.orderby as string,
       select: inputs.select as string | undefined,
       expand: inputs.expand as string | undefined,
@@ -987,7 +1490,7 @@ export class SharePointConnector implements BaseConnector {
     if (Array.isArray(body.value)) {
       await this.applyCloudShape(siteUrl, listId, body.value, ctx, refNames);
     }
-    return body;
+    return withCloudNextLink(body);
   }
 
   private async getItemById(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1037,6 +1540,8 @@ export class SharePointConnector implements BaseConnector {
     return item;
   }
 
+  // Like the cloud connector, create and update answer with the item as GetItem would
+  // return it (cloud shape), not the raw REST response.
   private async createItem(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
@@ -1047,13 +1552,14 @@ export class SharePointConnector implements BaseConnector {
     }
 
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items`;
-
-    return this.spPost(url, ctx.log, {
-      body: fields,
+    const created = await this.spPost<Record<string, unknown>>(url, ctx.log, {
+      body: await this.toRestFields(siteUrl, listId, fields, ctx),
     });
+    const id = created?.Id ?? created?.ID;
+    return id === undefined ? created : this.getSingleItemCloudShape(siteUrl, listId, String(id), ctx);
   }
 
-  private async updateItem(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  private async updateItem(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
     const itemId = this.normalizeValue(inputs.itemId);
@@ -1066,14 +1572,86 @@ export class SharePointConnector implements BaseConnector {
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})`;
 
     await this.spPost(url, ctx.log, {
-      body: fields,
+      body: await this.toRestFields(siteUrl, listId, fields, ctx),
       headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*' },
     });
 
-    return { ok: true, status: 204 };
+    return this.getSingleItemCloudShape(siteUrl, listId, itemId, ctx);
   }
 
-  private async deleteItem(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  private ensuredUsers = new Map<string, number>();
+
+  /** SharePoint user id for a claims string / login / email, via web/ensureuser (cached per site). */
+  private async ensureUserId(siteUrl: string, logonName: string, ctx: RunContext): Promise<number> {
+    const key = `${siteUrl}|${logonName.toLowerCase()}`;
+    const cached = this.ensuredUsers.get(key);
+    if (cached !== undefined) return cached;
+    const user = await this.spPost<{ Id: number }>(`${siteUrl}/_api/web/ensureuser`, ctx.log, { body: { logonName } });
+    this.ensuredUsers.set(key, user.Id);
+    return user.Id;
+  }
+
+  /**
+   * Translate cloud-connector field values (what the Power Automate designer emits for
+   * PostItem/PatchItem) into a SharePoint REST item body:
+   *   item/Status/Value: 'Open'        → Status: 'Open'
+   *   item/Tags: [{ Value: 'Red' }]    → Tags: ['Red']
+   *   item/Category/Id: 2              → CategoryId: 2
+   *   item/Owner/Claims: 'i:0#.f|...'  → OwnerId: <ensureuser id>
+   *   item/Reviewers: [{ Claims }]     → ReviewersId: [ids]
+   * Field kinds come from the list's (cached) field metadata. Values already in REST form
+   * pass through, as do fields the metadata does not describe.
+   */
+  private async toRestFields(
+    siteUrl: string,
+    listId: string,
+    fields: Record<string, unknown>,
+    ctx: RunContext,
+  ): Promise<Record<string, unknown>> {
+    const nested = nestSlashedKeys(fields);
+    let meta: ExpandableFieldInfo[] = [];
+    try {
+      meta = await this.getExpandableFields(siteUrl, listId, ctx.log);
+    } catch (err) {
+      ctx.log?.({ type: 'sp.field-metadata-skipped', error: err instanceof Error ? err.message : String(err) });
+    }
+    const byName = new Map(meta.map((f) => [f.internalName, f]));
+
+    const out: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(nested)) {
+      const field = byName.get(name);
+      if (!field || field.primaryName) {
+        out[name] = value;
+        continue;
+      }
+      // `item/Status/Value`, `item/Category/Id` or `item/Owner/Claims` set to null leaves the
+      // field unchanged in the cloud (a plain column set to null is cleared, above).
+      if (isAllNullObject(value)) continue;
+      const values = field.multi ? (Array.isArray(value) ? value : value == null ? [] : [value]) : undefined;
+
+      if (field.kind === 'choice') {
+        out[name] = values ? values.map(choiceText) : choiceText(value);
+      } else if (field.kind === 'lookup') {
+        out[`${name}Id`] = values ? values.map(lookupId) : value == null ? null : lookupId(value);
+      } else {
+        const toId = (v: unknown) => this.userId(siteUrl, v, ctx);
+        out[`${name}Id`] = values ? await Promise.all(values.map(toId)) : value == null ? null : await toId(value);
+      }
+    }
+    return out;
+  }
+
+  private async userId(siteUrl: string, v: unknown, ctx: RunContext): Promise<unknown> {
+    if (typeof v === 'number') return v;
+    const o = v && typeof v === 'object' ? (v as Record<string, unknown>) : undefined;
+    if (o && typeof o.Id === 'number') return o.Id;
+    const logon = o ? (o.Claims ?? o.Email ?? o.EMail) : v;
+    if (typeof logon !== 'string' || !logon) return null;
+    return this.ensureUserId(siteUrl, logon, ctx);
+  }
+
+  // The cloud's DeleteItem has no body.
+  private async deleteItem(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
     const itemId = this.normalizeValue(inputs.itemId);
@@ -1084,68 +1662,119 @@ export class SharePointConnector implements BaseConnector {
     await this.spPost(url, ctx.log, {
       headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' },
     });
-
-    return { ok: true, status: 204 };
+    return undefined;
   }
 
   // ============= Folder Operations =============
 
+  /** Create every missing folder along a server-relative path below the site (the library root must exist). */
+  private async ensureFolderPath(siteUrl: string, serverRelativePath: string, ctx: RunContext): Promise<void> {
+    if (await this.pathExists(siteUrl, serverRelativePath, 'Folder', ctx)) return;
+    const sitePath = new URL(siteUrl).pathname.replace(/\/+$/, '');
+    const below = serverRelativePath.startsWith(`${sitePath}/`) ? serverRelativePath.slice(sitePath.length) : serverRelativePath;
+    let current = sitePath;
+    for (const segment of below.split('/').filter(Boolean)) {
+      current = `${current}/${segment}`;
+      if (await this.pathExists(siteUrl, current, 'Folder', ctx)) continue;
+      await this.spPost(`${siteUrl}/_api/web/folders/add('${this.encodeSharePointPath(current).replace(/'/g, "''")}')`, ctx.log);
+    }
+  }
+
+  /**
+   * Create new folder: `path` is relative to the library root and may name several levels
+   * ("A/B/C"), which are all created. Answers with the folder's library item in the GetFileItem
+   * shape, as the cloud does.
+   */
   private async createFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
-    const folderPath = String(inputs.folderPath);
+    const folderPath = inputs.folderPath == null ? '' : String(inputs.folderPath).replace(/^\/+|\/+$/g, '');
 
     if (!siteUrl || !listId || !folderPath) {
       throw new Error(`createFolder requires siteUrl, listId and folderPath`);
     }
 
-    // Get root folder URL
     const listInfoUrl = `${siteUrl}/_api/web/lists(guid'${listId}')?$select=RootFolder/ServerRelativeUrl&$expand=RootFolder`;
     const listInfo = await this.spGet<{ RootFolder: { ServerRelativeUrl: string } }>(listInfoUrl, ctx.log);
-    const rootFolderUrl = listInfo.RootFolder.ServerRelativeUrl;
+    // Each missing level is created as a folder item whose Title is its name, in one call (the
+    // cloud's folders have that Title, still at version 1).
+    let fullPath = listInfo.RootFolder.ServerRelativeUrl;
+    for (const name of folderPath.split('/').filter(Boolean)) {
+      const parent = fullPath;
+      fullPath = `${parent}/${name}`;
+      if (await this.pathExists(siteUrl, fullPath, 'Folder', ctx)) continue;
+      const created = await this.spPost<{ value?: Array<{ HasException?: boolean; ErrorMessage?: string }> }>(
+        `${siteUrl}/_api/web/lists(guid'${listId}')/AddValidateUpdateItemUsingPath`,
+        ctx.log,
+        {
+          body: {
+            listItemCreateInfo: { FolderPath: { DecodedUrl: parent }, UnderlyingObjectType: 1, LeafName: { DecodedUrl: name } },
+            formValues: [{ FieldName: 'Title', FieldValue: name }],
+            bNewDocumentUpdate: false,
+          },
+        },
+      );
+      const failed = created.value?.find((v) => v.HasException);
+      if (failed) throw new HttpError(failed.ErrorMessage ?? `Could not create folder '${fullPath}'`, 400, { 'odata.error': { message: { value: failed.ErrorMessage } } });
+    }
 
-    const fullPath = `${rootFolderUrl}/${folderPath}`;
-    const addFolderUrl = `${siteUrl}/_api/web/folders/add('${encodeURIComponent(fullPath)}')`;
-
-    return this.spPost(addFolderUrl, ctx.log);
+    const item = await this.spGet<{ Id?: number; ID?: number }>(
+      `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${this.encodeSharePointPath(fullPath)}')/ListItemAllFields?$select=Id`,
+      ctx.log,
+    );
+    return this.getSingleItemCloudShape(siteUrl, listId, String(item.Id ?? item.ID), ctx);
   }
 
-  private async listFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ files: unknown[]; folders: unknown[] }> {
+  /** The cloud's `id` for a folder lands in folderId, or in fileId (normalizeInputs' generic mapping). */
+  private folderIdInput(inputs: Record<string, unknown>): string | undefined {
+    const raw = inputs.folderId ?? inputs.fileId;
+    return raw === undefined || raw === null || raw === '' ? undefined : this.normalizeValue(raw);
+  }
+
+  /** A folder's subfolders, then its files, as BlobMetadata (ItemId 0, as the cloud reports them). */
+  private async listFolderContents(siteUrl: string, resource: string, ctx: RunContext): Promise<unknown[]> {
+    const [folders, files] = await Promise.all([
+      this.spGet<{ value?: Array<Record<string, unknown>> }>(
+        `${siteUrl}/_api/web/${resource}/Folders?$select=Name,ServerRelativeUrl,TimeLastModified`,
+        ctx.log,
+      ),
+      this.spGet<{ value?: Array<Record<string, unknown>> }>(
+        `${siteUrl}/_api/web/${resource}/Files?$select=Name,ServerRelativeUrl,TimeLastModified,Length,ETag`,
+        ctx.log,
+      ),
+    ]);
+    return [
+      ...(folders.value ?? []).map((f) => this.toBlobMetadata(siteUrl, f, true, 0)),
+      ...(files.value ?? []).map((f) => this.toBlobMetadata(siteUrl, f, false, 0)),
+    ];
+  }
+
+  private async listFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown[]> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const folderId = this.normalizeValue(inputs.folderId);
+    const folderId = this.folderIdInput(inputs);
 
     if (!siteUrl || !folderId) throw new Error('listFolder requires siteUrl and folderId');
-
-    const [files, folders] = await Promise.all([
-      this.spGet<{ value: unknown[] }>(`${siteUrl}/_api/web/GetFolderById('${folderId}')/Files`, ctx.log),
-      this.spGet<{ value: unknown[] }>(`${siteUrl}/_api/web/GetFolderById('${folderId}')/Folders`, ctx.log),
-    ]);
-
-    return { files: files.value || [], folders: folders.value || [] };
+    return this.listFolderContents(siteUrl, this.folderResource(siteUrl, folderId), ctx);
   }
 
-  private async listRootFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ files: unknown[]; folders: unknown[] }> {
+  private async listRootFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown[]> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const folderPath = inputs.folderPath ? String(inputs.folderPath) : '/Shared Documents';
-
     if (!siteUrl) throw new Error('listRootFolder requires siteUrl');
 
-    const serverRelativePath = this.toServerRelativePath(siteUrl, folderPath);
-    const encodedPath = this.encodeSharePointPath(serverRelativePath);
-    const [files, folders] = await Promise.all([
-      this.spGet<{ value: unknown[] }>(`${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${encodedPath}')/Files`, ctx.log),
-      this.spGet<{ value: unknown[] }>(`${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${encodedPath}')/Folders`, ctx.log),
-    ]);
-
-    return { files: files.value || [], folders: folders.value || [] };
+    // The cloud's ListRootFolder lists the site's root folder; a folderPath (a local extension) narrows it.
+    const folderPath = inputs.folderPath ? String(inputs.folderPath) : '';
+    const serverRelativePath = this.toServerRelativePath(siteUrl, folderPath || '/');
+    const resource = `GetFolderByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath.replace(/\/+$/, '') || '/')}')`;
+    return this.listFolderContents(siteUrl, resource, ctx);
   }
 
   private async getFolderMetadata(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const folderId = this.normalizeValue(inputs.folderId);
+    const folderId = this.folderIdInput(inputs);
 
     if (!siteUrl || !folderId) throw new Error('getFolderMetadata requires siteUrl and folderId');
-    return this.spGet(`${siteUrl}/_api/web/GetFolderById('${folderId}')`, ctx.log);
+    const raw = await this.fetchBlobSource(siteUrl, this.folderResource(siteUrl, folderId), true, ctx);
+    return this.toBlobMetadata(siteUrl, raw, true);
   }
 
   private async getFolderMetadataByPath(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1154,49 +1783,141 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !path) throw new Error('getFolderMetadataByPath requires siteUrl and path');
     const serverRelativePath = this.toServerRelativePath(siteUrl, path);
-    return this.spGet(`${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`, ctx.log);
+    const resource = `GetFolderByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`;
+    return this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, resource, true, ctx), true);
   }
 
-  private async copyFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number; destUrl: string }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const folderId = this.normalizeValue(inputs.folderId);
-    const destFolderPath = String(inputs.destFolderPath);
-
-    if (!siteUrl || !folderId || !destFolderPath) {
-      throw new Error('copyFolder requires siteUrl, folderId, and destFolderPath');
-    }
-
-    const url = `${siteUrl}/_api/web/GetFolderById('${folderId}')/copyto(strnewurl='${encodeURIComponent(destFolderPath)}',boverwrite=true)`;
-    await this.spPost(url, ctx.log);
-    return { ok: true, status: 200, destUrl: destFolderPath };
+  private copyFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    return this.transfer('Folder', 'Copy', inputs, ctx);
   }
 
-  private async moveFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number; destUrl: string }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const folderId = this.normalizeValue(inputs.folderId);
-    const destFolderPath = String(inputs.destFolderPath);
-
-    if (!siteUrl || !folderId || !destFolderPath) {
-      throw new Error('moveFolder requires siteUrl, folderId, and destFolderPath');
-    }
-
-    const url = `${siteUrl}/_api/web/GetFolderById('${folderId}')/moveto(newurl='${encodeURIComponent(destFolderPath)}',flags=1)`;
-    await this.spPost(url, ctx.log);
-    return { ok: true, status: 200, destUrl: destFolderPath };
+  private moveFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    return this.transfer('Folder', 'Move', inputs, ctx);
   }
 
-  private async extractFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number; destination: string }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const source = String(inputs.source);
-    const destination = String(inputs.destination);
+  /** Whether a file or folder exists at a server-relative path (a missing file is a 404, a missing folder Exists: false). */
+  private async pathExists(siteUrl: string, serverRelativePath: string, kind: 'File' | 'Folder', ctx: RunContext): Promise<boolean> {
+    try {
+      const data = await this.spGet<{ Exists?: boolean }>(
+        `${siteUrl}/_api/web/Get${kind}ByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')?$select=Exists`,
+        ctx.log,
+      );
+      return data?.Exists !== false;
+    } catch (err) {
+      if (err instanceof HttpError && (err.status === 404 || err.status === 500)) return false;
+      throw err;
+    }
+  }
 
-    if (!siteUrl || !source || !destination) {
-      throw new Error('extractFolder requires siteUrl, source and destination');
+  /**
+   * Copy or move a file or folder (the cloud's CopyFileAsync, MoveFileAsync, CopyFolderAsync,
+   * MoveFolderAsync) through SP.MoveCopyUtil, which also works across sites. nameConflictBehavior:
+   * 0 = fail (SharePoint's "A file or folder with the name '…' already exists at the destination."),
+   * 1 = replace (the existing one is recycled first), 2 = keep both (the copy takes the first free
+   * "name1.ext", "name2.ext", … as SharePoint names it). Answers with the destination's BlobMetadata.
+   */
+  private async transfer(kind: 'File' | 'Folder', mode: 'Copy' | 'Move', inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
+    const sourceId = kind === 'File' ? (inputs.fileId == null ? undefined : this.normalizeValue(inputs.fileId)) : this.folderIdInput(inputs);
+    const destSiteUrl = inputs.destSiteUrl ? this.normalizeSiteUrl(inputs.destSiteUrl) : siteUrl;
+    const behavior = Number(inputs.nameConflictBehavior ?? 1);
+    if (!siteUrl || !sourceId || inputs.destFolderPath == null) {
+      throw new Error(`${mode}${kind} requires dataset, the source ${kind.toLowerCase()} id and destinationFolderPath`);
     }
 
-    const url = `${siteUrl}/_api/SP.CompressedFolder.extractToFolder(sourceUrl='${encodeURIComponent(source)}',destinationUrl='${encodeURIComponent(destination)}',boverwrite=true)`;
-    await this.spPost(url, ctx.log);
-    return { ok: true, status: 200, destination };
+    const isFolder = kind === 'Folder';
+    const resource = isFolder ? this.folderResource(siteUrl, sourceId) : this.fileResource(siteUrl, sourceId);
+    const source = (await this.fetchBlobSource(siteUrl, resource, isFolder, ctx)) as { Name: string; ServerRelativeUrl: string };
+    const destFolder = this.toServerRelativePath(destSiteUrl, String(inputs.destFolderPath)).replace(/\/+$/, '');
+
+    let name = source.Name;
+    if (await this.pathExists(destSiteUrl, `${destFolder}/${name}`, kind, ctx)) {
+      if (behavior === 0) {
+        // The cloud's message (MoveCopyUtil's own is "The destination file already exists.").
+        throw new HttpError(`A file or folder with the name '${name}' already exists at the destination.`, 400);
+      }
+      if (behavior === 2) {
+        const dot = isFolder ? -1 : name.lastIndexOf('.');
+        const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+        let n = 1;
+        while (await this.pathExists(destSiteUrl, `${destFolder}/${stem}${n}${ext}`, kind, ctx)) n++;
+        name = `${stem}${n}${ext}`;
+      } else {
+        await this.spPost(`${destSiteUrl}/_api/web/Get${kind}ByServerRelativeUrl('${this.encodeSharePointPath(`${destFolder}/${name}`)}')/recycle()`, ctx.log);
+      }
+    }
+
+    const destPath = `${destFolder}/${name}`;
+    await this.spPost(`${siteUrl}/_api/SP.MoveCopyUtil.${mode}${kind}`, ctx.log, {
+      body: {
+        srcUrl: `${new URL(siteUrl).origin}${source.ServerRelativeUrl}`,
+        destUrl: `${new URL(destSiteUrl).origin}${destPath}`,
+        options: { KeepBoth: false, ResetAuthorAndCreatedOnCopy: false, ShouldBypassSharedLocks: true },
+      },
+    });
+    const destResource = `Get${kind}ByServerRelativeUrl('${this.encodeSharePointPath(destPath)}')`;
+    return this.toBlobMetadata(destSiteUrl, await this.fetchBlobSource(destSiteUrl, destResource, isFolder, ctx), isFolder);
+  }
+
+  /**
+   * Extract folder (the cloud's ExtractFolderV2): unpacks a .zip from the site into the destination
+   * folder, creating the folders it needs. SharePoint REST has no extract call, so the archive is read
+   * here (stored and deflated entries). Answers like the cloud: the archive's top-level entries as
+   * BlobMetadata without ItemId, folders first (with LastModified 0001-01-01T00:00:00), then files.
+   */
+  private async extractFolder(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown[]> {
+    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
+    const source = inputs.source == null ? '' : String(inputs.source);
+    const destination = inputs.destination == null ? '' : String(inputs.destination);
+    const overwrite = inputs.overwrite === true || String(inputs.overwrite).toLowerCase() === 'true';
+    if (!siteUrl || !source || !destination) throw new Error('extractFolder requires dataset, source and destination');
+
+    const sourcePath = this.toServerRelativePath(siteUrl, this.decodeFileIdentifier(source));
+    const zip = await this.spRequest<{ $content: string }>(
+      'GET',
+      `${siteUrl}/_api/web/GetFileByServerRelativeUrl('${this.encodeSharePointPath(sourcePath)}')/$value`,
+      ctx.log,
+      { headers: { Accept: 'application/octet-stream' }, binary: true },
+    );
+    const entries = await readZipEntries(base64ToUint8(zip.$content));
+
+    const destRoot = this.toServerRelativePath(siteUrl, destination).replace(/\/+$/, '');
+    await this.ensureFolderPath(siteUrl, destRoot, ctx);
+    const topFolders: string[] = [];
+    const topFiles: string[] = [];
+    for (const entry of entries) {
+      const parts = entry.name.split('/').filter(Boolean);
+      if (parts.length === 0) continue;
+      const isDir = entry.name.endsWith('/');
+      if (parts.length > 1 || isDir) {
+        if (!topFolders.includes(parts[0])) topFolders.push(parts[0]);
+      } else {
+        topFiles.push(parts[0]);
+      }
+      const folder = [destRoot, ...parts.slice(0, isDir ? parts.length : -1)].join('/');
+      await this.ensureFolderPath(siteUrl, folder, ctx);
+      if (isDir) continue;
+      const fileName = parts[parts.length - 1];
+      await this.spPost(
+        `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${this.encodeSharePointPath(folder)}')/Files/add(url='${encodeURIComponent(fileName.replace(/'/g, "''"))}',overwrite=${overwrite})`,
+        ctx.log,
+        { body: entry.data, rawBody: true, headers: { 'Content-Type': 'application/octet-stream' } },
+      );
+    }
+
+    const result: unknown[] = [];
+    for (const name of topFolders) {
+      const meta = this.toBlobMetadata(siteUrl, { Name: name, ServerRelativeUrl: `${destRoot}/${name}` }, true);
+      delete meta.ItemId;
+      result.push({ ...meta, LastModified: '0001-01-01T00:00:00' });
+    }
+    for (const name of topFiles) {
+      const resource = `GetFileByServerRelativeUrl('${this.encodeSharePointPath(`${destRoot}/${name}`)}')`;
+      const meta = this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, resource, false, ctx), false);
+      delete meta.ItemId;
+      result.push(meta);
+    }
+    return result;
   }
 
   // ============= File Operations =============
@@ -1207,18 +1928,23 @@ export class SharePointConnector implements BaseConnector {
     const fileName = String(inputs.fileName);
     const rawContent = inputs.content;
 
-    if (!siteUrl || !folderPath || !fileName || rawContent === undefined) {
+    if (!siteUrl || !folderPath || !fileName || rawContent == null) {
       throw new Error('createFile requires siteUrl, folderPath, fileName and content');
     }
 
     const content = this.resolveFileContent(rawContent);
     const serverRelativePath = this.toServerRelativePath(siteUrl, folderPath);
     const url = `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')/Files/add(url='${encodeURIComponent(fileName)}',overwrite=true)`;
-    return this.spPost(url, ctx.log, {
+    const created = await this.spPost<{ UniqueId?: string; ServerRelativeUrl?: string }>(url, ctx.log, {
       body: content,
       rawBody: true,
       headers: { 'Content-Type': 'application/octet-stream' },
     });
+    // The cloud answers with the file's BlobMetadata, which needs its list item id too.
+    const resource = created?.UniqueId
+      ? `GetFileById('${created.UniqueId}')`
+      : `GetFileByServerRelativeUrl('${this.encodeSharePointPath(`${serverRelativePath}/${fileName}`)}')`;
+    return this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, resource, false, ctx), false);
   }
 
   private async getFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<FileContentResult> {
@@ -1283,27 +2009,27 @@ export class SharePointConnector implements BaseConnector {
     return this.decodeFileIdentifier(fileId).split('/').pop();
   }
 
-  private async updateFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  private async updateFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const fileId = this.normalizeValue(inputs.fileId);
     const rawContent = inputs.content;
 
-    if (!siteUrl || !fileId || rawContent === undefined) {
+    if (!siteUrl || !fileId || rawContent == null) {
       throw new Error('updateFile requires siteUrl, fileId and content');
     }
 
     const content = this.resolveFileContent(rawContent);
-    const url = `${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/$value`;
-    await this.spPost(url, ctx.log, {
+    const resource = this.fileResource(siteUrl, fileId);
+    await this.spPost(`${siteUrl}/_api/web/${resource}/$value`, ctx.log, {
       body: content,
       rawBody: true,
       headers: { 'X-HTTP-Method': 'PUT', 'Content-Type': 'application/octet-stream' },
     });
-
-    return { ok: true, status: 200 };
+    return this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, resource, false, ctx), false);
   }
 
-  private async deleteFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  // The cloud's DeleteFile has no body.
+  private async deleteFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const fileId = this.normalizeValue(inputs.fileId);
 
@@ -1313,81 +2039,15 @@ export class SharePointConnector implements BaseConnector {
     await this.spPost(url, ctx.log, {
       headers: { 'X-HTTP-Method': 'DELETE', 'IF-MATCH': '*' },
     });
-
-    return { ok: true, status: 200 };
+    return undefined;
   }
 
-  private async copyFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number; destUrl: string }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const fileId = this.normalizeValue(inputs.fileId);
-    const destSiteUrl = inputs.destSiteUrl ? this.normalizeSiteUrl(inputs.destSiteUrl) : siteUrl;
-    const rawDestFolderPath = String(inputs.destFolderPath);
-    const nameConflictBehavior = Number(inputs.nameConflictBehavior ?? 1);
-
-    if (!siteUrl || !fileId || !rawDestFolderPath) {
-      throw new Error('copyFile requires siteUrl, fileId, and destFolderPath');
-    }
-
-    const metadata = await this.getFileMetadata({ siteUrl, fileId }, ctx) as { Name: string; ServerRelativeUrl: string };
-    const fileName = (inputs.fileName as string | undefined) || metadata.Name;
-    const srcPath = metadata.ServerRelativeUrl;
-    const destFolderServerRelative = this.toServerRelativePath(destSiteUrl, rawDestFolderPath);
-    const destPath = `${destFolderServerRelative}/${fileName}`;
-
-    // nameConflictBehavior: 0=fail, 1=replace, 2=rename (keep both)
-    // Build absolute URLs from server-relative paths (extract origin from siteUrl)
-    const origin = new URL(siteUrl).origin;
-    const absSrcUrl = `${origin}${srcPath}`;
-    const absDestUrl = `${origin}${destPath}`;
-    const url = `${siteUrl}/_api/SP.MoveCopyUtil.CopyFile`;
-    await this.spPost(url, ctx.log, {
-      body: {
-        srcUrl: absSrcUrl,
-        destUrl: absDestUrl,
-        options: {
-          KeepBoth: nameConflictBehavior === 2,
-          ResetAuthorAndCreatedOnCopy: false,
-          ShouldBypassSharedLocks: true,
-        },
-      },
-    });
-    return { ok: true, status: 200, destUrl: destPath };
+  private copyFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    return this.transfer('File', 'Copy', inputs, ctx);
   }
 
-  private async moveFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number; destUrl: string }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const fileId = this.normalizeValue(inputs.fileId);
-    const destSiteUrl = inputs.destSiteUrl ? this.normalizeSiteUrl(inputs.destSiteUrl) : siteUrl;
-    const rawDestFolderPath = String(inputs.destFolderPath);
-    const nameConflictBehavior = Number(inputs.nameConflictBehavior ?? 1);
-
-    if (!siteUrl || !fileId || !rawDestFolderPath) {
-      throw new Error('moveFile requires siteUrl, fileId, and destFolderPath');
-    }
-
-    const metadata = await this.getFileMetadata({ siteUrl, fileId }, ctx) as { Name: string; ServerRelativeUrl: string };
-    const fileName = (inputs.fileName as string | undefined) || metadata.Name;
-    const srcPath = metadata.ServerRelativeUrl;
-    const destFolderServerRelative = this.toServerRelativePath(destSiteUrl, rawDestFolderPath);
-    const destPath = `${destFolderServerRelative}/${fileName}`;
-
-    // nameConflictBehavior: 0=fail, 1=replace, 2=rename (keep both)
-    const origin = new URL(siteUrl).origin;
-    const absSrcUrl = `${origin}${srcPath}`;
-    const absDestUrl = `${origin}${destPath}`;
-    const url = `${siteUrl}/_api/SP.MoveCopyUtil.MoveFile`;
-    await this.spPost(url, ctx.log, {
-      body: {
-        srcUrl: absSrcUrl,
-        destUrl: absDestUrl,
-        options: {
-          KeepBoth: nameConflictBehavior === 2,
-          ResetAuthorAndCreatedOnCopy: false,
-          ShouldBypassSharedLocks: true,
-        },
-      },
-    });
-    return { ok: true, status: 200, destUrl: destPath };
+  private moveFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    return this.transfer('File', 'Move', inputs, ctx);
   }
 
   private async getFileMetadata(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1395,7 +2055,7 @@ export class SharePointConnector implements BaseConnector {
     const fileId = this.normalizeValue(inputs.fileId);
 
     if (!siteUrl || !fileId) throw new Error('getFileMetadata requires siteUrl and fileId');
-    return this.spGet(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}`, ctx.log);
+    return this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, this.fileResource(siteUrl, fileId), false, ctx), false);
   }
 
   private async getFileMetadataByPath(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1404,7 +2064,8 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !path) throw new Error('getFileMetadataByPath requires siteUrl and path');
     const serverRelativePath = this.toServerRelativePath(siteUrl, path);
-    return this.spGet(`${siteUrl}/_api/web/GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`, ctx.log);
+    const resource = `GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelativePath)}')`;
+    return this.toBlobMetadata(siteUrl, await this.fetchBlobSource(siteUrl, resource, false, ctx), false);
   }
 
   private async getFileProperties(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1419,7 +2080,8 @@ export class SharePointConnector implements BaseConnector {
     return this.getSingleItemCloudShape(siteUrl, listId, itemId, ctx);
   }
 
-  private async updateFileProperties(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  // Like PatchItem: designer field format in, the item as GetFileItem returns it out.
+  private async updateFileProperties(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
     const itemId = this.normalizeValue(inputs.itemId);
@@ -1432,11 +2094,10 @@ export class SharePointConnector implements BaseConnector {
     const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})`;
 
     await this.spPost(url, ctx.log, {
-      body: fields,
+      body: await this.toRestFields(siteUrl, listId, fields, ctx),
       headers: { 'X-HTTP-Method': 'MERGE', 'IF-MATCH': '*' },
     });
-
-    return { ok: true, status: 204 };
+    return this.getSingleItemCloudShape(siteUrl, listId, itemId, ctx);
   }
 
   private async getFilesPropertiesOnly(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1445,7 +2106,6 @@ export class SharePointConnector implements BaseConnector {
 
     if (!siteUrl || !listId) throw new Error('getFilesPropertiesOnly requires siteUrl and listId');
 
-    const queryParams: string[] = [];
     const folderPath = inputs.folderPath ? String(inputs.folderPath) : null;
     const filter = inputs.filter as string | undefined;
 
@@ -1457,64 +2117,44 @@ export class SharePointConnector implements BaseConnector {
     // POST is used only when none of those OData inputs is set; otherwise the
     // original items GET (folder as $filter) is kept so no existing input is lost.
     const folderScoped = !!folderPath && !filter && !inputs.orderby && !inputs.top && !inputs.skip;
-    let folderQuery: { ViewXml: string; FolderServerRelativeUrl: string } | undefined;
     if (folderScoped) {
       // Cloud "Include Nested Items" defaults to true: the whole subtree. A bare
       // <View> (no Scope) returns the folder's direct children, files and subfolders.
       const nested = inputs.includeNestedItems !== false && inputs.includeNestedItems !== 'false';
-      folderQuery = {
+      const query = {
         ViewXml: `<View${nested ? " Scope='RecursiveAll'" : ''}><RowLimit>5000</RowLimit></View>`,
         FolderServerRelativeUrl: this.toServerRelativeFolderPath(siteUrl, folderPath),
       };
-    } else if (folderPath) {
-      const folderFilter = `FileDirRef eq '${folderPath}'`;
-      queryParams.push(`$filter=${filter ? `(${folderFilter}) and (${filter})` : folderFilter}`);
-    } else if (filter) {
-      queryParams.push(`$filter=${encodeURIComponent(filter)}`);
-    }
-
-    if (inputs.orderby) queryParams.push(`$orderby=${encodeURIComponent(String(inputs.orderby))}`);
-    if (inputs.top) queryParams.push(`$top=${inputs.top}`);
-    if (inputs.skip) queryParams.push(`$skip=${inputs.skip}`);
-
-    const aug = await this.resolveRefExpansion(siteUrl, listId, undefined, 'File,Folder', ctx);
-    const makeUrl = (select?: string, expand?: string) => {
-      const parts = [...queryParams];
-      if (select) parts.push(`$select=${encodeURIComponent(select)}`);
-      parts.push(`$expand=${encodeURIComponent(expand || 'File,Folder')}`);
-      const resource = folderQuery ? 'GetItems' : 'items';
-      return `${siteUrl}/_api/web/lists(guid'${listId}')/${resource}?${parts.join('&')}`;
-    };
-    const fetchItems = (url: string) =>
-      folderQuery
-        ? this.spPost<{ value?: unknown[] }>(url, ctx.log, { body: { query: folderQuery } })
-        : this.spGet<{ value?: unknown[] }>(url, ctx.log);
-
-    let body: { value?: unknown[] } | undefined;
-    let refNames = aug.refNames;
-    try {
-      body = await fetchItems(makeUrl(aug.select, aug.expand));
-    } catch (err) {
-      if (!aug.augmented) throw err;
-      ctx.log?.({ type: 'sp.ref-expansion-fallback', error: err instanceof Error ? err.message : String(err) });
-      const narrowed = await this.narrowRefExpansion(siteUrl, listId, undefined, 'File,Folder', ctx);
-      if (narrowed) {
-        try {
-          body = await fetchItems(makeUrl(narrowed.select, narrowed.expand));
-          refNames = narrowed.refNames;
-        } catch {
-          body = undefined;
-        }
+      // CAML GetItems rejects $expand ("The $expand query is not valid for field 'Author'"),
+      // so it only finds the folder's items; they are then read like GetItems reads them,
+      // filtered by ID (the primary key is indexed, so this stays threshold-safe).
+      const found = await this.spPost<{ value?: Array<{ Id?: number; ID?: number }> }>(
+        `${siteUrl}/_api/web/lists(guid'${listId}')/GetItems?$select=Id`,
+        ctx.log,
+        { body: { query } },
+      );
+      const ids = (found.value ?? []).map((v) => v.Id ?? v.ID).filter((n): n is number => typeof n === 'number');
+      const value: unknown[] = [];
+      for (let i = 0; i < ids.length; i += 40) {
+        const chunk = ids.slice(i, i + 40);
+        const page = (await this.getItems(
+          { siteUrl, listId, filter: chunk.map((id) => `ID eq ${id}`).join(' or '), orderby: 'ID' },
+          ctx,
+        )) as { value?: unknown[] };
+        value.push(...(page.value ?? []));
       }
-      if (!body) {
-        body = await fetchItems(makeUrl());
-        refNames = [];
-      }
+      return { value };
     }
-    if (Array.isArray(body.value)) {
-      await this.applyCloudShape(siteUrl, listId, body.value, ctx, refNames);
+
+    let combinedFilter = filter;
+    if (folderPath) {
+      const folderFilter = `FileDirRef eq '${this.toServerRelativeFolderPath(siteUrl, folderPath).replace(/'/g, "''")}'`;
+      combinedFilter = filter ? `(${folderFilter}) and (${filter})` : folderFilter;
     }
-    return body;
+    return this.getItems(
+      { siteUrl, listId, filter: combinedFilter, orderby: inputs.orderby, top: inputs.top, skip: inputs.skip },
+      ctx,
+    );
   }
 
   /** Normalize a folder path for CamlQuery.FolderServerRelativeUrl. The cloud
@@ -1564,6 +2204,38 @@ export class SharePointConnector implements BaseConnector {
 
   // ============= Attachment Operations =============
 
+  /**
+   * An attachment as the cloud reports it (SPListItemAttachment): `Id` is the identifier of its
+   * site-relative path ("/Lists/My List/Attachments/1/a.txt"), which GetAttachmentContent and
+   * DeleteAttachment take back; `AbsoluteUri` keeps the path unencoded.
+   */
+  private toAttachment(siteUrl: string, raw: { FileName?: string; ServerRelativeUrl?: string }): Record<string, unknown> {
+    const { origin, pathname } = new URL(siteUrl);
+    const sitePath = pathname.replace(/\/+$/, '');
+    const serverRelative = String(raw.ServerRelativeUrl ?? '');
+    const path = sitePath && serverRelative.startsWith(`${sitePath}/`) ? serverRelative.slice(sitePath.length) : serverRelative;
+    return {
+      Id: encodeFileIdentifier(path),
+      AbsoluteUri: `${origin}${serverRelative}`,
+      DisplayName: raw.FileName ?? path.split('/').pop(),
+      '@odata.type': `${SP_TYPE}.SPListItemAttachment`,
+    };
+  }
+
+  /** The file name an attachment id stands for: the cloud's path identifier or a plain name. */
+  private attachmentFileName(attachmentId: string): string {
+    return this.decodeFileIdentifier(attachmentId).split('/').pop() ?? attachmentId;
+  }
+
+  private attachmentResource(siteUrl: string, listId: string, itemId: string, attachmentId: string): string {
+    const name = this.attachmentFileName(attachmentId).replace(/'/g, "''");
+    return `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles('${encodeURIComponent(name)}')`;
+  }
+
+  /**
+   * Add attachment: the cloud's call (AddUsingPath, name form-encoded) so that a failure reports
+   * the same `source`; its failure body is { status, message, source, errors } like HttpRequest's.
+   */
   private async addAttachment(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
@@ -1571,16 +2243,23 @@ export class SharePointConnector implements BaseConnector {
     const fileName = String(inputs.fileName);
     const content = inputs.content;
 
-    if (!siteUrl || !listId || !itemId || !fileName || content === undefined) {
+    if (!siteUrl || !listId || !itemId || !fileName || content == null) {
       throw new Error('addAttachment requires siteUrl, listId, itemId, fileName and content');
     }
 
-    const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles/add(FileName='${encodeURIComponent(fileName)}')`;
-    return this.spPost(url, ctx.log, {
-      body: content,
-      rawBody: true,
-      headers: { 'Content-Type': 'application/octet-stream' },
-    });
+    const name = encodeURIComponent(fileName.replace(/'/g, "''")).replace(/%20/g, '+');
+    const url = `${siteUrl}/_api/web/lists(guid'${listId}')/Items(${itemId})/AttachmentFiles/AddUsingPath(decodedUrl=@f)?@f='${name}'`;
+    try {
+      const added = await this.spPost<{ FileName?: string; ServerRelativeUrl?: string }>(url, ctx.log, {
+        body: this.resolveFileContent(content),
+        rawBody: true,
+        headers: { 'Content-Type': 'application/octet-stream' },
+      });
+      return this.toAttachment(siteUrl, added);
+    } catch (err) {
+      if (err instanceof HttpError) Object.assign(err, { source: url });
+      throw err;
+    }
   }
 
   private async getAttachments(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -1592,7 +2271,11 @@ export class SharePointConnector implements BaseConnector {
       throw new Error('getAttachments requires siteUrl, listId and itemId');
     }
 
-    return this.spGet(`${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles`, ctx.log);
+    const data = await this.spGet<{ value?: Array<{ FileName?: string; ServerRelativeUrl?: string }> }>(
+      `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles`,
+      ctx.log
+    );
+    return (data.value ?? []).map((a) => this.toAttachment(siteUrl, a));
   }
 
   private async getAttachmentContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<FileContentResult> {
@@ -1605,11 +2288,19 @@ export class SharePointConnector implements BaseConnector {
       throw new Error('getAttachmentContent requires siteUrl, listId, itemId and attachmentId');
     }
 
-    const url = `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles('${encodeURIComponent(attachmentId)}')/$value`;
-    return this.downloadFile(url, attachmentId, inputs, ctx);
+    // By path, as the cloud reads it: a missing attachment is a 404 (by name it is a 400).
+    let path = this.decodeFileIdentifier(attachmentId);
+    if (!path.includes('/')) {
+      const root = await this.spGet<{ ServerRelativeUrl: string }>(`${siteUrl}/_api/web/lists(guid'${listId}')/RootFolder?$select=ServerRelativeUrl`, ctx.log);
+      path = `${root.ServerRelativeUrl}/Attachments/${itemId}/${path}`;
+    }
+    const serverRelative = this.toServerRelativePath(siteUrl, path);
+    const url = `${siteUrl}/_api/web/GetFileByServerRelativeUrl('${this.encodeSharePointPath(serverRelative).replace(/'/g, "''")}')/$value`;
+    return this.downloadFile(url, this.attachmentFileName(attachmentId), inputs, ctx);
   }
 
-  private async deleteAttachment(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  // The cloud's DeleteAttachment has no body.
+  private async deleteAttachment(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const listId = this.normalizeValue(inputs.listId);
     const itemId = this.normalizeValue(inputs.itemId);
@@ -1619,47 +2310,47 @@ export class SharePointConnector implements BaseConnector {
       throw new Error('deleteAttachment requires siteUrl, listId, itemId and attachmentId');
     }
 
-    await this.spDelete(
-      `${siteUrl}/_api/web/lists(guid'${listId}')/items(${itemId})/AttachmentFiles('${encodeURIComponent(attachmentId)}')`,
-      ctx.log
-    );
-
-    return { ok: true, status: 200 };
+    await this.spDelete(this.attachmentResource(siteUrl, listId, itemId, attachmentId), ctx.log);
+    return undefined;
   }
 
   // ============= Check In/Out Operations =============
 
-  private async checkOutFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
-    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const fileId = this.normalizeValue(inputs.fileId);
-
-    if (!siteUrl || !fileId) throw new Error('checkOutFile requires siteUrl and fileId');
-
-    await this.spPost(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/CheckOut()`, ctx.log);
-    return { ok: true, status: 200 };
+  /**
+   * The file a check in/out call addresses: the cloud passes the library item (`table` + `id`),
+   * a local call may pass a file identifier instead.
+   */
+  private checkFileResource(inputs: Record<string, unknown>, siteUrl: string, op: string): string {
+    if (inputs.listId && inputs.itemId) {
+      return `lists(guid'${this.normalizeValue(inputs.listId)}')/items(${this.normalizeValue(inputs.itemId)})/File`;
+    }
+    if (inputs.fileId) return this.fileResource(siteUrl, this.normalizeValue(inputs.fileId));
+    throw new Error(`${op} requires siteUrl and table + id (or a file id)`);
   }
 
-  private async checkInFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  // Check out / check in / discard check out answer 200 with no body.
+  private async checkOutFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const fileId = this.normalizeValue(inputs.fileId);
+    await this.spPost(`${siteUrl}/_api/web/${this.checkFileResource(inputs, siteUrl, 'CheckOutFile')}/CheckOut()`, ctx.log);
+    return undefined;
+  }
+
+  private async checkInFile(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
+    const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     const comment = inputs.comment ? String(inputs.comment) : '';
-    const checkInType = inputs.checkInType !== undefined ? Number(inputs.checkInType) : 1;
+    // 0 = minor version, 1 = major version, 2 = overwrite (the designer's "Choose type of check in")
+    const checkInType = inputs.checkInType != null ? Number(inputs.checkInType) : 1;
 
-    if (!siteUrl || !fileId) throw new Error('checkInFile requires siteUrl and fileId');
-
-    const url = `${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/CheckIn(comment='${encodeURIComponent(comment)}',checkintype=${checkInType})`;
+    const resource = this.checkFileResource(inputs, siteUrl, 'CheckInFile');
+    const url = `${siteUrl}/_api/web/${resource}/CheckIn(comment=@c,checkintype=${checkInType})?@c='${encodeURIComponent(comment.replace(/'/g, "''"))}'`;
     await this.spPost(url, ctx.log);
-    return { ok: true, status: 200 };
+    return undefined;
   }
 
-  private async discardCheckOut(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean; status: number }> {
+  private async discardCheckOut(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
-    const fileId = this.normalizeValue(inputs.fileId);
-
-    if (!siteUrl || !fileId) throw new Error('discardCheckOut requires siteUrl and fileId');
-
-    await this.spPost(`${siteUrl}/_api/web/${this.fileResource(siteUrl, fileId)}/UndoCheckOut()`, ctx.log);
-    return { ok: true, status: 200 };
+    await this.spPost(`${siteUrl}/_api/web/${this.checkFileResource(inputs, siteUrl, 'DiscardFileCheckOut')}/UndoCheckOut()`, ctx.log);
+    return undefined;
   }
 
   // ============= Sharing Operations =============
@@ -1750,7 +2441,7 @@ export class SharePointConnector implements BaseConnector {
     const approvalStatus = String(inputs.approvalStatus);
     const comments = inputs.comments ? String(inputs.comments) : '';
 
-    if (!siteUrl || !listId || !itemId || approvalStatus === undefined) {
+    if (!siteUrl || !listId || !itemId || approvalStatus == null) {
       throw new Error('setContentApprovalStatus requires siteUrl, listId, itemId and approvalStatus');
     }
 
@@ -1849,7 +2540,14 @@ export class SharePointConnector implements BaseConnector {
 
   // ============= HTTP Request =============
 
-  private async sendHttpRequest(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ statusCode: number; headers: Record<string, string>; body: unknown }> {
+  /**
+   * "Send an HTTP request to SharePoint" (HttpRequest). The response is shaped the way the cloud
+   * connector returns it (conformance/flows/sp-http.ff.ts): JSON without its top-level null properties, any
+   * other content as { $content-type, $content } (base64), no body for an empty response, and
+   * Content-Type re-formatted with "; " between its parts. A failure carries what errorOutputs
+   * needs for the cloud's { status, message, source, errors } body.
+   */
+  private async sendHttpRequest(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ statusCode: number; headers: Record<string, string>; body?: unknown }> {
     const siteUrl = this.normalizeSiteUrl(inputs.siteUrl);
     let uri = String(inputs.uri);
     const method = inputs.method ? String(inputs.method).toUpperCase() : 'GET';
@@ -1864,12 +2562,13 @@ export class SharePointConnector implements BaseConnector {
     }
 
     const url = `${siteUrl}${uri.startsWith('/') ? uri : '/' + uri}`;
-    // Default Accept to OData verbose to match Power Automate's "Send an HTTP request to
-    // SharePoint" action, which wraps responses as { d: { ... } } / { d: { results: [] } }.
-    // DSL converted from PA flows expects this shape; callers can override via custom headers.
+    const clientRequestId = crypto.randomUUID();
+    // The cloud's default Accept is OData verbose ({ d: { ... } } / { d: { results: [] } });
+    // callers can override it via custom headers.
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.token}`,
       Accept: 'application/json;odata=verbose',
+      'client-request-id': clientRequestId,
       ...customHeaders,
     };
 
@@ -1886,26 +2585,85 @@ export class SharePointConnector implements BaseConnector {
 
     const res = await fetch(url, fetchOptions);
     const contentType = res.headers.get('content-type') || '';
+    const bytes = new Uint8Array(await res.arrayBuffer());
 
     let responseBody: unknown;
-    if (contentType.includes('application/json')) {
-      responseBody = await res.json();
+    if (bytes.length === 0) {
+      responseBody = undefined;
+    } else if (contentType.includes('application/json')) {
+      responseBody = JSON.parse(new TextDecoder().decode(bytes));
     } else {
-      responseBody = await res.text();
+      responseBody = { '$content-type': formatContentType(contentType) || 'application/octet-stream', '$content': bytesBase64(bytes) };
     }
 
     if (!res.ok) {
       const errorMsg = typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody);
-      throw new HttpError(`SharePoint sendHttpRequest failed: ${res.status} - ${errorMsg}`, res.status, responseBody);
+      const err = new HttpError(`SharePoint sendHttpRequest failed: ${res.status} - ${errorMsg}`, res.status, responseBody);
+      Object.assign(err, {
+        source: url.replace(/ /g, '%20'),
+        clientRequestId: res.headers.get('client-request-id') ?? clientRequestId,
+        serviceRequestId: res.headers.get('sprequestguid') ?? res.headers.get('request-id') ?? undefined,
+      });
+      throw err;
     }
 
     const responseHeaders: Record<string, string> = {};
     res.headers.forEach((value, key) => {
-      responseHeaders[key] = value;
+      responseHeaders[key] = key.toLowerCase() === 'content-type' ? formatContentType(value) : value;
     });
 
-    return { statusCode: res.status, headers: responseHeaders, body: responseBody };
+    return {
+      statusCode: res.status,
+      headers: responseHeaders,
+      ...(responseBody === undefined ? {} : { body: withoutNulls(responseBody) }),
+    };
   }
+}
+
+/** "application/json;odata=verbose;charset=utf-8" → "application/json; odata=verbose; charset=utf-8", as .NET writes it. */
+function formatContentType(value: string): string {
+  return value.split(';').map((p) => p.trim()).filter(Boolean).join('; ');
+}
+
+/** Bytes → base64 (btoa exists in browsers and Node 16+). */
+function bytesBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+/**
+ * The cloud's failure body for HttpRequest: SharePoint's message with the request ids appended,
+ * the request URL, and the error code split into its parts.
+ */
+function httpRequestErrorOutputs(e: {
+  status?: number;
+  message?: string;
+  response?: unknown;
+  source?: string;
+  clientRequestId?: string;
+  serviceRequestId?: string;
+}): { statusCode: number; body: unknown } {
+  const r = e.response as Record<string, any> | undefined;
+  const error = r?.error ?? r?.['odata.error'];
+  const spMessage = typeof error?.message === 'string' ? error.message : error?.message?.value;
+  const ids = [
+    e.clientRequestId ? `clientRequestId: ${e.clientRequestId}` : undefined,
+    e.serviceRequestId ? `serviceRequestId: ${e.serviceRequestId}` : undefined,
+  ].filter(Boolean);
+  const body: Record<string, unknown> = {
+    status: e.status,
+    message: [spMessage ?? e.message ?? '', ...ids].join('\r\n'),
+  };
+  if (e.source) body.source = e.source;
+  if (typeof error?.code === 'string') body.errors = error.code.split(', ');
+  return { statusCode: e.status!, body };
+}
+
+/** A JSON object without its top-level null properties (the cloud connector drops those, and keeps nested ones). */
+function withoutNulls(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== null));
 }
 
 export default SharePointConnector;

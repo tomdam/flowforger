@@ -10,6 +10,11 @@ const ok = (e: string) => {
   assert.equal(r.ok, true, `expected ok for ${e}: ${(r as any).reason ?? ''}`);
   return (r as { ok: true; value: any }).value;
 };
+const fails = (e: string, message?: RegExp) => {
+  const r = tryEvaluate(e, ctx);
+  assert.equal(r.ok, false, `expected failure for ${e}`);
+  if (message) assert.match(String(((r as any).error as Error)?.message), message);
+};
 
 describe('string functions', () => {
   it('substring 2-arg and 3-arg', () => {
@@ -28,7 +33,7 @@ describe('string functions', () => {
   it('split / join', () => {
     assert.deepEqual(ok(`@split('a,b,c', ',')`), ['a', 'b', 'c']);
     assert.equal(ok(`@join(createArray('a', 'b'), '-')`), 'a-b');
-    assert.equal(ok(`@join('notarray', '-')`), '');
+    fails(`@join('notarray', '-')`, /expects its first parameter to be an array/);
   });
   it('indexOf / lastIndexOf / nthIndexOf', () => {
     assert.equal(ok(`@indexOf('banana', 'an')`), 1);
@@ -45,21 +50,23 @@ describe('string functions', () => {
     assert.equal(ok(`@string('s')`), 's');
     assert.equal(ok(`@string(5)`), '5');
   });
-  it('length on string and array; 0 otherwise', () => {
+  it('length on string and array; throws otherwise', () => {
     assert.equal(ok(`@length('abc')`), 3);
     assert.equal(ok(`@length(variables('Rows'))`), 2);
-    assert.equal(ok(`@length(5)`), 0);
+    fails(`@length(5)`, /'length' expects its parameter to be an array or a string/);
+    fails(`@length(null)`);
+    fails(`@length(json('{}'))`);
   });
-  it('slice on string and array', () => {
+  it('slice on strings only', () => {
     assert.equal(ok(`@slice('hello', 1, 3)`), 'el');
     assert.equal(ok(`@slice('hello', 2)`), 'llo');
-    assert.deepEqual(ok(`@slice(variables('Rows'), 1)`), [{ id: 2, name: 'second' }]);
-    assert.equal(ok(`@slice(5, 0)`), 5); // non-string/array passes through
+    fails(`@slice(variables('Rows'), 1)`, /'slice' expects its first parameter to be of type string/);
+    fails(`@slice(5, 0)`);
   });
-  it('chunk arrays; empty for bad input', () => {
+  it('chunk arrays and strings', () => {
     assert.deepEqual(ok(`@chunk(createArray(1, 2, 3), 2)`), [[1, 2], [3]]);
-    assert.deepEqual(ok(`@chunk('notarray', 2)`), []);
-    assert.deepEqual(ok(`@chunk(createArray(1), 0)`), []);
+    assert.deepEqual(ok(`@chunk('notarray', 2)`), ['no', 'ta', 'rr', 'ay']);
+    fails(`@chunk(createArray(1), 0)`, /positive integer/);
   });
   it('formatNumber', () => {
     assert.equal(ok(`@formatNumber(1234.5, 'N2', 'en-US')`), '1,234.50');

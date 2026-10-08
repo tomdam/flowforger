@@ -71,6 +71,10 @@ interface HttpInputs {
   method: string;
   url: string;
   headers?: Record<string, string>;
+  /** Query parameters. They replace any query string already in 'url', as in the cloud. */
+  queries?: Record<string, string>;
+  /** Sent as the Cookie header. */
+  cookie?: string;
   body?: any;
   authentication?: {
     type: string;
@@ -86,7 +90,10 @@ interface HttpInputs {
   retryPolicy?: {
     type: 'none' | 'fixed' | 'exponential';
     count?: number;
-    interval?: number;
+    /** ISO 8601 duration ('PT10S'), or milliseconds. */
+    interval?: string | number;
+    minimumInterval?: string;
+    maximumInterval?: string;
   };
 }
 
@@ -916,10 +923,12 @@ interface FlowContext {
   first<T = any>(collection: T[] | string): T;
   /** Get the last element of an array or last character of a string (emits @last) */
   last<T = any>(collection: T[] | string): T;
-  /** Skip the first count elements of an array (emits @skip) */
+  /** Skip the first count elements of an array or characters of a string (emits @skip) */
+  skip(collection: string, count: number): string;
   skip<T = any>(collection: T[], count: number): T[];
   /** Take the first count elements of an array or characters of a string (emits @take) */
-  take<T = any>(collection: T[] | string, count: number): T;
+  take(collection: string, count: number): string;
+  take<T = any>(collection: T[], count: number): T[];
   /** Check whether an array, string, or object is empty (emits @empty) */
   empty(collection: any[] | string | object): boolean;
   /** Get the number of elements in an array or characters in a string (emits @length) */
@@ -976,14 +985,7 @@ interface FlowContext {
   min(...numbers: (number | number[])[]): number;
   /** Highest value among the arguments (emits @max) */
   max(...numbers: (number | number[])[]): number;
-  /** Absolute value (emits @abs) */
-  abs(value: number): number;
-  /** Round up to the nearest integer (emits @ceil) */
-  ceil(value: number): number;
-  /** Round down to the nearest integer (emits @floor) */
-  floor(value: number): number;
-  /** Round to the given number of decimal places (emits @round) */
-  round(value: number, digits?: number): number;
+  // No abs/ceil/floor/round: Power Automate has none of them.
   /** Random integer in the range [minValue, maxValue) (emits @rand) */
   rand(minValue: number, maxValue: number): number;
   /** Convert a value to an integer (emits @int) */
@@ -1130,7 +1132,7 @@ interface FlowContext {
   null(): null;
 
   // Utility Functions
-  guid(): string;
+  guid(format?: 'N' | 'D' | 'B' | 'P' | 'X' | 'n' | 'd' | 'b' | 'p' | 'x'): string;
   formatNumber(number: number, format: string, locale?: string): string;
 }
 

@@ -13,7 +13,8 @@
 
 import type { RunContext } from '../index.js';
 import type { ExprNode, PathSeg } from '@flowforger/expressions';
-import { walkCalls, tryParseExpression, parseTemplate } from '@flowforger/expressions';
+import { walkCalls, tryParseExpression, parseTemplate, KNOWN_FUNCTIONS, argumentCountMessage } from '@flowforger/expressions';
+import { ExpressionError, findKey, isPlainObject, toText, typeName } from './values.js';
 
 export interface FnContext {
   ctx: RunContext;
@@ -39,6 +40,42 @@ export class UnknownFunctionError extends Error {
   }
 }
 
+/** Best-effort source text of a call, for error messages. */
+function sourceOf(node: ExprNode): string {
+  switch (node.kind) {
+    case 'str': return `'${node.value.replace(/'/g, "''")}'`;
+    case 'num': return node.raw;
+    case 'bool': return String(node.value);
+    case 'null': return 'null';
+    case 'undefined': return 'undefined';
+    case 'ident': return node.name;
+    case 'call': {
+      let out = `${node.name}(${node.args.map(sourceOf).join(', ')})`;
+      for (const seg of node.path) {
+        const opt = seg.optional ? '?' : '';
+        out += seg.kind === 'prop' ? `${opt}.${seg.name}` : `${opt}[${sourceOf(seg.expr)}]`;
+      }
+      return out;
+    }
+  }
+}
+
+/** The cloud's error for a function it doesn't define (or one the local engine lacks). */
+function unknownFunctionError(name: string): ExpressionError {
+  return KNOWN_FUNCTIONS.has(name.toLowerCase())
+    ? new ExpressionError(`The template function '${name}' is not supported by the local engine.`)
+    : new ExpressionError(`The template function '${name}' is not defined or not valid.`);
+}
+
+/**
+ * A call with more or fewer arguments than the function takes fails before anything is
+ * evaluated, with the cloud's message for that function (conformance/flows/expr-errors.ff.ts).
+ */
+function checkArity(name: string, count: number): void {
+  const message = argumentCountMessage(name, count);
+  if (message) throw new ExpressionError(message);
+}
+
 export function evaluateNode(node: ExprNode, ctx: RunContext): any {
   switch (node.kind) {
     case 'str': return node.value;
@@ -50,32 +87,65 @@ export function evaluateNode(node: ExprNode, ctx: RunContext): any {
     case 'call': {
       const fn = registry.get(node.name.toLowerCase());
       if (!fn) throw new UnknownFunctionError(node.name); // callers pre-check; belt & braces
+      checkArity(node.name, node.args.length);
       const f: FnContext = { ctx, ev: n => evaluateNode(n, ctx) };
       const result = fn(node.args, f);
-      return navigateSegments(result, node.path, ctx);
+      return node.path.length ? navigateSegments(result, node.path, ctx, sourceOf(node)) : result;
     }
   }
 }
 
-export function navigateSegments(value: any, path: PathSeg[], ctx: RunContext): any {
+/**
+ * Applies a property path the way the cloud does: names match case-insensitively; `?[...]`
+ * yields null for a missing property, a null value or an index past the end; plain `[...]`
+ * fails on those. Selecting a property of an array or a string fails either way.
+ */
+export function navigateSegments(value: any, path: PathSeg[], ctx: RunContext, source = ''): any {
   let val = value;
   for (const seg of path) {
-    if (seg.kind === 'prop') {
-      val = val?.[seg.name];
-      continue;
-    }
-    const key = evaluateNode(seg.expr, ctx);
+    const key = seg.kind === 'prop' ? seg.name : evaluateNode(seg.expr, ctx);
     if (typeof key === 'string' && key.includes('/')) {
       // Power Automate convention: ['body/value'] navigates nested properties.
       for (const part of key.split('/')) {
-        val = val?.[part];
+        val = selectOne(val, part, seg.optional, source);
         if (val === undefined || val === null) break;
       }
     } else {
-      val = val?.[key as any];
+      val = selectOne(val, key, seg.optional, source);
     }
   }
   return val;
+}
+
+function selectOne(val: any, key: any, optional: boolean, source: string): any {
+  const cannot = (why = '') =>
+    new ExpressionError(
+      `The template language expression '${source}' cannot be evaluated because property '${key}' cannot be selected.${why}`,
+    );
+  if (val === null || val === undefined) {
+    if (optional) return undefined;
+    throw cannot();
+  }
+  if (Array.isArray(val)) {
+    const index = typeof key === 'number' ? key : typeof key === 'string' && /^\d+$/.test(key) ? Number(key) : NaN;
+    if (!Number.isInteger(index)) throw cannot(' Array elements can only be selected using an integer index.');
+    if (index < 0 || index >= val.length) {
+      if (optional) return undefined;
+      throw new ExpressionError(
+        `The template language expression '${source}' cannot be evaluated because array index '${index}' is outside bounds (0, ${val.length - 1}) of array.`,
+      );
+    }
+    return val[index];
+  }
+  if (isPlainObject(val)) {
+    const found = findKey(val, String(key));
+    if (found !== undefined) return val[found];
+    if (optional) return undefined;
+    throw new ExpressionError(
+      `The template language expression '${source}' cannot be evaluated because property '${key}' doesn't exist, available properties are '${Object.keys(val).join(', ')}'.`,
+    );
+  }
+  throw cannot(` Property selection is not supported on values of type '${typeName(val)}'.`);
 }
 
 export type TryResult =
@@ -87,20 +157,6 @@ function hasUnknownFunction(node: ExprNode): string | null {
     if (!registry.has(name.toLowerCase())) return name;
   }
   return null;
-}
-
-/** @{...} whole-string stringification rule (legacy lines: null/undefined pass through). */
-function stringifyWhole(v: any): any {
-  if (v === null || v === undefined) return v;
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
-}
-
-/** Template-part stringification rule (legacy evaluateTemplateString: null/undefined → ''). */
-function stringifyPart(v: any): string {
-  if (v === null || v === undefined) return '';
-  if (typeof v === 'object') return JSON.stringify(v);
-  return String(v);
 }
 
 let warnedEmptyRegistry = false;
@@ -117,7 +173,7 @@ function evaluateExpressionString(e: string, ctx: RunContext): TryResult {
   const node = tryParseExpression(e);
   if (!node) return { ok: false, reason: 'parse-error' };
   const unknown = hasUnknownFunction(node);
-  if (unknown) return { ok: false, reason: `unknown-function:${unknown}` };
+  if (unknown) return { ok: false, reason: `unknown-function:${unknown}`, error: unknownFunctionError(unknown) };
   try {
     return { ok: true, value: evaluateNode(node, ctx) };
   } catch (err) {
@@ -126,26 +182,26 @@ function evaluateExpressionString(e: string, ctx: RunContext): TryResult {
 }
 
 function evaluateTemplate(e: string, ctx: RunContext): TryResult {
-  // An expr part referencing an unknown function degrades to '@' + raw text
-  // (the legacy evaluateTemplateString shape), never fails the whole template.
-  const parts = parseTemplate(e).map(part => {
-    if (part.kind === 'expr' && hasUnknownFunction(part.node)) {
-      console.warn(`Failed to evaluate template expression: @{${part.raw}} (unknown function)`);
-      return { kind: 'text' as const, text: '@' + part.raw };
-    }
-    return part;
-  });
-
-  // Whole-string single expression: @{expr} → stringified value (may be
-  // null/undefined). A throw here propagates like legacy's inline @{...}.
-  if (parts.length === 1 && parts[0].kind === 'expr') {
-    try {
-      return { ok: true, value: stringifyWhole(evaluateNode(parts[0].node, ctx)) };
-    } catch (err) {
-      return { ok: false, reason: `eval-error: ${err instanceof Error ? err.message : String(err)}`, error: err };
-    }
+  // `@@{` is an escaped `@{`: evaluate the pieces around it and join them with a literal '@{'.
+  const pieces = e.split('@@{');
+  let out = '';
+  for (let i = 0; i < pieces.length; i++) {
+    if (i > 0) out += '@{';
+    const r = pieces[i].includes('@{') ? evaluateTemplatePiece(pieces[i], ctx) : { ok: true as const, value: pieces[i] };
+    if (!r.ok) return r;
+    out += r.value;
   }
+  return { ok: true, value: out };
+}
 
+/** Interpolation always yields text (null → '', true → 'True'). */
+function evaluateTemplatePiece(e: string, ctx: RunContext): TryResult {
+  const parts = parseTemplate(e);
+  for (const part of parts) {
+    if (part.kind !== 'expr') continue;
+    const unknown = hasUnknownFunction(part.node);
+    if (unknown) return { ok: false, reason: `unknown-function:${unknown}`, error: unknownFunctionError(unknown) };
+  }
   let out = '';
   for (const part of parts) {
     if (part.kind === 'text') {
@@ -153,11 +209,9 @@ function evaluateTemplate(e: string, ctx: RunContext): TryResult {
       continue;
     }
     try {
-      out += stringifyPart(evaluateNode(part.node, ctx));
-    } catch (error) {
-      // Legacy shape: a failing segment degrades to '@' + inner text with a warning.
-      console.warn(`Failed to evaluate template expression: @{${part.raw}}`, error);
-      out += '@' + part.raw;
+      out += toText(evaluateNode(part.node, ctx));
+    } catch (err) {
+      return { ok: false, reason: `eval-error: ${err instanceof Error ? err.message : String(err)}`, error: err };
     }
   }
   return { ok: true, value: out };
@@ -170,6 +224,8 @@ function evaluateTemplate(e: string, ctx: RunContext): TryResult {
 export function tryEvaluate(expression: string, ctx: RunContext): TryResult {
   const e = String(expression).trim();
   if (!e) return { ok: false, reason: 'empty' };
+  // A leading '@@' escapes the '@': the rest is literal text.
+  if (e.startsWith('@@')) return { ok: true, value: e.slice(1) };
 
   if (e.startsWith('@{')) {
     return evaluateTemplate(e, ctx);

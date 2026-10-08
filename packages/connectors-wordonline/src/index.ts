@@ -121,10 +121,10 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
     }
 
     // Handle sensitivity label options for ConvertToPdf
-    if (inputs.extractSensitivityLabel !== undefined) {
+    if (inputs.extractSensitivityLabel != null) {
       normalized.extractSensitivityLabel = inputs.extractSensitivityLabel;
     }
-    if (inputs.fetchSensitivityLabelMetadata !== undefined) {
+    if (inputs.fetchSensitivityLabelMetadata != null) {
       normalized.fetchSensitivityLabelMetadata = inputs.fetchSensitivityLabelMetadata;
     }
 

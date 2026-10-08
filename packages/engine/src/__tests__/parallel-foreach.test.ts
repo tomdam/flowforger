@@ -299,8 +299,8 @@ describe('parallel foreach: sequential fallback with repetitions: 1', () => {
 // ---------------------------------------------------------------------------
 // 6. Error stops new iterations
 // ---------------------------------------------------------------------------
-describe('parallel foreach: error stops new iterations', () => {
-  it('should fail overall, finish in-flight, skip remaining when an item fails', async () => {
+describe('parallel foreach: a failed item does not stop the others', () => {
+  it('runs every item and fails overall, like the cloud', async () => {
     let invocationCount = 0;
 
     // Use a connector mock that reads ctx.iterationInfo for the current index
@@ -318,7 +318,7 @@ describe('parallel foreach: error stops new iterations', () => {
     };
 
     // 6 items, concurrency 2 -> batches: [0,1], [2,3], [4,5]
-    // Item 2 fails -> items 4,5 should be skipped
+    // Item 2 fails; the cloud still runs 3, 4 and 5 (conformance/flows/control.ff.ts)
     const foreachNode = makeParallelForeach({
       itemsExpression: '@createArray(0, 1, 2, 3, 4, 5)',
       parallel: true,
@@ -348,9 +348,10 @@ describe('parallel foreach: error stops new iterations', () => {
     assert.ok(failedIter, 'item 2 iteration should exist');
     assert.equal(failedIter.status, 'Failed', 'item 2 should be Failed');
 
-    // Some items should be Skipped (at least items 4 and 5)
-    const skippedIters = foreachTrace.iterations.filter((it: IterationTraceEntry) => it.status === 'Skipped');
-    assert.ok(skippedIters.length > 0, 'some iterations should be Skipped');
+    // Every other item ran and succeeded
+    const others = foreachTrace.iterations.filter((it: IterationTraceEntry) => it.item !== 2);
+    assert.deepEqual(others.map((it: IterationTraceEntry) => it.status), Array(5).fill('Succeeded'));
+    assert.equal(invocationCount, 6);
 
     // Total iterations should cover all 6 items
     assert.equal(foreachTrace.iterations.length, 6, 'all 6 iteration slots should be present');

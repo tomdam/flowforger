@@ -23,7 +23,7 @@ class ArrayOperations {
     await ctx.compose('AllTasks', ctx.triggerBody()?.['tasks']);
 
     // Categorize tasks by priority using a loop + if
-    /** @action CategorizeLoop */
+    /** @action CategorizeLoop @runtimeConfig {"concurrency":{"repetitions":1}} */
     for (const task of ctx.outputs('AllTasks') ?? []) {
       /** @action CheckPriority */
       if (task?.['priority'] === 'high') {

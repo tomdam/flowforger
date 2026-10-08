@@ -81,8 +81,19 @@ describe('variables() property navigation', () => {
     );
   });
 
-  it('returns undefined for a missing key instead of the expression text', () => {
-    assert.equal(evalExpression(`@variables('FunctionParametersAsObject')['nope']`, ctx), undefined);
+  it('a null-safe missing key yields undefined; a non-null-safe one throws like the cloud', () => {
+    assert.equal(evalExpression(`@variables('FunctionParametersAsObject')?['nope']`, ctx), undefined);
+    assert.throws(
+      () => evalExpression(`@variables('FunctionParametersAsObject')['nope']`, ctx),
+      /property 'nope' doesn't exist, available properties are 'CreateZugferdAzureFunctionUrl, CreateZugferdSourceLibraryName, nested, slash\/key'/,
+    );
+  });
+
+  it('matches property names case-insensitively', () => {
+    assert.equal(
+      evalExpression(`@variables('FunctionParametersAsObject')['createzugferdsourcelibraryname']`, ctx),
+      'Accounting',
+    );
   });
 
   it('still returns the whole value with no path', () => {
@@ -125,8 +136,10 @@ describe('bracket notation on the other reference functions', () => {
   });
 
   it('trigger()', () => {
-    assert.equal(evalExpression(`@trigger()['body']['CreateZugferdSourceLibraryName']`, ctx), 'Accounting');
-    assert.deepEqual(evalExpression(`@trigger().body`, ctx), OBJ);
+    assert.equal(evalExpression(`@trigger()['outputs']['body']['CreateZugferdSourceLibraryName']`, ctx), 'Accounting');
+    assert.deepEqual(evalExpression(`@trigger().outputs.body`, ctx), OBJ);
+    // Like the cloud (conformance/flows/trigger.ff.ts): the record has no body of its own.
+    assert.throws(() => evalExpression(`@trigger()['body']`, ctx), /property 'body' doesn't exist/);
   });
 
   it('workflow()', () => {
@@ -168,10 +181,10 @@ describe('trailing property paths on generic function calls', () => {
     assert.equal(evalExpression(`@createArray('a)b', 'c')[0]`, ctx), 'a)b');
   });
 
-  it('an unknown function with a path still falls back to the raw expression', () => {
-    assert.equal(
-      evalExpression(`@noSuchFn('x')?['y']`, ctx),
-      `@noSuchFn('x')?['y']`,
+  it('an unknown function with a path fails with the cloud error', () => {
+    assert.throws(
+      () => evalExpression(`@noSuchFn('x')?['y']`, ctx),
+      /The template function 'noSuchFn' is not defined or not valid\./,
     );
   });
 

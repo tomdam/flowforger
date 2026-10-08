@@ -178,7 +178,8 @@ export interface TemplateError {
  * Split "text @{expr} text" into parts. Non-template strings return one text
  * part. An @{...} whose inner text does not parse yields a text part with the
  * raw '@' + inner (lenient degrade). Never throws. An unterminated '@{'
- * leaves the rest of the string as text.
+ * leaves the rest of the string as text (and is an error for the strict and
+ * diagnostics variants: the cloud refuses to save it).
  */
 export function parseTemplate(input: string): TemplatePart[] {
   return scanTemplate(input).parts;
@@ -228,7 +229,16 @@ function scanTemplate(input: string): { parts: TemplatePart[]; errors: TemplateE
         if (c === '}') { closeIdx = j; break; }
         j++;
       }
-      if (closeIdx === -1) break; // unterminated — rest is text
+      if (closeIdx === -1) {
+        // Unterminated: the rest is text, and the cloud refuses to save it.
+        errors.push({
+          start: i,
+          length: input.length - i,
+          message: `the string interpolation segment starting at position '${i}' is not terminated. Make sure that every '@{' is followed by its '}'.`,
+          pos: i,
+        });
+        break;
+      }
 
       if (i > textStart) parts.push({ kind: 'text', text: input.slice(textStart, i) });
       const raw = input.slice(i + 2, closeIdx);

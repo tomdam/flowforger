@@ -109,11 +109,17 @@ describe('placement rules in validateFlowIR', () => {
     assert.match(e[0].message, /recurrence trigger \('Recurrence'\)/);
   });
 
-  it('Response with a connector trigger → RESPONSE_TRIGGER error naming the connector', () => {
-    const r = validateFlowIR(makeIR([response('Respond')], connectorTrigger));
+  it('Response with a polling connector trigger (recurrence) → RESPONSE_TRIGGER error naming the connector', () => {
+    const polling = { ...connectorTrigger, inputs: { ...(connectorTrigger as any).inputs, recurrence: { frequency: 'Minute', interval: 5 } } };
+    const r = validateFlowIR(makeIR([response('Respond')], polling));
     const e = codes(r, 'RESPONSE_TRIGGER');
     assert.equal(e.length, 1);
     assert.match(e[0].message, /sharepoint GetOnNewItems/);
+  });
+
+  it('Response with a webhook connector trigger (no recurrence) → no RESPONSE_TRIGGER', () => {
+    const r = validateFlowIR(makeIR([response('Respond')], connectorTrigger));
+    assert.deepEqual(codes(r, 'RESPONSE_TRIGGER'), []);
   });
 
   it('Response with a manual (button / PowerAppV2) trigger → no RESPONSE_TRIGGER', () => {
@@ -122,53 +128,29 @@ describe('placement rules in validateFlowIR', () => {
     assert.deepEqual(codes(r, 'RESPONSE_TRIGGER'), []);
   });
 
-  it('Response in a fan-out parallel branch → RESPONSE_PARALLEL warning', () => {
-    // A auto-chains after GetData; Respond explicitly runs after GetData too → parallel with A
+  it('Response in a parallel branch is allowed (the cloud saves it; conformance/save-rules/placement)', () => {
     const r = validateFlowIR(makeIR([
       compose('GetData'),
       compose('A'),
       response('Respond', { runAfter: { GetData: ['Succeeded'] } }),
     ]));
-    const w = codes(r, 'RESPONSE_PARALLEL');
-    assert.equal(w.length, 1);
-    assert.equal(w[0].level, 'warning');
-    assert.match(w[0].message, /'Respond'.*'A' both run after 'GetData' \(succeeded\)/);
-    assert.equal(r.ok, true, 'a warning does not fail validation');
+    assert.deepEqual(r.issues.filter((i) => i.level !== 'info'), []);
   });
 
-  it('two Responses after the same scope on disjoint statuses (try/catch) → no RESPONSE_PARALLEL', () => {
-    const r = validateFlowIR(makeIR([
-      scope('Try', [compose('Work')]),
-      response('Respond_OK', { runAfter: { Try: ['Succeeded'] } }),
-      response('Respond_Error', { runAfter: { Try: ['Failed', 'TimedOut'] } }),
-    ]));
-    assert.deepEqual(codes(r, 'RESPONSE_PARALLEL'), []);
+  it('an action at nesting level 9 (inside 9 blocks) → NESTING_DEPTH error on the outermost one past the limit', () => {
+    let inner: any[] = [compose('Deep')];
+    for (let i = 10; i >= 1; i--) inner = [scope(`S${i}`, inner)];
+    const r = validateFlowIR(makeIR(inner));
+    const e = codes(r, 'NESTING_DEPTH');
+    assert.equal(e.length, 1);
+    assert.equal(e[0].level, 'error');
+    assert.equal(e[0].path, 'nodes.S10');
+    assert.match(e[0].message, /nested at level '9' which exceeds the maximum nesting limit of '8'/);
   });
 
-  it('Response that joins the branches (runAfter both) → no RESPONSE_PARALLEL', () => {
-    const r = validateFlowIR(makeIR([
-      compose('GetData'),
-      compose('A', { runAfter: { GetData: ['Succeeded'] } }),
-      compose('B', { runAfter: { GetData: ['Succeeded'] } }),
-      response('Respond', { runAfter: { A: ['Succeeded'], B: ['Succeeded'] } }),
-    ]));
-    assert.deepEqual(codes(r, 'RESPONSE_PARALLEL'), []);
-  });
-
-  it('actions nested deeper than 8 levels → NESTING_DEPTH warning', () => {
+  it('an action at nesting level 8 (inside 8 blocks) → no NESTING_DEPTH', () => {
     let inner: any[] = [compose('Deep')];
     for (let i = 8; i >= 1; i--) inner = [scope(`S${i}`, inner)];
-    const r = validateFlowIR(makeIR(inner));
-    const w = codes(r, 'NESTING_DEPTH');
-    assert.equal(w.length, 1);
-    assert.equal(w[0].level, 'warning');
-    assert.equal(w[0].path, 'nodes.Deep');
-    assert.match(w[0].message, /9 levels deep/);
-  });
-
-  it('actions nested exactly 8 levels → no NESTING_DEPTH', () => {
-    let inner: any[] = [compose('Deep')];
-    for (let i = 7; i >= 1; i--) inner = [scope(`S${i}`, inner)];
     const r = validateFlowIR(makeIR(inner));
     assert.deepEqual(codes(r, 'NESTING_DEPTH'), []);
   });
@@ -227,11 +209,11 @@ describe('placement rules in validateLogicApps', () => {
     const r = validateLogicApps(makeLA({ Respond: laResponse() }, { type: 'Recurrence', recurrence: { frequency: 'Day', interval: 1 } }));
     const e = codes(r, 'RESPONSE_TRIGGER');
     assert.equal(e.length, 1);
-    assert.match(e[0].message, /'Recurrence' trigger \("manual"\)/);
+    assert.match(e[0].message, /recurrence trigger \("manual"\)/);
   });
 
-  it('Response with an OpenApiConnection trigger → RESPONSE_TRIGGER naming the operation', () => {
-    const trigger = { type: 'OpenApiConnection', inputs: { host: { operationId: 'GetOnNewItems' } } };
+  it('Response with a polling OpenApiConnection trigger → RESPONSE_TRIGGER naming the operation', () => {
+    const trigger = { type: 'OpenApiConnection', recurrence: { frequency: 'Minute', interval: 5 }, inputs: { host: { operationId: 'GetOnNewItems' } } };
     const r = validateLogicApps(makeLA({ Respond: laResponse() }, trigger));
     const e = codes(r, 'RESPONSE_TRIGGER');
     assert.equal(e.length, 1);
@@ -243,23 +225,6 @@ describe('placement rules in validateLogicApps', () => {
     assert.deepEqual(codes(r, 'RESPONSE_TRIGGER'), []);
   });
 
-  it('Response in a parallel branch → RESPONSE_PARALLEL warning; disjoint statuses → none', () => {
-    const parallel = validateLogicApps(makeLA({
-      GetData: laCompose(),
-      A: laCompose({ GetData: ['Succeeded'] }),
-      Respond: laResponse({ GetData: ['Succeeded'] }),
-    }));
-    assert.equal(codes(parallel, 'RESPONSE_PARALLEL').length, 1);
-    assert.equal(parallel.ok, true);
-
-    const tryCatch = validateLogicApps(makeLA({
-      Try: laScope({ Work: laCompose() }),
-      Respond_OK: laResponse({ Try: ['Succeeded'] }),
-      Respond_Error: laResponse({ Try: ['Failed', 'TimedOut'] }),
-    }));
-    assert.deepEqual(codes(tryCatch, 'RESPONSE_PARALLEL'), []);
-  });
-
   it('InitializeVariable inside a Scope → VAR_INIT_NESTED error', () => {
     const r = validateLogicApps(makeLA({
       Init_ok: { type: 'InitializeVariable', inputs: { variables: [{ name: 'a', type: 'integer' }] }, runAfter: {} },
@@ -268,12 +233,13 @@ describe('placement rules in validateLogicApps', () => {
     assert.deepEqual(codes(r, 'VAR_INIT_NESTED').map((i) => i.path), ['definition.actions.Wrap.actions.Init_nested']);
   });
 
-  it('actions nested deeper than 8 levels → NESTING_DEPTH warning', () => {
+  it('an action inside 9 blocks → NESTING_DEPTH error', () => {
     let inner: Record<string, any> = { Deep: laCompose() };
-    for (let i = 8; i >= 1; i--) inner = { [`S${i}`]: laScope(inner) };
+    for (let i = 9; i >= 1; i--) inner = { [`S${i}`]: laScope(inner) };
     const r = validateLogicApps(makeLA(inner));
-    const w = codes(r, 'NESTING_DEPTH');
-    assert.equal(w.length, 1);
-    assert.match(w[0].path!, /\.Deep$/);
+    const e = codes(r, 'NESTING_DEPTH');
+    assert.equal(e.length, 1);
+    assert.equal(e[0].level, 'error');
+    assert.match(e[0].path!, /\.Deep$/);
   });
 });

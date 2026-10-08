@@ -29,11 +29,12 @@ export class LexError extends Error {
 }
 
 const IDENT_RE = /[A-Za-z_$][\w$]*/y;
-const NUM_RE = /-?\d+(\.\d+)?([eE][+-]?\d+)?/y;
+const NUM_RE = /[-+]?\d+(\.\d+)?([eE][+-]?\d+)?/y;
 const SINGLE_CHARS = new Set(['(', ')', ',', '[', ']', '.', '?', '@']);
 
-/** Token types after which a `-` cannot start a negative literal (no infix
- *  minus exists in this grammar, but be conservative anyway). */
+/** Token types after which a `-` or `+` cannot start a signed literal (no infix
+ *  operators exist in this grammar, but be conservative anyway). The cloud
+ *  accepts `+1` (conformance/save-rules/expressions: syntax-plus-number). */
 const VALUE_END = new Set([')', ']', 'str', 'num', 'ident']);
 
 export function tokenize(input: string): Token[] {
@@ -66,7 +67,7 @@ export function tokenize(input: string): Token[] {
     }
 
     const prev = tokens[tokens.length - 1]?.t;
-    if (/\d/.test(ch) || (ch === '-' && /\d/.test(input[i + 1] ?? '') && !VALUE_END.has(prev as string))) {
+    if (/\d/.test(ch) || ((ch === '-' || ch === '+') && /\d/.test(input[i + 1] ?? '') && !VALUE_END.has(prev as string))) {
       NUM_RE.lastIndex = i;
       const m = NUM_RE.exec(input);
       if (m) {

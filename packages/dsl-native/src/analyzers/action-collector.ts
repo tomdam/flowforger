@@ -905,13 +905,16 @@ function collectHttpAction(args: Expression[], ctx: TransformContext): ActionNod
     actionInputs.authentication = inputs.authentication;
   }
 
-  return {
+  const node = {
     id: genActionId(),
     type: 'action',
     kind: 'http',
     name,
     inputs: actionInputs,
   } as ActionNode;
+  // HttpInputs.retryPolicy; a @retryPolicy JSDoc tag, applied afterwards, wins.
+  if (inputs.retryPolicy) node.retryPolicy = inputs.retryPolicy;
+  return node;
 }
 
 function collectComposeAction(args: Expression[], ctx: TransformContext): ActionNode {
@@ -979,11 +982,13 @@ function collectExpressionAction(args: Expression[], ctx: TransformContext): Act
 
 function collectResponseAction(args: Expression[], ctx: TransformContext): ActionNode {
   const name = getStringArg(args[0]);
-  const statusCode = args[1] ? getNumericArg(args[1]) : 200;
+  // A status code or headers given as an expression (ctx.eval(...)) stay expressions.
+  const statusCode = !args[1] ? 200
+    : args[1].getKind() === SyntaxKind.NumericLiteral ? getNumericArg(args[1])
+    : transformValue(args[1], ctx);
   // Check for undefined identifier before transforming body
   const body = args[2] && args[2].getText() !== 'undefined' ? transformValue(args[2], ctx) : undefined;
-  // Check for undefined identifier before calling getObjectArg
-  const headers = args[3] && args[3].getText() !== 'undefined' ? getObjectArg(args[3], ctx) : undefined;
+  const headers = args[3] && args[3].getText() !== 'undefined' ? transformValue(args[3], ctx) : undefined;
   const schema = args[4] && args[4].getText() !== 'undefined' ? getObjectArg(args[4], ctx) : undefined;
   const kind = args[5] ? getStringArg(args[5]) as 'VirtualAgent' | 'PowerApp' | undefined : undefined;
 

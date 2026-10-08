@@ -29,6 +29,13 @@ describe('parameterOverrides propagation to child workflows', () => {
         kind: 'compose',
         inputs: { value: "@parameters('Site (cr_site)')" },
       } as any,
+      {
+        id: 'act_2',
+        name: 'Respond',
+        type: 'action',
+        kind: 'response',
+        inputs: { statusCode: 200, body: "@outputs('Echo')" },
+      } as any,
     ],
   };
 

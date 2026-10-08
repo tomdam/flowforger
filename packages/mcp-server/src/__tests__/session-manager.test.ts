@@ -241,3 +241,73 @@ describe('lifecycle', () => {
     assert.ok(out.includes('NEWEST'), 'the newest line must survive truncation');
   });
 });
+
+describe('child flows', () => {
+  const PARENT = `
+@Flow({ name: 'Parent' })
+class Parent {
+  @ManualTrigger()
+  trigger(ctx: FlowContext) {}
+
+  @Action()
+  async run(ctx: FlowContext) {
+    await ctx.callWorkflow("Call_child", "Child", { mode: "respond" });
+    await ctx.compose("After_call", ctx.eval(\`@body('Call_child')\`));
+  }
+
+  constructor(ctx: FlowContext) {
+    ctx.flow.childFlows = { "Child": { workflowId: "00000000-0000-0000-0000-000000000001", dslPath: "child.ff.ts" } };
+  }
+}
+`;
+  // An untagged switch and a response whose name is on the next line: both used to
+  // pause with line null (no source-map entry).
+  const CHILD = `
+@Flow({ name: 'Child' })
+class Child {
+  @ManualTrigger()
+  trigger(ctx: FlowContext) {}
+
+  @Action()
+  async run(ctx: FlowContext) {
+    switch (ctx.eval(\`@triggerBody()?['mode']\`)) {
+      /** @action Case_respond @type case */
+      case 'respond':
+        await ctx.response(
+          "Respond_ok",
+          200,
+          { ok: true }
+        );
+      default:
+        await ctx.compose("No_response", "done");
+    }
+  }
+}
+`;
+
+  it('reports the paused child flow, its file and a line for every node', async () => {
+    const parentFile = path.join(dir, 'parent.ff.ts');
+    fs.writeFileSync(parentFile, PARENT, 'utf-8');
+    fs.writeFileSync(path.join(dir, 'child.ff.ts'), CHILD, 'utf-8');
+
+    const entry = await mgr.start({ file: parentFile });
+    assert.equal(entry.flow, 'Parent');
+
+    const inSwitch = await mgr.resume('step', { into: true });
+    assert.equal(inSwitch.node?.name, 'Switch');
+    assert.equal(inSwitch.flow, 'Child');
+    assert.equal(inSwitch.file, 'child.ff.ts');
+    assert.equal(inSwitch.stackDepth, 1);
+    assert.equal(inSwitch.line, 9);
+
+    const atResponse = await mgr.resume('step', {});
+    assert.equal(atResponse.node?.name, 'Respond_ok');
+    assert.equal(atResponse.flow, 'Child');
+    assert.equal(atResponse.line, 12);
+
+    const back = await mgr.resume('step', {});
+    assert.equal(back.node?.name, 'After_call');
+    assert.equal(back.flow, 'Parent');
+    assert.equal(back.stackDepth, 0);
+  });
+});

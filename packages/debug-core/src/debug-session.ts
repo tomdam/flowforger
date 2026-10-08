@@ -8,8 +8,9 @@
  */
 
 import type { FlowIR, Node, ActionNode } from '@flowforger/ir';
-import type { RunContext, ExecuteNodeResult, ActionOutput, BaseConnector } from '@flowforger/engine';
-import { executeNode, evalExpression, run as runEngine } from '@flowforger/engine';
+import type { RunContext, ExecuteNodeResult, ActionOutput, BaseConnector, TraceEntry } from '@flowforger/engine';
+import { childFlowCallResult, executeNode, evalExpression, run as runEngine, TopLevelRun, toTriggerOutputs, triggerRunInfo } from '@flowforger/engine';
+import type { StepResult } from '@flowforger/ir';
 import { buildExpressionScope, evaluateDebugInput } from '@flowforger/dsl-native';
 import type { DslSourceMap, ExpressionScope } from '@flowforger/dsl-native';
 import type { DebugFlowSource, DebugHost } from './host.js';
@@ -33,6 +34,19 @@ export interface DebugCallbacks {
    * the web driver uses it to maintain its ExecutionTrace.
    */
   onNodeExecuted?: (node: Node, result: ExecuteNodeResult, frameKey: string) => void;
+  /**
+   * Fired for a top-level node that does not run: its runAfter is not met, or a
+   * Terminate ended the run. `entry` is its Skipped trace entry, with the skipped
+   * actions inside it under `children`. Separate from onNodeExecuted so hosts'
+   * execution counts (fast-forward, replay boundaries) only count nodes that ran.
+   */
+  onNodeSkipped?: (node: Node, entry: TraceEntry, frameKey: string) => void;
+}
+
+/** How a debugged run ended: the same status (and Terminate runError) run() would report. */
+export interface RunOutcome {
+  status: StepResult['status'];
+  error?: any;
 }
 
 export interface DebugSessionOptions {
@@ -94,6 +108,23 @@ function formatComposeValue(value: unknown): string {
   return str;
 }
 
+/**
+ * Why a node failed, for the output log. A failed connector/HTTP/child-flow call has no
+ * `error` (as in the cloud) but a status code, and a block fails because a child did.
+ */
+export function failureReason(node: Node, result: Pick<ExecuteNodeResult, 'error' | 'outputs'>): string {
+  const { error } = result;
+  if (error) {
+    if (typeof error === 'string') return error;
+    if (typeof error.message === 'string') return error.code ? `${error.code}: ${error.message}` : error.message;
+    return formatComposeValue(error);
+  }
+  const statusCode = result.outputs?.statusCode;
+  if (statusCode !== undefined) return `status code ${statusCode}`;
+  if (['scope', 'if', 'switch', 'foreach', 'dountil'].includes(node.type)) return 'an action inside it failed';
+  return 'no error details';
+}
+
 export class DebugSession {
   private root: DebugFlowSource;
   private host: DebugHost;
@@ -109,6 +140,8 @@ export class DebugSession {
   private steps: FlattenedStep[] = [];
   private isRunning = false;
   private isStopped = false;
+  /** The root flow's outcome once it has run to the end (not when stopped). */
+  private runOutcome: RunOutcome | null = null;
 
   // Call stack for child flow debugging
   private callStack: DebugFrame[] = [];
@@ -187,8 +220,10 @@ export class DebugSession {
     this.ctx = {
       variables: { ...initialVariables },
       actions: new Map<string, ActionOutput>(),
-      triggerData: triggerPayload,
+      triggerData: toTriggerOutputs(triggerPayload),
+      trigger: triggerRunInfo(root.ir, new Date()),
       workflowName: root.ir.name,
+      childFlows: root.ir.childFlows,
       parameters,
       iterationStack: [],
       artifacts: [],
@@ -334,10 +369,12 @@ export class DebugSession {
 
       this.steppingMode = this.stopOnEntry ? 'step' : 'continue';
 
-      await this.executeSteps(this.steps, this.ctx, this.root);
+      const outcome = await this.executeSteps(this.steps, this.ctx, this.root);
 
       if (!this.isStopped) {
-        this.callbacks.onOutput('Flow execution completed', 'console');
+        this.runOutcome = outcome;
+        const detail = outcome.error?.message ? ` — ${outcome.error.message}` : '';
+        this.callbacks.onOutput(`Flow execution completed: ${outcome.status}${detail}`, 'console');
       }
     } catch (err: any) {
       this.callbacks.onOutput(`Fatal error: ${err.message}`, 'stderr');
@@ -357,9 +394,12 @@ export class DebugSession {
     steps: FlattenedStep[],
     ctx: RunContext,
     source: DebugFlowSource,
-  ): Promise<ExecuteNodeResult | null> {
+  ): Promise<RunOutcome> {
     const breakpoints = this.getBreakpointsForKey(source.key);
-    let lastResult: ExecuteNodeResult | null = null;
+    // runAfter skips, handled failures, Terminate and the final status, exactly as run() does.
+    const top = new TopLevelRun(ctx);
+    // The node Set Next Statement moved to: it runs even if its runAfter is not met.
+    let jumpTargetId: string | undefined;
 
     // Track which inlined steps have already been handled by a parent control-
     // flow node so we don't re-run them at the top level. Tracked by node.id
@@ -378,6 +418,20 @@ export class DebugSession {
 
       // Skip nodes already executed (or marked Skipped) by a parent control-flow node
       if (handledIds.has(node.id)) continue;
+
+      // Like the cloud, a node whose runAfter is not met does not run, and neither does
+      // anything after a Terminate. Checked before pausing: a skipped node never stops.
+      if (node.id !== jumpTargetId) {
+        const skipped = top.skip(node);
+        if (skipped) {
+          handledIds.add(node.id);
+          this.collectDescendantIds(node, handledIds);
+          const reason = ctx.actions.get(node.name)?.cloudError?.message ?? 'a Terminate action ended the run';
+          this.callbacks.onOutput(`Skipped: ${node.name} — ${reason}`, 'console');
+          this.callbacks.onNodeSkipped?.(node, skipped, source.key);
+          continue;
+        }
+      }
 
       // Check if we should pause BEFORE executing. The stateful part is
       // evaluated exactly ONCE, before the gate: the fast-forward controller's
@@ -431,6 +485,7 @@ export class DebugSession {
             handledIds.clear();
             for (const step of steps) this.collectDescendantIds(step.node, handledIds);
             for (const id of jump.continuationIds) handledIds.delete(id);
+            jumpTargetId = steps[jump.targetIndex]?.node.id;
             i = jump.targetIndex - 1; // the loop's i++ lands on the target
             continue;
           }
@@ -449,16 +504,9 @@ export class DebugSession {
       this.executingNodeStack.push(node);
       try {
         const result = await this.executeStepNode(node, ctx, source);
-        lastResult = result;
+        if (node.id === jumpTargetId) jumpTargetId = undefined;
 
-        ctx.actions.set(node.name, {
-          status: result.status,
-          // Omitted rather than set to undefined: only connector/HTTP/child-flow
-          // nodes capture a resolved invocation payload.
-          ...(result.inputs !== undefined ? { inputs: result.inputs } : {}),
-          outputs: result.outputs,
-          error: result.error,
-        });
+        top.finished(node, result);
         ctx.variables = result.variables;
         handledIds.add(node.id);
         this.callbacks.onNodeExecuted?.(node, result, source.key);
@@ -472,51 +520,26 @@ export class DebugSession {
           this.collectDescendantIds(node, handledIds);
         }
 
-        // Handle if node: mark skipped branch steps in ctx.actions (kept for
-        // engine-visible run status; the loop dedup itself is id-based above).
-        if (node.type === 'if' && result.outputs?.branchTaken) {
-          const ifNode = node as any;
-          const skippedBranch = result.outputs.branchTaken === 'actions' ? 'elseActions' : 'actions';
-          const skippedNodes = ifNode[skippedBranch] || [];
-          for (const skipped of skippedNodes) {
-            ctx.actions.set(skipped.name, { status: 'Skipped' });
-          }
-        }
-
-        // Handle switch node: mark non-matching case steps as skipped
-        if (node.type === 'switch' && result.outputs) {
-          const switchNode = node as any;
-          const matchedCase = result.outputs.matchedCase;
-          const matched = result.outputs.matched;
-          if (switchNode.cases) {
-            for (const c of switchNode.cases) {
-              if (matched && c.name === matchedCase) continue;
-              for (const child of c.actions || []) {
-                ctx.actions.set(child.name, { status: 'Skipped' });
-              }
-            }
-            if (matched && switchNode.defaultActions) {
-              for (const child of switchNode.defaultActions) {
-                ctx.actions.set(child.name, { status: 'Skipped' });
-              }
-            }
-          }
-        }
+        // The engine records the if/switch branches it did not take as Skipped
+        // (with the cloud's reason), so there is nothing to mark here.
 
         if (result.status === 'Failed') {
-          this.callbacks.onOutput(`Action '${node.name}' failed: ${result.error}`, 'stderr');
+          this.callbacks.onOutput(`Action '${node.name}' failed: ${failureReason(node, result)}`, 'stderr');
         }
 
         this.logComposeOutput(node, result);
+        if (result._terminate) {
+          this.callbacks.onOutput(`Terminate in '${node.name}' ended the run: ${result._terminate}`, 'console');
+        }
       } catch (err: any) {
         this.callbacks.onOutput(`Error executing '${node.name}': ${err.message}`, 'stderr');
-        ctx.actions.set(node.name, { status: 'Failed', error: err.message });
+        top.finished(node, { status: 'Failed', error: err, variables: ctx.variables });
       } finally {
         this.executingNodeStack.length = stackDepthBefore;
       }
     }
 
-    return lastResult;
+    return top.outcome();
   }
 
   /** Execute a single node, with debug hooks for nested children and child flow interception. */
@@ -611,17 +634,8 @@ export class DebugSession {
           // the step-in path and the engine's own nested-run behavior.
           if (childResult.artifacts?.length) this.ctx.artifacts?.push(...childResult.artifacts);
 
-          const childFlowBody = childResult.trace[childResult.trace.length - 1]?.outputs;
-          const result: ExecuteNodeResult = {
-            status: childResult.status,
-            outputs: {
-              workflowReferenceName: workflowRef,
-              childWorkflowName: child.ir.name,
-              status: childResult.status,
-              body: childFlowBody,
-            },
-            variables: { ...ctx.variables },
-          };
+          const { status, outputs } = childFlowCallResult(childResult.response, workflowRef);
+          const result: ExecuteNodeResult = { status, outputs, variables: { ...ctx.variables } };
           return { handled: true, result };
         } catch (err: any) {
           this.callbacks.onOutput(`Child flow '${workflowRef}' failed: ${err.message}`, 'stderr');
@@ -667,9 +681,11 @@ export class DebugSession {
     const childCtx: RunContext = {
       variables: {},
       actions: new Map<string, ActionOutput>(),
-      triggerData: triggerInput,
+      triggerData: toTriggerOutputs(triggerInput),
+      trigger: triggerRunInfo(child.ir, new Date()),
       workflowName: child.ir.name,
       parameters: childParameters,
+      childFlows: child.ir.childFlows,
       iterationStack: [],
       // Child artifacts funnel into the root collector so a child's saveFile
       // surfaces in the host's single Files list.
@@ -712,28 +728,16 @@ export class DebugSession {
 
     try {
       // Execute child flow steps with debugging
-      const lastResult = await this.executeSteps(childSteps, childCtx, child);
+      const outcome = await this.executeSteps(childSteps, childCtx, child);
 
-      // Build result from last action output
-      const lastAction = childSteps
-        .filter(s => s.node.type !== 'trigger' && s.node.type !== 'recurrence')
-        .map(s => childCtx.actions.get(s.node.name))
-        .filter(Boolean)
-        .pop();
+      // The parent gets what the child's Response answered (502 NoResponse without one).
+      const { status, outputs } = childFlowCallResult(childCtx.response, workflowRef);
 
-      const childFlowBody = lastAction?.outputs;
-      const status = lastResult?.status || 'Succeeded';
-
-      this.callbacks.onOutput(`Returned from child flow: ${child.ir.name}`, 'console');
+      this.callbacks.onOutput(`Returned from child flow: ${child.ir.name} (${outcome.status})`, 'console');
 
       return {
         status,
-        outputs: {
-          workflowReferenceName: workflowRef,
-          childWorkflowName: child.ir.name,
-          status,
-          body: childFlowBody,
-        },
+        outputs,
         variables: { ...this.getActiveContext().variables },
       };
     } catch (err: any) {
@@ -904,6 +908,14 @@ export class DebugSession {
   }
 
   /** Root frame context (the main flow's ctx, regardless of call stack depth). */
+  /**
+   * How the root flow ended once it has run to the end: Succeeded, Failed (an uncaught
+   * failure), or a Terminate's status and runError. Null while running or after a stop.
+   */
+  getRunOutcome(): RunOutcome | null {
+    return this.runOutcome;
+  }
+
   getRootContext(): RunContext {
     return this.ctx;
   }
@@ -1025,7 +1037,8 @@ export class DebugSession {
       expression,
       this.getExpressionScope(),
       this.getActiveContext(),
-      evalExpression,
+      // The console may ask for action() / listCallbackUrl(), which a flow itself cannot.
+      (expr, ctx) => evalExpression(expr, { ...ctx, debugEvaluation: true }),
     );
     return { result: outcome.result, value: outcome.value };
   }

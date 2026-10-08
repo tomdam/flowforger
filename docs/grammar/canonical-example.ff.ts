@@ -61,11 +61,11 @@ class CanonicalOrderFlow {
 
     // ---- Early validation + terminate (rule R5: never `return`) --------------
     // grammar: if_stmt. An `if` is recognized structurally (by its TypeScript kind),
-    // so @type and @action are BOTH optional here — but recommended: @type documents
-    // intent, and @action gives a stable, unique, descriptive name (the auto-name
-    // for an un-annotated if is generic, e.g. "Condition", and collides easily).
+    // so it takes no @type; @action is optional but recommended — it gives a stable,
+    // unique, descriptive name (the auto-name for an un-annotated if is generic,
+    // e.g. "Condition", and collides easily).
     // Compound conditions use && / || — NOT ctx.and()/ctx.or() (rule R7).
-    /** @action Validate_order @type if */
+    /** @action Validate_order */
     if (ctx.empty(ctx.triggerBody()?.['orderId']) || ctx.empty(ctx.triggerBody()?.['lineItems'])) {
       // 'Failed' may carry { code, message }; 'Succeeded'/'Cancelled' must NOT (rule R5).
       await ctx.terminate('Reject_invalid_order', 'Failed', {
@@ -98,7 +98,7 @@ class CanonicalOrderFlow {
     // ---- Foreach over a connector body, with array append (rules R8, R12) ----
     // grammar: foreach_stmt. ctx.body('Get_matching_records')?['value'] is the
     // connector's result collection.
-    /** @action For_each_line_item @type foreach */
+    /** @action For_each_line_item */
     for (const item of ctx.body('Get_matching_records')?.['value'] ?? []) {
       // Append to an array variable with .push() ONLY — never spread/concat (rule R8).
       // ctx.items('<loopName>') is the current iteration element. Auto-named
@@ -117,7 +117,7 @@ class CanonicalOrderFlow {
     // references after the switch are ambiguous if names collide — so suffix names.
     // (`break;` is idiomatic TS and accepted, but has no Logic Apps equivalent and is
     //  ignored by the compiler — cases never fall through in the lowered flow.)
-    /** @action Route_by_type @type switch */
+    /** @action Route_by_type */
     switch (ctx.outputs('Normalize_order')?.['type']) {
       /** @action Case_express @type case */
       case 'express':
@@ -169,7 +169,7 @@ class CanonicalOrderFlow {
 
     // ---- Do-Until poll (grammar: dountil_stmt) ------------------------------
     // @limit caps iterations (jsdoc-tags.ebnf). Safe to auto-chain after FinallyBlock.
-    /** @action Poll_status @type until @limit {"count":10,"timeout":"PT5M"} */
+    /** @action Poll_status @limit {"count":10,"timeout":"PT5M"} */
     do {
       await ctx.http('Check_status', { method: 'GET', url: 'https://api.example.com/status' });
     } while (ctx.body('Check_status')?.['state'] !== 'complete');

@@ -40,8 +40,15 @@ export const LIMITS = {
   expressionLength: 8192,
   /** Parameters per workflow (Consumption). */
   parametersPerFlow: 50,
-  /** Recurrence interval maximum per frequency (minimum is always 1). */
-  recurrenceIntervalMax: { Month: 16, Day: 500, Hour: 12_000, Minute: 72_000, Second: 9_999_999 } as Record<string, number>,
+  /**
+   * Recurrence interval maximum per frequency (minimum is always 1): the cloud caps the period at
+   * 500 days ("The recurrence frequency cannot be greater than '500.00:00:00'").
+   */
+  recurrenceIntervalMax: { Year: 1, Month: 16, Week: 71, Day: 500, Hour: 12_000, Minute: 720_000, Second: 43_200_000 } as Record<string, number>,
+  /** A scheduled recurrence must next run within this many months. */
+  recurrenceScheduleStartMonths: 18,
+  /** A recurrence may start at most this many years ahead. */
+  recurrenceStartYears: 49,
 } as const;
 
 const RUN_AFTER_STATUSES = new Set(['succeeded', 'failed', 'skipped', 'timedout']);
@@ -78,6 +85,8 @@ interface Rec {
   retryPolicy?: unknown;
   foreachConcurrency?: unknown;
   caseCount?: number;
+  /** A Switch's `expression` as authored. */
+  switchExpression?: unknown;
   until?: { actionCount: number; hasLimit: boolean; count?: unknown; timeout?: unknown };
   terminate?: { runStatus?: unknown; hasRunError: boolean };
   responseKind?: string;
@@ -89,6 +98,10 @@ interface Rec {
   connectionName?: string;
   /** Select / Filter array / Table: item() refers to the current element of `from`, no loop needed. */
   allowsItem?: boolean;
+  /** The enclosing scope/condition/switch/loop, if any. */
+  parent?: Rec;
+  /** Path of the sibling group (container branch) this action is in. */
+  groupPath: string;
 }
 
 interface Group {
@@ -118,6 +131,11 @@ interface Model {
   parameterCount: number;
   /** Connection reference names (undefined = the document carries none). */
   connectionReferences?: Set<string>;
+  /**
+   * An action without runAfter runs after its previous sibling (Flow IR, as the emitter writes it)
+   * rather than at the start of its container (Logic Apps JSON).
+   */
+  implicitSequentialRunAfter: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -217,14 +235,22 @@ function runRules(m: Model): ValidationIssue[] {
     err('ACTION_COUNT', `Flow has ${m.recs.length} actions; the limit is ${LIMITS.actionsPerFlow} per flow. Split the work into child flows.`);
   }
   if (m.triggerCount > 1) {
-    err('TRIGGER_COUNT', `Definition has ${m.triggerCount} triggers; Power Automate flows must have exactly one.`, 'definition.triggers');
+    warn('TRIGGER_COUNT',
+      `Definition has ${m.triggerCount} triggers. Power Automate saves and activates it, but the maker portal and FlowForger work with one trigger: ` +
+      `only the first is shown, run locally and kept when the flow is converted to the DSL.`, 'definition.triggers');
   }
   const definedVars = new Map<string, Rec>();
   let variableCount = 0;
   for (const r of m.recs) {
     for (const v of r.defines || []) {
       variableCount++;
-      if (!definedVars.has(lower(v.name))) definedVars.set(lower(v.name), r);
+      const first = definedVars.get(lower(v.name));
+      if (!first) definedVars.set(lower(v.name), r);
+      else {
+        err('VAR_INIT_DUPLICATE',
+          `Variable '${v.name}' is initialized more than once ('${first.name}' and '${r.name}'; names are case-insensitive). ` +
+          `Power Automate rejects the flow on save ("A variable must only be initialized once").`, r.path);
+      }
       if (v.type !== undefined && !(typeof v.type === 'string' && VARIABLE_TYPES.has(lower(v.type)))) {
         err('VARIABLE_TYPE', `Variable '${v.name}' has type '${String(v.type)}'; allowed types are String, Integer, Float, Boolean, Array and Object.`, r.path);
       }
@@ -234,11 +260,28 @@ function runRules(m: Model): ValidationIssue[] {
     err('VARIABLE_COUNT', `Flow initializes ${variableCount} variables; the limit is ${LIMITS.variablesPerFlow} per flow.`);
   }
   if (m.parameterCount > LIMITS.parametersPerFlow) {
-    warn('PARAMETER_COUNT', `Definition has ${m.parameterCount} parameters; the documented limit is ${LIMITS.parametersPerFlow} per flow.`);
+    err('PARAMETER_COUNT',
+      `Definition has ${m.parameterCount} parameters, counting $connections and $authentication; the limit is ${LIMITS.parametersPerFlow}. ` +
+      `Power Automate rejects the flow on save ("The number of template input parameters limit exceeded"). Group related values into one Object parameter.`);
   }
 
   // --- per action ------------------------------------------------------------------------------
   for (const r of m.recs) {
+    if (r.kind === 'switch' && r.switchExpression !== undefined) {
+      const e = r.switchExpression;
+      if (typeof e === 'string' && !e.trim().startsWith('@')) {
+        err('SWITCH_EXPRESSION',
+          `Switch '${r.name}' switches on the text '${e}', which is not an expression. Power Automate rejects the flow on save ` +
+          `("The property 'expression' ... is not a valid template language expression"). Switch on an expression (starting with '@').`,
+          r.path);
+      } else if (typeof e !== 'string' && (e === null || typeof e !== 'object' || Array.isArray(e))) {
+        const type = e === null ? 'Null' : Array.isArray(e) ? 'Array' : typeof e === 'number' ? (Number.isInteger(e) ? 'Integer' : 'Float') : typeof e === 'boolean' ? 'Boolean' : typeof e;
+        err('SWITCH_EXPRESSION',
+          `Switch '${r.name}' switches on the ${type} literal ${JSON.stringify(e)}. Power Automate rejects the flow on save ` +
+          `("Expression type '${type}' is not supported. Expression must be either a 'String' or 'Object'"). Switch on an expression (starting with '@').`,
+          r.path);
+      }
+    }
     if (r.kind === 'switch' && (r.caseCount ?? 0) > LIMITS.switchCases) {
       err('SWITCH_CASES', `Switch '${r.name}' has ${r.caseCount} cases; the limit is ${LIMITS.switchCases}.`, r.path);
     }
@@ -250,13 +293,13 @@ function runRules(m: Model): ValidationIssue[] {
     }
     if (r.kind === 'until' && r.until) {
       if (r.until.actionCount === 0) {
-        err('UNTIL_EMPTY', `Until loop '${r.name}' has no actions; an Until loop must contain at least one action.`, r.path);
+        warn('UNTIL_EMPTY', `Until loop '${r.name}' has no actions, so it only re-evaluates its condition until the limit is reached.`, r.path);
       }
       if (!r.until.hasLimit) {
-        err('UNTIL_LIMIT', `Until loop '${r.name}' has no limit; define limit.count and/or limit.timeout.`, r.path);
+        err('UNTIL_LIMIT', `Until loop '${r.name}' has no limit. Power Automate rejects the flow on save ("The property 'limit' is required on action type 'Until'"); define limit.count and/or limit.timeout.`, r.path);
       }
       if (r.until.count !== undefined && (!isInt(r.until.count) || r.until.count < LIMITS.untilCount.min || r.until.count > LIMITS.untilCount.max)) {
-        err('UNTIL_COUNT', `Until loop '${r.name}' has limit.count ${JSON.stringify(r.until.count)}; allowed range is ${LIMITS.untilCount.min}-${LIMITS.untilCount.max}.`, r.path);
+        warn('UNTIL_COUNT', `Until loop '${r.name}' has limit.count ${JSON.stringify(r.until.count)}. Power Automate saves it, but the documented range is ${LIMITS.untilCount.min}-${LIMITS.untilCount.max}.`, r.path);
       }
       if (r.until.timeout !== undefined && parseIsoDurationMs(r.until.timeout) === undefined) {
         warn('UNTIL_TIMEOUT', `Until loop '${r.name}' has limit.timeout ${JSON.stringify(r.until.timeout)}, which is not an ISO 8601 duration (e.g. 'PT1H', 'P1D').`, r.path);
@@ -281,7 +324,9 @@ function runRules(m: Model): ValidationIssue[] {
       }
     }
     if (r.targets !== undefined && !definedVars.has(lower(r.targets))) {
-      warn('VARIABLE_UNINITIALIZED', `Action '${r.name}' modifies variable '${r.targets}', but no InitializeVariable action defines it.`, r.path);
+      err('VARIABLE_UNINITIALIZED',
+        `Action '${r.name}' modifies variable '${r.targets}', but no InitializeVariable action defines it. ` +
+        `Power Automate rejects the flow on save ("The variable '${r.targets}' must be initialized before it can be used").`, r.path);
     }
     if (r.retryPolicy !== undefined) issues.push(...retryPolicyIssues(r.retryPolicy, r.name, r.path));
     if (r.connectionName !== undefined && m.connectionReferences && !m.connectionReferences.has(r.connectionName)) {
@@ -329,6 +374,9 @@ function runRules(m: Model): ValidationIssue[] {
           preds.push(lower(target));
         }
         const list = Array.isArray(statuses) ? statuses : [statuses];
+        if (list.length === 0) {
+          err('RUNAFTER_STATUS', `Action '${r.name}' runs after '${target}' with no status; list at least one of Succeeded, Failed, Skipped and TimedOut.`, r.path);
+        }
         for (const s of list) {
           if (typeof s !== 'string' || !RUN_AFTER_STATUSES.has(lower(s))) {
             err('RUNAFTER_STATUS', `Action '${r.name}' runs after '${target}' with status ${JSON.stringify(s)}; allowed statuses are Succeeded, Failed, Skipped and TimedOut.`, r.path);
@@ -362,16 +410,22 @@ function runRules(m: Model): ValidationIssue[] {
 
   // --- expression references -------------------------------------------------------------------
   const actionNames = new Set(byLowerName.keys());
-  const scanTargets: Array<{ name: string; path: string; scanValue: unknown; loops: Rec['loopAncestors']; allowsItem: boolean }> =
-    m.recs.map((r) => ({ name: r.name, path: r.path, scanValue: r.scanValue, loops: r.loopAncestors, allowsItem: !!r.allowsItem }));
+  const scanTargets: Array<{ name: string; path: string; scanValue: unknown; loops: Rec['loopAncestors']; allowsItem: boolean; rec?: Rec }> =
+    m.recs.map((r) => ({ name: r.name, path: r.path, scanValue: r.scanValue, loops: r.loopAncestors, allowsItem: !!r.allowsItem, rec: r }));
+  const readableFrom = runAfterPaths(m);
   if (m.trigger) scanTargets.push({ name: m.trigger.name, path: m.trigger.path, scanValue: m.trigger.scanValue, loops: [], allowsItem: false });
 
   for (const t of scanTargets) {
     const reported = new Set<string>();
     const once = (key: string, fn: () => void) => { if (!reported.has(key)) { reported.add(key); fn(); } };
     for (const { node, path, raw } of expressionsIn(t.scanValue, t.path)) {
-      if (raw.length > LIMITS.expressionLength) {
-        once(`len:${path}`, () => warn('EXPR_LENGTH', `Expression in '${t.name}' is ${raw.length} characters; the limit is ${LIMITS.expressionLength} per expression.`, path));
+      // The cloud counts an expression without its leading '@' (a template part's raw is already
+      // the text inside @{...}).
+      const length = raw.startsWith('@') ? raw.length - 1 : raw.length;
+      if (length > LIMITS.expressionLength) {
+        once(`len:${path}`, () => err('EXPR_LENGTH',
+          `Expression in '${t.name}' is ${length} characters; the limit is ${LIMITS.expressionLength} per expression. ` +
+          `Power Automate rejects the flow on save ("The template language expression limit exceeded"). Split it across Compose actions.`, path));
       }
       for (const call of walkCallNodes(node)) {
         const fn = lower(call.name);
@@ -379,6 +433,15 @@ function runRules(m: Model): ValidationIssue[] {
           const target = stringArg(call);
           if (target !== undefined && !actionNames.has(lower(target))) {
             once(`act:${target}`, () => err('EXPR_UNKNOWN_ACTION', `'${t.name}' references ${call.name}('${target}'), but no action named '${target}' exists. Power Automate rejects the flow on save (InvalidTemplate).`, path));
+          } else if (target !== undefined && t.rec) {
+            const from = t.rec;
+            const read = byLowerName.get(lower(target))![0];
+            if (read === from) {
+              once(`act:${target}`, () => err('EXPR_SELF_REFERENCE',
+                `'${t.name}' references ${call.name}('${target}'), which is the action itself. Power Automate rejects the flow on save ("The action cannot reference itself").`, path));
+            } else if (!readableFrom(from).has(read)) {
+              once(`act:${target}`, () => err('EXPR_RUNAFTER_PATH', runAfterPathMessage(from, read, call.name), path));
+            }
           }
         } else if (LOOP_REF_FUNCTIONS.has(fn)) {
           const target = stringArg(call);
@@ -391,17 +454,21 @@ function runRules(m: Model): ValidationIssue[] {
           }
         } else if (fn === 'item' && call.args.length === 0) {
           if (!t.allowsItem && !t.loops.some((l) => l.kind === 'foreach')) {
-            once('item', () => err('EXPR_LOOP_REFERENCE', `'${t.name}' uses item(), but it is not inside a foreach loop.`, path));
+            // The cloud saves this; there is no current item to read when it runs.
+            once('item', () => warn('EXPR_LOOP_REFERENCE', `'${t.name}' uses item(), but it is not inside a foreach loop (or a Select, Filter array or Create table), so there is no current item.`, path));
           }
         } else if (fn === 'parameters' && m.parameters) {
           const target = stringArg(call);
           if (target !== undefined && !m.parameters.has(target) && !IMPLICIT_PARAMETERS.has(target)) {
-            once(`param:${target}`, () => err('EXPR_UNKNOWN_PARAMETER', `'${t.name}' references parameters('${target}'), but no parameter named '${target}' is defined.`, path));
+            // The cloud saves this (conformance/save-rules/structure.mjs); the expression has nothing to read.
+            once(`param:${target}`, () => warn('EXPR_UNKNOWN_PARAMETER', `'${t.name}' references parameters('${target}'), but no parameter named '${target}' is defined.`, path));
           }
         } else if (fn === 'variables') {
           const target = stringArg(call);
           if (target !== undefined && !definedVars.has(lower(target))) {
-            once(`var:${target}`, () => warn('VARIABLE_UNDEFINED', `'${t.name}' references variables('${target}'), but no InitializeVariable action defines it.`, path));
+            once(`var:${target}`, () => err('VARIABLE_UNDEFINED',
+              `'${t.name}' references variables('${target}'), but no InitializeVariable action defines it. ` +
+              `Power Automate rejects the flow on save ("The variable '${target}' must be initialized before it can be used").`, path));
           }
         }
       }
@@ -409,6 +476,89 @@ function runRules(m: Model): ValidationIssue[] {
   }
 
   return issues;
+}
+
+/**
+ * The actions an expression in each action may read, as the cloud decides on save ("Action 'X' must
+ * either be in 'runAfter' path or within a scope action on the 'runAfter' path of action 'Y', or be a
+ * Trigger"): the transitive runAfter predecessors of the action and of every block enclosing it,
+ * with everything nested inside them. An Until may also read its own body in its condition, which
+ * is evaluated after each iteration. The enclosing blocks themselves are not readable, and neither
+ * is the action itself. Measured in conformance/save-rules/runafter-path.mjs.
+ */
+function runAfterPaths(m: Model): (from: Rec) => Set<Rec> {
+  const preds = new Map<Rec, Rec[]>();
+  const children = new Map<Rec, Rec[]>();
+  for (const g of m.groups) {
+    const siblings = new Map(g.recs.map((r) => [lower(r.name), r]));
+    g.recs.forEach((r, i) => {
+      if (r.runAfter && typeof r.runAfter === 'object' && !Array.isArray(r.runAfter)) {
+        preds.set(r, Object.keys(r.runAfter).map((k) => siblings.get(lower(k))).filter((p): p is Rec => !!p && p !== r));
+      } else if (r.runAfter === undefined && m.implicitSequentialRunAfter && i > 0) {
+        preds.set(r, [g.recs[i - 1]]);
+      }
+    });
+  }
+  for (const r of m.recs) if (r.parent) children.set(r.parent, [...(children.get(r.parent) || []), r]);
+  const addTree = (r: Rec, into: Set<Rec>) => {
+    into.add(r);
+    for (const c of children.get(r) || []) addTree(c, into);
+  };
+
+  const cache = new Map<Rec, Set<Rec>>();
+  return (from) => {
+    let readable = cache.get(from);
+    if (readable) return readable;
+    readable = new Set();
+    const seen = new Set<Rec>();
+    for (let n: Rec | undefined = from; n; n = n.parent) {
+      const stack = [...(preds.get(n) || [])];
+      while (stack.length) {
+        const p = stack.pop()!;
+        if (seen.has(p)) continue;
+        seen.add(p);
+        addTree(p, readable);
+        stack.push(...(preds.get(p) || []));
+      }
+    }
+    if (from.kind === 'until') for (const c of children.get(from) || []) addTree(c, readable);
+    cache.set(from, readable);
+    return readable;
+  };
+}
+
+function runAfterPathMessage(from: Rec, read: Rec, fn: string): string {
+  const chain = (r: Rec) => {
+    const out: Rec[] = [];
+    for (let n: Rec | undefined = r; n; n = n.parent) out.push(n);
+    return out;
+  };
+  const fromChain = chain(from);
+  const readChain = chain(read);
+  // The two sides just below their lowest common block (or the top level).
+  const common = fromChain.find((r) => readChain.includes(r));
+  const fromTop = common ? fromChain[fromChain.indexOf(common) - 1] : fromChain[fromChain.length - 1];
+  const readTop = common ? readChain[readChain.indexOf(common) - 1] : readChain[readChain.length - 1];
+  let why: string;
+  let fix: string;
+  if (common === read) {
+    why = `'${from.name}' is inside '${read.name}', and a block can only be read from outside, by an action that runs after it`;
+    fix = `Read '${read.name}' from an action after it.`;
+  } else if (common === from) {
+    why = `'${read.name}' is inside '${from.name}', which evaluates its ${from.kind === 'foreach' ? 'items' : 'expression'} before anything inside it runs`;
+    fix = `Read '${read.name}' from an action after '${from.name}'.`;
+  } else if (common && fromTop.groupPath !== readTop.groupPath) {
+    why = `'${read.name}' is in another branch of '${common.name}'`;
+    fix = `Read it after '${common.name}' instead.`;
+  } else {
+    const reads = readTop === read ? `'${read.name}'` : `'${readTop.name}' (which contains '${read.name}')`;
+    const reader = fromTop === from ? `'${from.name}'` : `'${fromTop.name}' (which contains '${from.name}')`;
+    why = `${reads} is not a runAfter predecessor of ${reader}: it runs in parallel or later`;
+    fix = `Add '${readTop.name}' to the runAfter of '${fromTop.name}' (or of an action it runs after), or read it after the branches join.`;
+  }
+  return `'${from.name}' references ${fn}('${read.name}'), but ${why}. ` +
+    `Power Automate rejects the flow on save ("Action '${read.name}' must either be in 'runAfter' path or within a scope action on the 'runAfter' path of action '${from.name}'"). ` +
+    fix;
 }
 
 function retryPolicyIssues(policy: unknown, name: string, path: string): ValidationIssue[] {
@@ -452,21 +602,36 @@ function recurrenceIssues(rec: unknown, name: string, path: string): ValidationI
   if (r.interval !== undefined || freq !== undefined) {
     const max = freq ? LIMITS.recurrenceIntervalMax[freq.charAt(0).toUpperCase() + lower(freq).slice(1)] : undefined;
     if (!isInt(r.interval) || r.interval < 1 || (max !== undefined && r.interval > max)) {
-      issues.push({ level: 'error', code: 'RECURRENCE', message: `Trigger '${name}' has recurrence.interval ${JSON.stringify(r.interval)}; it must be an integer from 1 to ${max ?? '…'} for frequency '${freq ?? '?'}'.`, path });
+      issues.push({ level: 'error', code: 'RECURRENCE', message: `Trigger '${name}' has recurrence.interval ${JSON.stringify(r.interval)}; it must be an integer from 1 to ${max ?? '…'} for frequency '${freq ?? '?'}' (the period can be at most 500 days).`, path });
     }
   }
+  // Measured in conformance/save-rules/structure.mjs: each of these fails the save.
   const schedule = r.schedule;
-  if (schedule && typeof schedule === 'object' && freq) {
+  const scheduleKeys = schedule && typeof schedule === 'object' ? Object.keys(schedule).filter((k) => schedule[k] !== undefined) : [];
+  if (scheduleKeys.length > 0 && freq) {
     const f = lower(freq);
-    if ((schedule.hours !== undefined || schedule.minutes !== undefined) && f !== 'day' && f !== 'week') {
-      issues.push({ level: 'warning', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' sets schedule.hours/minutes with frequency '${freq}'; these are only honoured for Day and Week.`, path });
+    if (f !== 'day' && f !== 'week' && f !== 'month') {
+      issues.push({ level: 'error', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' has a schedule with frequency '${freq}'; a schedule needs frequency Day, Week or Month. Power Automate rejects the flow on save ("The recurrence schedule ... has an invalid recurrence frequency '${freq}'").`, path });
+    } else {
+      if (schedule.weekDays !== undefined && f !== 'week') {
+        issues.push({ level: 'error', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' sets schedule.weekDays with frequency '${freq}'; weekDays needs frequency Week. Power Automate rejects the flow on save ("could not have 'WeekDays' for recurrence frequency '${freq}'").`, path });
+      }
+      if (schedule.monthDays !== undefined && f !== 'month') {
+        issues.push({ level: 'error', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' sets schedule.monthDays with frequency '${freq}'; monthDays needs frequency Month. Power Automate rejects the flow on save ("could not have 'MonthDays' for recurrence frequency '${freq}'").`, path });
+      }
     }
-    if (schedule.weekDays !== undefined && f !== 'week') {
-      issues.push({ level: 'warning', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' sets schedule.weekDays with frequency '${freq}'; weekDays is only honoured for Week.`, path });
+    const start = typeof r.startTime === 'string' ? Date.parse(r.startTime) : NaN;
+    const limit = new Date();
+    limit.setUTCMonth(limit.getUTCMonth() + LIMITS.recurrenceScheduleStartMonths);
+    if (!Number.isNaN(start) && start > limit.getTime()) {
+      issues.push({ level: 'error', code: 'RECURRENCE', message: `Trigger '${name}' has a schedule that starts ${r.startTime}; a scheduled recurrence must next run within ${LIMITS.recurrenceScheduleStartMonths} months. Power Automate rejects the flow on save ("The next execution time ... must be within '18' months from the current time").`, path });
     }
-    if (schedule.monthDays !== undefined && f !== 'month') {
-      issues.push({ level: 'warning', code: 'RECURRENCE_SCHEDULE', message: `Trigger '${name}' sets schedule.monthDays with frequency '${freq}'; monthDays is only honoured for Month.`, path });
-    }
+  }
+  const startMs = typeof r.startTime === 'string' ? Date.parse(r.startTime) : NaN;
+  const latestStart = new Date();
+  latestStart.setUTCFullYear(latestStart.getUTCFullYear() + LIMITS.recurrenceStartYears);
+  if (!Number.isNaN(startMs) && startMs > latestStart.getTime()) {
+    issues.push({ level: 'error', code: 'RECURRENCE', message: `Trigger '${name}' has recurrence.startTime ${r.startTime}, more than ${LIMITS.recurrenceStartYears} years ahead. Power Automate rejects the flow on save ("start time ... cannot be greater than '49' years in the future").`, path });
   }
   if (r.startTime !== undefined && (typeof r.startTime !== 'string' || Number.isNaN(Date.parse(r.startTime)))) {
     issues.push({ level: 'error', code: 'RECURRENCE', message: `Trigger '${name}' has recurrence.startTime ${JSON.stringify(r.startTime)}, which is not a parseable date-time (e.g. '2026-01-01T08:00:00Z').`, path });
@@ -486,7 +651,7 @@ function irModel(ir: FlowIR): Model {
   let trigger: TriggerInfo | undefined;
   let triggerCount = 0;
 
-  function walk(nodes: Node[], path: string, loops: Rec['loopAncestors']) {
+  function walk(nodes: Node[], path: string, loops: Rec['loopAncestors'], parent?: Rec) {
     const group: Group = { path, recs: [] };
     for (const n of nodes) {
       const anyN = n as any;
@@ -503,7 +668,8 @@ function irModel(ir: FlowIR): Model {
             name: n.name,
             path: `nodes.${n.name}`,
             kind,
-            recurrence: n.type === 'recurrence' ? inputs : undefined,
+            // A polling connector trigger's recurrence is held to the same limits.
+            recurrence: n.type === 'recurrence' ? inputs : anyN.kind === 'connector' ? inputs.recurrence : undefined,
             concurrencyRuns: anyN.runtimeConfiguration?.concurrency?.runs,
             retryPolicy: inputs.retryPolicy,
             scanValue: n.type === 'trigger' && anyN.kind === 'connector' ? inputs.params : undefined,
@@ -520,6 +686,8 @@ function irModel(ir: FlowIR): Model {
         loopAncestors: loops,
         scanValue: undefined,
         retryPolicy: anyN.retryPolicy,
+        parent,
+        groupPath: path,
       };
       if (n.type === 'action') {
         const k = anyN.kind as string;
@@ -554,6 +722,7 @@ function irModel(ir: FlowIR): Model {
       } else if (n.type === 'switch') {
         rec.kind = 'switch';
         rec.scanValue = { expression: anyN.expression };
+        rec.switchExpression = anyN.expression;
         rec.caseCount = (anyN.cases || []).length;
       } else if (n.type === 'scope') {
         rec.kind = 'scope';
@@ -566,13 +735,13 @@ function irModel(ir: FlowIR): Model {
         : n.type === 'dountil' ? [...loops, { name: n.name, kind: 'until' }]
         : loops;
       if (n.type === 'foreach' || n.type === 'dountil' || n.type === 'scope') {
-        walk(anyN.actions || [], `${nodePath}.actions`, childLoops);
+        walk(anyN.actions || [], `${nodePath}.actions`, childLoops, rec);
       } else if (n.type === 'if') {
-        walk(anyN.actions || [], `${nodePath}.actions`, childLoops);
-        walk(anyN.elseActions || [], `${nodePath}.elseActions`, childLoops);
+        walk(anyN.actions || [], `${nodePath}.actions`, childLoops, rec);
+        walk(anyN.elseActions || [], `${nodePath}.elseActions`, childLoops, rec);
       } else if (n.type === 'switch') {
-        (anyN.cases || []).forEach((c: any, i: number) => walk(c.actions || [], `${nodePath}.cases[${i}].actions`, childLoops));
-        walk(anyN.defaultActions || [], `${nodePath}.defaultActions`, childLoops);
+        (anyN.cases || []).forEach((c: any, i: number) => walk(c.actions || [], `${nodePath}.cases[${i}].actions`, childLoops, rec));
+        walk(anyN.defaultActions || [], `${nodePath}.defaultActions`, childLoops, rec);
       }
     }
     groups.push(group);
@@ -586,8 +755,10 @@ function irModel(ir: FlowIR): Model {
     trigger,
     triggerCount,
     parameters: paramNames ? new Set(paramNames) : undefined,
-    parameterCount: paramNames?.length ?? 0,
+    // The emitter adds $connections and $authentication, and the cloud counts them.
+    parameterCount: new Set([...(paramNames ?? []), ...IMPLICIT_PARAMETERS]).size,
     connectionReferences: undefined,
+    implicitSequentialRunAfter: true,
   };
 }
 
@@ -624,7 +795,7 @@ function laModel(def: any, definition: any): Model {
   const recs: Rec[] = [];
   const groups: Group[] = [];
 
-  function walk(actions: any, path: string, loops: Rec['loopAncestors']) {
+  function walk(actions: any, path: string, loops: Rec['loopAncestors'], parent?: Rec) {
     if (!actions || typeof actions !== 'object') return;
     const group: Group = { path, recs: [] };
     for (const [name, action] of Object.entries<any>(actions)) {
@@ -639,6 +810,8 @@ function laModel(def: any, definition: any): Model {
         loopAncestors: loops,
         scanValue: laScanValue(action),
         retryPolicy: action.inputs?.retryPolicy,
+        parent,
+        groupPath: path,
       };
       if (type === 'select' || type === 'query' || type === 'table') rec.allowsItem = true;
       if (type === 'response') rec.responseKind = typeof action.kind === 'string' ? action.kind : undefined;
@@ -649,12 +822,14 @@ function laModel(def: any, definition: any): Model {
       }
       if (VAR_TARGET_KINDS.has(type) && typeof action.inputs?.name === 'string') rec.targets = action.inputs.name;
       if (type === 'foreach') rec.foreachConcurrency = action.runtimeConfiguration?.concurrency?.repetitions;
+      if (type === 'switch') rec.switchExpression = action.expression;
       if (type === 'switch') rec.caseCount = action.cases && typeof action.cases === 'object' ? Object.keys(action.cases).length : 0;
       if (type === 'until') {
         const limit = action.limit && typeof action.limit === 'object' ? action.limit : undefined;
         rec.until = {
           actionCount: action.actions && typeof action.actions === 'object' ? Object.keys(action.actions).length : 0,
-          hasLimit: !!limit && (limit.count !== undefined || limit.timeout !== undefined),
+          // The cloud requires the property, but accepts an empty one.
+          hasLimit: !!limit,
           count: limit?.count,
           timeout: limit?.timeout,
         };
@@ -667,11 +842,11 @@ function laModel(def: any, definition: any): Model {
         type === 'foreach' ? [...loops, { name, kind: 'foreach' }]
         : type === 'until' ? [...loops, { name, kind: 'until' }]
         : loops;
-      walk(action.actions, `${actionPath}.actions`, childLoops);
-      walk(action.else?.actions, `${actionPath}.else.actions`, childLoops);
-      walk(action.default?.actions, `${actionPath}.default.actions`, childLoops);
+      walk(action.actions, `${actionPath}.actions`, childLoops, rec);
+      walk(action.else?.actions, `${actionPath}.else.actions`, childLoops, rec);
+      walk(action.default?.actions, `${actionPath}.default.actions`, childLoops, rec);
       if (action.cases && typeof action.cases === 'object') {
-        for (const [caseName, c] of Object.entries<any>(action.cases)) walk(c?.actions, `${actionPath}.cases.${caseName}.actions`, childLoops);
+        for (const [caseName, c] of Object.entries<any>(action.cases)) walk(c?.actions, `${actionPath}.cases.${caseName}.actions`, childLoops, rec);
       }
     }
     groups.push(group);
@@ -687,7 +862,8 @@ function laModel(def: any, definition: any): Model {
       name,
       path: `definition.triggers.${name}`,
       kind: type === 'request' || type === 'manual' ? lower(String(t.kind ?? 'Http')) : undefined,
-      recurrence: type === 'recurrence' ? t.recurrence : undefined,
+      // The Recurrence trigger, or a polling connector trigger (same limits).
+      recurrence: t.recurrence,
       concurrencyRuns: t.runtimeConfiguration?.concurrency?.runs,
       retryPolicy: t.inputs?.retryPolicy,
       scanValue: laScanValue(t),
@@ -705,6 +881,7 @@ function laModel(def: any, definition: any): Model {
     parameters: params ? new Set(params) : undefined,
     parameterCount: params?.length ?? 0,
     connectionReferences: connRefs && typeof connRefs === 'object' ? new Set(Object.keys(connRefs)) : undefined,
+    implicitSequentialRunAfter: false,
   };
 }
 

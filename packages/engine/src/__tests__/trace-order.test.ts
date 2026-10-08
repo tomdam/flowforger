@@ -5,7 +5,8 @@ import type { FlowIR, Node } from '@flowforger/ir';
 
 // Scope/if/switch entries come before the actions they contain, which are
 // nested under the block's `children` — the same way a loop's body is nested
-// under `iterations`. These tests pin that shape at every depth.
+// under `iterations`. Like the cloud, the branches an if/switch did not take are
+// there too, as Skipped, in definition order. These tests pin that shape at every depth.
 
 const TRIGGER = { id: 'trg_1', name: 'manual', type: 'trigger', kind: 'manual', inputs: {} } as any;
 
@@ -22,7 +23,7 @@ function shape(entries: TraceEntry[]): any[] {
 }
 
 describe('trace order: control blocks come before their body', () => {
-  it('nests the branch that ran under an if, after the entries that preceded it', async () => {
+  it('nests both branches under an if, after the entries that preceded it', async () => {
     const result = await run(
       makeFlow([
         compose('act_1', 'Member', 'Alice'),
@@ -39,8 +40,9 @@ describe('trace order: control blocks come before their body', () => {
     );
 
     assert.equal(result.status, 'Succeeded');
-    assert.deepEqual(shape(result.trace), ['manual', 'Member', ['Check_Member', ['Note']], 'After']);
+    assert.deepEqual(shape(result.trace), ['manual', 'Member', ['Check_Member', ['Note', 'Note2']], 'After']);
     const check = result.trace.find((t) => t.name === 'Check_Member')!;
+    assert.deepEqual(check.children!.map((c) => c.status), ['Succeeded', 'Skipped']);
     assert.deepEqual(check.outputs, { conditionResult: true, branchTaken: 'actions' });
   });
 
@@ -58,17 +60,18 @@ describe('trace order: control blocks come before their body', () => {
       ]),
     );
 
-    assert.deepEqual(shape(result.trace), ['manual', ['Check', ['Else']]]);
+    assert.deepEqual(shape(result.trace), ['manual', ['Check', ['Then', 'Else']]]);
+    assert.deepEqual(result.trace[1].children!.map((c) => c.status), ['Skipped', 'Succeeded']);
   });
 
-  it('gives an if with no branch to run an empty children list', async () => {
+  it('lists only the skipped branch of an if with no branch to run', async () => {
     const result = await run(
       makeFlow([
         { id: 'if_1', name: 'Check', type: 'if', condition: '@equals(1, 2)', actions: [compose('act_1', 'Then', 1)] } as any,
       ]),
     );
 
-    assert.deepEqual(result.trace[1].children, []);
+    assert.deepEqual(result.trace[1].children!.map((c) => [c.name, c.status]), [['Then', 'Skipped']]);
   });
 
   it('nests a switch, including the skipped actions of the cases that did not match', async () => {
@@ -88,9 +91,9 @@ describe('trace order: control blocks come before their body', () => {
       ]),
     );
 
-    assert.deepEqual(shape(result.trace), ['manual', ['Route', ['TaxEU', 'TaxUS', 'TaxOther']]]);
+    assert.deepEqual(shape(result.trace), ['manual', ['Route', ['TaxUS', 'TaxEU', 'TaxOther']]]);
     const statuses = result.trace[1].children!.map((c) => c.status);
-    assert.deepEqual(statuses, ['Succeeded', 'Skipped', 'Skipped']);
+    assert.deepEqual(statuses, ['Skipped', 'Succeeded', 'Skipped']);
   });
 
   it('nests blocks inside blocks at every depth', async () => {
@@ -143,7 +146,8 @@ describe('trace order: control blocks come before their body', () => {
     );
 
     const iterations = result.trace.find((t) => t.name === 'Loop')!.iterations!;
-    assert.deepEqual(iterations.map((it) => shape(it.actions)), [[['IsOne', ['One']]], [['IsOne', []]]]);
+    assert.deepEqual(iterations.map((it) => shape(it.actions)), [[['IsOne', ['One']]], [['IsOne', ['One']]]]);
+    assert.deepEqual(iterations.map((it) => it.actions[0].children![0].status), ['Succeeded', 'Skipped']);
   });
 
   it('nests an if under its parent inside each parallel foreach iteration', async () => {
@@ -169,7 +173,8 @@ describe('trace order: control blocks come before their body', () => {
     );
 
     const iterations = result.trace.find((t) => t.name === 'Loop')!.iterations!;
-    assert.deepEqual(iterations.map((it) => shape(it.actions)), [[['IsOne', ['One']]], [['IsOne', []]]]);
+    assert.deepEqual(iterations.map((it) => shape(it.actions)), [[['IsOne', ['One']]], [['IsOne', ['One']]]]);
+    assert.deepEqual(iterations.map((it) => it.actions[0].children![0].status), ['Succeeded', 'Skipped']);
   });
 
   it('keeps the last top-level action as the last trace entry (the child-flow body source)', async () => {

@@ -10,6 +10,7 @@ const ok = (e: string) => {
   assert.equal(r.ok, true, `expected ok for ${e}: ${(r as any).reason ?? ''}`);
   return (r as { ok: true; value: any }).value;
 };
+const fails = (e: string) => assert.equal(tryEvaluate(e, ctx).ok, false, `expected failure for ${e}`);
 
 describe('collection / object functions', () => {
   it('first / last on arrays and strings', () => {
@@ -17,22 +18,32 @@ describe('collection / object functions', () => {
     assert.deepEqual(ok(`@last(variables('Rows'))`), { id: 2, name: 'second' });
     assert.equal(ok(`@first('abc')`), 'a');
     assert.equal(ok(`@last('abc')`), 'c');
-    assert.equal(ok(`@first(createArray())`), undefined);
-    assert.equal(ok(`@first(5)`), undefined);
+    assert.equal(ok(`@first(json('[]'))`), undefined);
+    // The cloud rejects anything but an array or a string.
+    fails(`@first(5)`);
+    fails(`@first(null)`);
+    fails(`@last(5)`);
+    fails(`@last(null)`);
   });
   it('skip / take', () => {
     assert.deepEqual(ok(`@skip(createArray(1, 2, 3), 1)`), [2, 3]);
     assert.deepEqual(ok(`@take(createArray(1, 2, 3), 2)`), [1, 2]);
-    assert.deepEqual(ok(`@skip('notarray', 1)`), []);
-    assert.deepEqual(ok(`@take('notarray', 1)`), []);
+    // Strings are collections of characters; objects and negative counts are rejected.
+    assert.equal(ok(`@skip('notarray', 3)`), 'array');
+    assert.equal(ok(`@take('notarray', 3)`), 'not');
+    fails(`@skip(json('{"a":1}'), 1)`);
+    fails(`@take(json('{"a":1}'), 1)`);
+    fails(`@skip(createArray(1, 2), -1)`);
+    fails(`@take(createArray(1, 2), -1)`);
   });
   it('union dedupes, intersection filters', () => {
     assert.deepEqual(ok(`@union(createArray(1, 2), createArray(2, 3))`), [1, 2, 3]);
     assert.deepEqual(ok(`@intersection(createArray(1, 2, 3), createArray(2, 3, 4))`), [2, 3]);
-    assert.deepEqual(ok(`@union(5, createArray(1))`), []);
+    fails(`@union(5, createArray(1))`); // mixed types fail in the cloud
   });
   it('createArray / range / array', () => {
     assert.deepEqual(ok(`@createArray('a', 1, true)`), ['a', 1, true]);
+    assert.equal(tryEvaluate(`@createArray()`, ctx).ok, false);
     assert.deepEqual(ok(`@range(2, 3)`), [2, 3, 4]);
     assert.deepEqual(ok(`@array('x')`), ['x']);
   });
@@ -44,16 +55,16 @@ describe('collection / object functions', () => {
     assert.deepEqual(ok(`@sort(createArray(3, 1, 2))`), [1, 2, 3]);
     assert.deepEqual(ok(`@sort(variables('Rows'), 'name')`),
       [{ id: 1, name: 'first' }, { id: 2, name: 'second' }]);
-    assert.equal(ok(`@sort('notarray')`), 'notarray');
+    fails(`@sort('notarray')`);
   });
   it('sort does not mutate the source', () => {
     ok(`@sort(variables('Rows'), 'name')`);
     assert.equal((ctx as any).variables.Rows[0].id, 1);
   });
-  it('reverse arrays and strings', () => {
+  it('reverse arrays only', () => {
     assert.deepEqual(ok(`@reverse(createArray(1, 2, 3))`), [3, 2, 1]);
-    assert.equal(ok(`@reverse('abc')`), 'cba');
-    assert.equal(ok(`@reverse(5)`), 5);
+    fails(`@reverse('abc')`);
+    fails(`@reverse(5)`);
   });
   it('addProperty / setProperty / removeProperty return copies', () => {
     assert.deepEqual(ok(`@addProperty(json('{"a":1}'), 'b', 2)`), { a: 1, b: 2 });

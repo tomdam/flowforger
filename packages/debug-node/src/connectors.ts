@@ -7,6 +7,7 @@
 
 import type { BaseConnector } from '@flowforger/engine';
 import { HttpConnector, WebContentsConnector } from '@flowforger/connectors-http';
+import { nodeHttpTransport } from './http-transport.js';
 import { SharePointConnector } from '@flowforger/connectors-sharepoint';
 import { DataverseConnector } from '@flowforger/connectors-dataverse';
 import { Office365Connector } from '@flowforger/connectors-office365';
@@ -48,7 +49,7 @@ const GRAPH_CONNECTORS: Array<{
 ];
 
 export function buildConnectors(options: ConnectorOptions): Record<string, BaseConnector> {
-  const connectors: Record<string, BaseConnector> = { http: new HttpConnector() as any };
+  const connectors: Record<string, BaseConnector> = { http: new HttpConnector({ transport: nodeHttpTransport }) as any };
 
   if (options.spToken) {
     connectors['sharepoint'] = new SharePointConnector({ token: options.spToken }) as any;

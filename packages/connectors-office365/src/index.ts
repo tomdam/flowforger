@@ -340,7 +340,7 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
     if (inputs['emailMessage/From'] || inputs['From']) {
       result.from = (inputs['emailMessage/From'] || inputs['From']) as string;
     }
-    if (inputs['emailMessage/IsHtml'] !== undefined || inputs['IsHtml'] !== undefined) {
+    if (inputs['emailMessage/IsHtml'] != null || inputs['IsHtml'] != null) {
       result.isHtml = Boolean(inputs['emailMessage/IsHtml'] ?? inputs['IsHtml']);
     }
     if (inputs['emailMessage/Attachments'] || inputs['Attachments']) {
@@ -541,7 +541,7 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
     if (attendees.length) event.attendees = attendees;
 
     if (inputs.isAllDay) event.isAllDay = true;
-    if (inputs.reminderMinutes !== undefined) {
+    if (inputs.reminderMinutes != null) {
       event.reminderMinutesBeforeStart = inputs.reminderMinutes;
       event.isReminderOn = inputs.reminderMinutes > 0;
     }
@@ -595,8 +595,8 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
     if (inputs.start) updates.start = { dateTime: inputs.start, timeZone: inputs.timeZone || 'UTC' };
     if (inputs.end) updates.end = { dateTime: inputs.end, timeZone: inputs.timeZone || 'UTC' };
     if (inputs.location) updates.location = { displayName: inputs.location };
-    if (inputs.isAllDay !== undefined) updates.isAllDay = inputs.isAllDay;
-    if (inputs.reminderMinutes !== undefined) {
+    if (inputs.isAllDay != null) updates.isAllDay = inputs.isAllDay;
+    if (inputs.reminderMinutes != null) {
       updates.reminderMinutesBeforeStart = inputs.reminderMinutes;
       updates.isReminderOn = inputs.reminderMinutes > 0;
     }

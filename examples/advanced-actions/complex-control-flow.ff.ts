@@ -23,7 +23,7 @@ class ComplexControlFlow {
     await ctx.compose('OrderBatches', ctx.triggerBody()?.['batches']);
 
     // ===== Outer loop: iterate over batches =====
-    /** @action ProcessBatches */
+    /** @action ProcessBatches @runtimeConfig {"concurrency":{"repetitions":1}} */
     for (const batch of ctx.outputs('OrderBatches') ?? []) {
       await ctx.compose('BatchInfo', {
         batchId: batch?.['batchId'],
@@ -46,7 +46,7 @@ class ComplexControlFlow {
       }
 
       // ===== Inner loop: process each order in the batch =====
-      /** @action ProcessOrders */
+      /** @action ProcessOrders @runtimeConfig {"concurrency":{"repetitions":1}} */
       for (const order of batch?.['orders'] ?? []) {
         // Try/catch scope around order processing
         /** @action TryProcessOrder @type scope */

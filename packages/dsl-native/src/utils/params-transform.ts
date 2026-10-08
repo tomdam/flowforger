@@ -75,6 +75,12 @@ export function unflattenParams(params: Record<string, any>): Record<string, any
 
       // Split on "/" and create nested structure
       const parts = key.split('/');
+      // A segment flattenParams would not flatten again ('item/@odata.id', a dashed key)
+      // stays a flat key, or the round trip would change the parameter.
+      if (parts.slice(1).some(isUnflattenableSegment)) {
+        result[key] = value;
+        continue;
+      }
       let current = result;
 
       for (let i = 0; i < parts.length - 1; i++) {
@@ -107,6 +113,11 @@ export function unflattenParams(params: Record<string, any>): Record<string, any
   }
 
   return result;
+}
+
+/** A key flattenParams keeps as data rather than a parameter path segment (see isPlainObjectToFlatten). */
+function isUnflattenableSegment(key: string): boolean {
+  return key.startsWith('@') || (key.includes('-') && !/^-?\d+$/.test(key));
 }
 
 /**

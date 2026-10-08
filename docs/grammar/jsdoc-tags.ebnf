@@ -58,8 +58,9 @@ action_name      = free_text_until_tag ;          (* trimmed; spaces allowed *)
 
 (* @type <kw>  — REQUIRED only for `scope` (a bare block becomes a Scope node only
    with @type scope). For if/switch/foreach/until the node kind is determined
-   STRUCTURALLY by the TypeScript statement, so @type there is advisory (documents
-   intent / aids round-trip parity). Token is [^\s@*]+; the meaningful values are: *)
+   STRUCTURALLY by the TypeScript statement, so @type there is accepted but ignored
+   — omit it (the DSL generator does not emit it). `case` is emitted on switch
+   cases by the generator. Token is [^\s@*]+; the accepted values are: *)
 type_tag         = "@type", ws, type_kw ;
 type_kw          = "if" | "switch" | "case" | "foreach" | "until" | "scope" ;
 
@@ -174,10 +175,10 @@ letter           = "a".."z" | "A".."Z" ;
                                    auto-named Increment_/Decrement_<name>; write
                                    x+=1 / x-=1 to name them. arr.push() honors @action.)
      if / foreach / switch /
-     until / scope .............. @action(optional; auto-named) @type @runAfter
+     until / scope .............. @action(optional; auto-named) @runAfter
                                   @runtimeConfig @description @metadata @trackedProperties
-                                  @type is REQUIRED only for scope; for if/foreach/
-                                  switch/until it is advisory (recognized structurally)
+                                  scope:   @type scope (REQUIRED; if/foreach/switch/until
+                                           are recognized structurally — omit @type)
                                   if:      @conditionFormat
                                   foreach: @typeCase
                                   until:   @limit(number|obj)

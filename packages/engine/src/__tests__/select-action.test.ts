@@ -36,13 +36,13 @@ describe('select action', () => {
     const result = await run(selectFlow("@toLower(item()?['Email'])"), {});
     assert.equal(result.status, 'Succeeded');
     const step = result.trace.find((t) => t.name === 'Select');
-    assert.deepEqual(step?.outputs, ['jane.doe@contoso.com', 'john.smith@contoso.com']);
+    assert.deepEqual(step?.outputs?.body, ['jane.doe@contoso.com', 'john.smith@contoso.com']);
   });
 
   it('returns a literal string map unchanged per item', async () => {
     const result = await run(selectFlow('fixed'), {});
     const step = result.trace.find((t) => t.name === 'Select');
-    assert.deepEqual(step?.outputs, ['fixed', 'fixed']);
+    assert.deepEqual(step?.outputs?.body, ['fixed', 'fixed']);
   });
 
   it('evaluates an object map into an array of objects', async () => {
@@ -51,7 +51,7 @@ describe('select action', () => {
       {}
     );
     const step = result.trace.find((t) => t.name === 'Select');
-    assert.deepEqual(step?.outputs, [
+    assert.deepEqual(step?.outputs?.body, [
       { mail: 'Jane.Doe@contoso.com', kind: 'Current', tag: 'user' },
       { mail: 'John.Smith@contoso.com', kind: 'Alumni', tag: 'user' },
     ]);

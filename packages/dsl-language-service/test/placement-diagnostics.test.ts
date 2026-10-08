@@ -135,11 +135,16 @@ describe('DSL038 — Response needs a request trigger', () => {
     assert.match(d[0].message, /@RecurrenceTrigger/);
   });
 
-  it('@ConnectorTrigger → DSL038 error', () => {
-    const d = placement(flowWith([`await ctx.response('R', 200, {});`], `@ConnectorTrigger({ connector: 'sharepoint', operation: 'GetOnNewItems', params: {} })`));
+  it('polling @ConnectorTrigger (with a recurrence) → DSL038 error', () => {
+    const d = placement(flowWith([`await ctx.response('R', 200, {});`], `@ConnectorTrigger({ connector: 'sharepoint', operation: 'GetOnNewItems', params: {}, recurrence: { frequency: 'Minute', interval: 5 } })`));
     assert.equal(d.length, 1);
     assert.equal(d[0].code, 'DSL038');
-    assert.match(d[0].message, /@ConnectorTrigger/);
+    assert.match(d[0].message, /polling @ConnectorTrigger/);
+  });
+
+  it('webhook @ConnectorTrigger (no recurrence) → no DSL038 (the cloud accepts it)', () => {
+    const d = placement(flowWith([`await ctx.response('R', 200, {});`], `@ConnectorTrigger({ connector: 'dataverse', operation: 'SubscribeWebhookTrigger', params: {} })`));
+    assert.deepEqual(d, []);
   });
 
   it('terminate with a recurrence trigger is fine (only response needs a caller)', () => {

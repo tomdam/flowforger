@@ -37,35 +37,6 @@ export function makeBinary(b64: string, contentType = 'application/octet-stream'
 }
 
 // 100-ns ticks at the Unix epoch (1970-01-01T00:00:00Z) since 0001-01-01.
-export const TICKS_AT_EPOCH = 621355968000000000;
-
-const UNIT_MS: Record<string, number> = {
-  second: 1000,
-  minute: 60_000,
-  hour: 3_600_000,
-  day: 86_400_000,
-  week: 604_800_000,
-};
-
-// Shift a Date by an interval in PA-style time units (case-insensitive, optional 's').
-export function shiftTime(date: Date, interval: number, unit: string): Date {
-  let u = unit.toLowerCase();
-  if (u.endsWith('s')) u = u.slice(0, -1);
-  if (u === 'month') {
-    const d = new Date(date);
-    d.setUTCMonth(d.getUTCMonth() + interval);
-    return d;
-  }
-  if (u === 'year') {
-    const d = new Date(date);
-    d.setUTCFullYear(d.getUTCFullYear() + interval);
-    return d;
-  }
-  const ms = UNIT_MS[u];
-  if (ms === undefined) return date;
-  return new Date(date.getTime() + interval * ms);
-}
-
 // Subset of Windows time-zone IDs Power Automate uses, mapped to IANA names.
 // Engine accepts either form. Add more entries here as needed.
 const WIN_TO_IANA: Record<string, string> = {
@@ -120,21 +91,6 @@ export function tzOffsetMs(utcDate: Date, tz: string): number {
   return asUtc - utcDate.getTime();
 }
 
-// Format a Date as ISO without trailing 'Z' — used by convertX functions whose
-// result is no longer in UTC. Trims the ms to match `YYYY-MM-DDTHH:mm:ss`.
-export function isoNoZone(d: Date): string {
-  return d.toISOString().slice(0, 19);
-}
-
-// Parse a wall-clock timestamp as if it were UTC, so the wall-clock numbers
-// (year/month/day/hour/min/sec) survive intact regardless of host timezone.
-// Used by convertToUtc / convertTimeZone where the input is "wall clock in
-// some source TZ" — JS would otherwise interpret naked ISO strings as host-local.
-export function parseAsUtc(ts: string): Date {
-  if (/Z$|[+-]\d{2}:?\d{2}$/.test(ts)) return new Date(ts);
-  return new Date(ts + 'Z');
-}
-
 // Silent error handler — xmldom logs warnings/errors to stderr by default,
 // which pollutes engine output for normal expression evaluation. Callers can
 // catch the actual parse failure via the returned doc.
@@ -166,129 +122,17 @@ export function serializeXPathResult(node: any): any {
   return String(node);
 }
 
+/** A data URI's media type as written (`text/plain` when it names none, as the cloud reads `data:,…`). */
 export function parseDataUri(uri: string): { contentType: string; content: string; isBase64: boolean } {
-  const match = uri.match(/^data:([^,]*?)(;base64)?,(.*)$/);
+  const match = uri.match(/^data:([^,]*?)(;base64)?,(.*)$/s);
   if (!match) {
-    return { contentType: 'text/plain;charset=utf-8', content: '', isBase64: false };
+    return { contentType: 'text/plain', content: '', isBase64: false };
   }
   return {
-    contentType: match[1] || 'text/plain;charset=utf-8',
+    contentType: match[1] || 'text/plain',
     content: match[3] || '',
     isBase64: !!match[2],
   };
-}
-
-/**
- * Format a number using a .NET-style numeric format string and a locale.
- * Supports standard specifiers (C, N, F, D, P, E, G, X) and basic custom
- * patterns made of '0', '#', '.', and ',' (e.g., '0.00', '#,##0.00').
- */
-export function formatNumberValue(value: number, format: string, locale: string): string {
-  if (!isFinite(value)) return String(value);
-
-  const standard = format.match(/^([CNFDPEGXcnfdpegx])(\d*)$/);
-  if (standard) {
-    const specifier = standard[1].toUpperCase();
-    const precision = standard[2] === '' ? undefined : Number(standard[2]);
-
-    try {
-      switch (specifier) {
-        case 'C': {
-          const fractionDigits = precision ?? 2;
-          const currency = currencyForLocale(locale);
-          return new Intl.NumberFormat(locale, {
-            style: 'currency',
-            currency,
-            minimumFractionDigits: fractionDigits,
-            maximumFractionDigits: fractionDigits,
-          }).format(value);
-        }
-        case 'N': {
-          const fractionDigits = precision ?? 2;
-          return new Intl.NumberFormat(locale, {
-            useGrouping: true,
-            minimumFractionDigits: fractionDigits,
-            maximumFractionDigits: fractionDigits,
-          }).format(value);
-        }
-        case 'F': {
-          const fractionDigits = precision ?? 2;
-          return new Intl.NumberFormat(locale, {
-            useGrouping: false,
-            minimumFractionDigits: fractionDigits,
-            maximumFractionDigits: fractionDigits,
-          }).format(value);
-        }
-        case 'D': {
-          const minDigits = precision ?? 1;
-          const intVal = Math.trunc(value);
-          const sign = intVal < 0 ? '-' : '';
-          return sign + Math.abs(intVal).toString().padStart(minDigits, '0');
-        }
-        case 'P': {
-          const fractionDigits = precision ?? 2;
-          return new Intl.NumberFormat(locale, {
-            style: 'percent',
-            minimumFractionDigits: fractionDigits,
-            maximumFractionDigits: fractionDigits,
-          }).format(value);
-        }
-        case 'E': {
-          const fractionDigits = precision ?? 6;
-          return value.toExponential(fractionDigits).replace('e', 'E');
-        }
-        case 'G': {
-          if (precision !== undefined) {
-            return value.toPrecision(precision);
-          }
-          return String(value);
-        }
-        case 'X': {
-          const intVal = Math.trunc(value);
-          let hex = (intVal >>> 0).toString(16).toUpperCase();
-          if (precision !== undefined) hex = hex.padStart(precision, '0');
-          return hex;
-        }
-      }
-    } catch {
-      // fall through to custom format handling
-    }
-  }
-
-  // Custom format string: count fractional digits from '0'/'#' after the decimal,
-  // detect grouping from a ',' before the decimal.
-  const decIdx = format.indexOf('.');
-  const intPart = decIdx >= 0 ? format.slice(0, decIdx) : format;
-  const fracPart = decIdx >= 0 ? format.slice(decIdx + 1) : '';
-  const minFrac = (fracPart.match(/0/g) || []).length;
-  const maxFrac = (fracPart.match(/[0#]/g) || []).length;
-  const useGrouping = intPart.includes(',');
-
-  try {
-    return new Intl.NumberFormat(locale, {
-      useGrouping,
-      minimumFractionDigits: minFrac,
-      maximumFractionDigits: Math.max(minFrac, maxFrac),
-    }).format(value);
-  } catch {
-    return String(value);
-  }
-}
-
-/**
- * Best-effort currency code for a locale, matching .NET's RegionInfo.ISOCurrencySymbol behavior.
- * Falls back to USD when the locale has no clear region.
- */
-function currencyForLocale(locale: string): string {
-  const map: Record<string, string> = {
-    US: 'USD', GB: 'GBP', DE: 'EUR', FR: 'EUR', IT: 'EUR', ES: 'EUR', NL: 'EUR',
-    AT: 'EUR', BE: 'EUR', IE: 'EUR', PT: 'EUR', FI: 'EUR', GR: 'EUR',
-    JP: 'JPY', CN: 'CNY', IN: 'INR', CA: 'CAD', AU: 'AUD', CH: 'CHF',
-    SE: 'SEK', NO: 'NOK', DK: 'DKK', PL: 'PLN', CZ: 'CZK', HU: 'HUF',
-    RU: 'RUB', BR: 'BRL', MX: 'MXN', KR: 'KRW', TR: 'TRY', ZA: 'ZAR',
-  };
-  const region = locale.split(/[-_]/)[1]?.toUpperCase();
-  return (region && map[region]) || 'USD';
 }
 
 /**

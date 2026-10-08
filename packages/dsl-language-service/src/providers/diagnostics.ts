@@ -34,6 +34,8 @@ import {
   walkCalls,
   KNOWN_FUNCTIONS,
   ParseError,
+  expressionSaveErrors,
+  expressionRuntimeErrors,
   type ExprNode,
 } from '@flowforger/expressions';
 import { getPositionFromOffset } from '../analyzer/dsl-parser.js';
@@ -108,6 +110,10 @@ export interface DiagnosticsOptions {
   checkLimits?: boolean;
   /** Check response kind vs trigger (DSL044) and @RecurrenceTrigger options (DSL045, DSL046) */
   checkTriggerOptions?: boolean;
+  /** Check flow variables changed inside a foreach that runs in parallel in the cloud (DSL047) */
+  checkParallelLoopState?: boolean;
+  /** Check that actions only read actions on their runAfter path (DSL048) */
+  checkRunAfterPath?: boolean;
 }
 
 const defaultOptions: DiagnosticsOptions = {
@@ -136,6 +142,8 @@ const defaultOptions: DiagnosticsOptions = {
   checkActionPlacement: true,
   checkLimits: true,
   checkTriggerOptions: true,
+  checkParallelLoopState: true,
+  checkRunAfterPath: true,
 };
 
 /**
@@ -255,6 +263,16 @@ export function getDiagnostics(
   // Check response kind vs trigger and @RecurrenceTrigger options (DSL044-DSL046)
   if (opts.checkTriggerOptions) {
     diagnostics.push(...checkTriggerOptions(sourceFile));
+  }
+
+  // Check flow variables changed inside a parallel foreach (DSL047)
+  if (opts.checkParallelLoopState) {
+    diagnostics.push(...checkParallelLoopState(sourceFile));
+  }
+
+  // Check that actions only read actions on their runAfter path (DSL048)
+  if (opts.checkRunAfterPath) {
+    diagnostics.push(...checkRunAfterPath(sourceFile, index));
   }
 
   // Check for quoted spread / self-referential array reassignment (DSL028, DSL029)
@@ -1377,7 +1395,9 @@ function checkJSDocAnnotations(sourceFile: ts.SourceFile): Diagnostic[] {
         for (const detail of annotationValueProblems('limit', parsed)) {
           diagnostics.push({
             code: DiagnosticCodes.DSL043.code,
-            severity: DiagnosticCodes.DSL043.severity,
+            // A warning: the cloud saves an Until whose count or timeout is out of range
+            // (conformance/save-rules/structure.mjs).
+            severity: 'warning',
             message: DiagnosticCodes.DSL043.format!('limit', detail),
             range,
             source: 'flowforger',
@@ -1400,7 +1420,12 @@ const PA_LIMITS = {
   untilCount: { min: 1, max: 5000 },
   retryCount: { min: 1, max: 90 },
   retryIntervalMs: { min: 5_000, max: 86_400_000 }, // PT5S .. P1D
-  recurrenceIntervalMax: { month: 16, day: 500, hour: 12_000, minute: 72_000, second: 9_999_999 } as Record<string, number>,
+  // A 500-day period at most, measured in conformance/save-rules/structure.mjs.
+  recurrenceIntervalMax: { year: 1, month: 16, week: 71, day: 500, hour: 12_000, minute: 720_000, second: 43_200_000 } as Record<string, number>,
+  /** A scheduled recurrence must next run within this many months. */
+  recurrenceScheduleStartMonths: 18,
+  /** A recurrence may start at most this many years ahead. */
+  recurrenceStartYears: 49,
 };
 
 /** Parse an ISO 8601 duration (P[nW][nD][T[nH][nM][nS]]) to milliseconds; undefined if malformed. */
@@ -1626,20 +1651,37 @@ function checkTriggerOptions(sourceFile: ts.SourceFile): Diagnostic[] {
       const n = ts.isNumericLiteral(intervalLit) ? Number(intervalLit.text) : ts.isPrefixUnaryExpression(intervalLit) ? Number(text) : undefined;
       const max = freqLower ? PA_LIMITS.recurrenceIntervalMax[freqLower] : undefined;
       if (n !== undefined && (!Number.isInteger(n) || n < 1 || (max !== undefined && n > max))) {
-        push('DSL045', intervalLit, `interval ${text} must be an integer from 1 to ${max ?? '…'} for frequency '${freq ?? '?'}'.`);
+        push('DSL045', intervalLit, `interval ${text} must be an integer from 1 to ${max ?? '…'} for frequency '${freq ?? '?'}' (the period can be at most 500 days).`);
+      }
+    }
+    const startTimeLit = literalProperty(triggerOptions, 'startTime');
+    if (startTimeLit && ts.isStringLiteralLike(startTimeLit)) {
+      const latest = new Date();
+      latest.setUTCFullYear(latest.getUTCFullYear() + PA_LIMITS.recurrenceStartYears);
+      if (Date.parse(startTimeLit.text) > latest.getTime()) {
+        push('DSL045', startTimeLit, `startTime ${startTimeLit.text} is more than ${PA_LIMITS.recurrenceStartYears} years ahead.`);
       }
     }
     const scheduleLit = literalProperty(triggerOptions, 'schedule');
     if (scheduleLit && ts.isObjectLiteralExpression(scheduleLit) && freqLower) {
+      // Measured in conformance/save-rules/structure.mjs: each of these fails the save.
       const has = (k: string) => literalProperty(scheduleLit, k);
-      const hoursOrMinutes = has('hours') ?? has('minutes');
-      if (hoursOrMinutes && freqLower !== 'day' && freqLower !== 'week') {
-        push('DSL046', hoursOrMinutes, `hours/minutes only apply to frequency Day or Week (this trigger uses '${freq}').`);
+      if (freqLower !== 'day' && freqLower !== 'week' && freqLower !== 'month') {
+        if (scheduleLit.properties.length > 0) push('DSL046', scheduleLit, `a schedule needs frequency Day, Week or Month (this trigger uses '${freq}').`);
+      } else {
+        const weekDays = has('weekDays');
+        if (weekDays && freqLower !== 'week') push('DSL046', weekDays, `weekDays needs frequency Week (this trigger uses '${freq}').`);
+        const monthDays = has('monthDays');
+        if (monthDays && freqLower !== 'month') push('DSL046', monthDays, `monthDays needs frequency Month (this trigger uses '${freq}').`);
       }
-      const weekDays = has('weekDays');
-      if (weekDays && freqLower !== 'week') push('DSL046', weekDays, `weekDays only applies to frequency Week (this trigger uses '${freq}').`);
-      const monthDays = has('monthDays');
-      if (monthDays && freqLower !== 'month') push('DSL046', monthDays, `monthDays only applies to frequency Month (this trigger uses '${freq}').`);
+      const startLit = literalProperty(triggerOptions, 'startTime');
+      const startText = startLit && ts.isStringLiteralLike(startLit) ? startLit.text : undefined;
+      const start = startText !== undefined ? Date.parse(startText) : NaN;
+      const limit = new Date();
+      limit.setUTCMonth(limit.getUTCMonth() + PA_LIMITS.recurrenceScheduleStartMonths);
+      if (startLit && !Number.isNaN(start) && start > limit.getTime()) {
+        push('DSL045', startLit, `a schedule must next run within ${PA_LIMITS.recurrenceScheduleStartMonths} months, and this one starts ${startText}.`);
+      }
     }
   }
 
@@ -1671,7 +1713,6 @@ const KNOWN_CTX_METHODS = new Set([
   'toLower', 'toUpper', 'trim', 'split', 'startsWith', 'endsWith',
   'length', 'equals', 'greater', 'less', 'greaterOrEquals', 'lessOrEquals',
   'not', 'if', 'add', 'sub', 'mul', 'div', 'mod', 'min', 'max',
-  'abs', 'ceil', 'floor', 'round',
   'createArray', 'range', 'union', 'intersection',
   'setProperty', 'removeProperty', 'addProperty', 'xpath',
   'decodeBase64', 'encodeUriComponent', 'encodeURIComponent',
@@ -1987,27 +2028,32 @@ function descriptionProse(
  * Logic Apps rejects a Response or Terminate action nested (at any depth) under a Foreach or
  * Until action — the DSL's `for...of`, `while` and `do...while` — with
  * "The workflow run action 'X' has type 'Response' that could not be nested under an action of
- * type 'foreach'" (DSL037). A Response action is also only valid when the workflow starts with a
- * Request-type trigger: @HttpTrigger / @ManualTrigger, never @RecurrenceTrigger or
- * @ConnectorTrigger (DSL038). Mirrors RESPONSE_NESTED / TERMINATE_NESTED / RESPONSE_TRIGGER in
- * @flowforger/validator.
+ * type 'foreach'" (DSL037). A Response action is also rejected when the trigger has a recurrence:
+ * @RecurrenceTrigger, or a polling @ConnectorTrigger (one with a `recurrence` option); a webhook
+ * @ConnectorTrigger is fine (DSL038). Mirrors RESPONSE_NESTED / TERMINATE_NESTED /
+ * RESPONSE_TRIGGER in @flowforger/validator.
  */
 function checkActionPlacement(sourceFile: ts.SourceFile): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
 
   // Which trigger decorator the flow uses (undefined when there is none — DSL002 covers that)
   let triggerDecorator: string | undefined;
+  let triggerOptions: ts.ObjectLiteralExpression | undefined;
   const flowClass = findFlowClass(sourceFile);
   if (flowClass) {
     for (const member of flowClass.members) {
       if (!ts.isMethodDeclaration(member)) continue;
       for (const name of ['HttpTrigger', 'ManualTrigger', 'RecurrenceTrigger', 'ConnectorTrigger']) {
-        if (hasDecorator(member, name)) triggerDecorator = name;
+        if (hasDecorator(member, name)) {
+          triggerDecorator = name;
+          triggerOptions = decoratorObjectArgument(member, name);
+        }
       }
     }
   }
   const triggerAllowsResponse =
-    triggerDecorator === undefined || triggerDecorator === 'HttpTrigger' || triggerDecorator === 'ManualTrigger';
+    triggerDecorator !== 'RecurrenceTrigger' &&
+    !(triggerDecorator === 'ConnectorTrigger' && literalProperty(triggerOptions, 'recurrence'));
 
   function loopLabel(node: ts.Node): string | undefined {
     if (ts.isForOfStatement(node)) return 'for...of loop (foreach / Apply to each)';
@@ -2058,6 +2104,401 @@ function checkActionPlacement(sourceFile: ts.SourceFile): Diagnostic[] {
   }
 
   visit(sourceFile, undefined);
+  return diagnostics;
+}
+
+/**
+ * Check for flow variables changed inside a foreach that runs in parallel in the cloud (DSL047).
+ *
+ * A `for...of` without `@runtimeConfig {"concurrency":{"repetitions":1}}` is an Apply to each
+ * with the default concurrency: the cloud runs up to 20 iterations at once, while the local
+ * engine runs them one at a time. Changes to a flow variable inside it then depend on timing:
+ * `.push()` and string `+=` append in whatever order iterations finish, and `=` (Set variable)
+ * races with the reads of other iterations. `++`, `--`, numeric `+=` and `x = x ± n` are left
+ * alone: they compile to Increment/Decrement variable, which the cloud applies atomically, so
+ * the final value is the same either way.
+ */
+function checkParallelLoopState(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+
+  // Flow variables: `let`/`const` declarations whose initializer is not an awaited action call.
+  // Remember the string ones (their `+=` is Append to string variable) and the numeric ones
+  // (their `x = x + n` is Increment variable).
+  const flowVariables = new Map<string, { isString: boolean; isNumber: boolean }>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && !ts.isForOfStatement(node.parent.parent)) {
+      const init = node.initializer;
+      if (!init || !ts.isAwaitExpression(init)) {
+        const isString =
+          node.type?.kind === ts.SyntaxKind.StringKeyword ||
+          (init !== undefined && (ts.isStringLiteral(init) || ts.isNoSubstitutionTemplateLiteral(init) || ts.isTemplateExpression(init)));
+        const isNumber = node.type?.kind === ts.SyntaxKind.NumberKeyword || (init !== undefined && ts.isNumericLiteral(init));
+        flowVariables.set(node.name.text, { isString, isNumber });
+      }
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(sourceFile);
+
+  /** The loop's name (its @action, or the transformer's ForEach_<var>) when it runs in parallel. */
+  function parallelLoopName(loop: ts.ForOfStatement): string | undefined {
+    const jsDoc = leadingJSDoc(loop);
+    const config = jsDoc.match(/@runtimeConfig\s+(\{[\s\S]*\})/);
+    if (config) {
+      try {
+        if (JSON.parse(balancedJson(config[1]))?.concurrency?.repetitions === 1) return undefined;
+      } catch {
+        // malformed JSON is DSL027's to report
+      }
+    }
+    const named = jsDoc.match(/@action\s+([^\s*@]+)/)?.[1];
+    const decl = loop.initializer;
+    const loopVar =
+      ts.isVariableDeclarationList(decl) && decl.declarations[0] && ts.isIdentifier(decl.declarations[0].name)
+        ? decl.declarations[0].name.text
+        : 'item';
+    return named ?? `ForEach_${loopVar}`;
+  }
+
+  function leadingJSDoc(node: ts.Node): string {
+    const ranges = ts.getLeadingCommentRanges(sourceFile.text, node.getFullStart()) ?? [];
+    const docs = ranges.map(r => sourceFile.text.slice(r.pos, r.end)).filter(t => t.startsWith('/**'));
+    return docs[docs.length - 1] ?? '';
+  }
+
+  function balancedJson(text: string): string {
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}' && --depth === 0) return text.slice(0, i + 1);
+    }
+    return text;
+  }
+
+  /** The flow variable a statement changes in an order-dependent way, and how. */
+  function orderDependentChange(node: ts.Node): { name: string; change: string } | undefined {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'push' &&
+      ts.isIdentifier(node.expression.expression) &&
+      flowVariables.has(node.expression.expression.text)
+    ) {
+      return { name: node.expression.expression.text, change: 'appended to' };
+    }
+    if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && flowVariables.has(node.left.text)) {
+      if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        // `x = x - n`, and `x = x + n` on a number, compile to Decrement/Increment variable.
+        const right = node.right;
+        const selfStep =
+          ts.isBinaryExpression(right) &&
+          ts.isIdentifier(right.left) &&
+          right.left.text === node.left.text &&
+          (right.operatorToken.kind === ts.SyntaxKind.MinusToken ||
+            (right.operatorToken.kind === ts.SyntaxKind.PlusToken && flowVariables.get(node.left.text)!.isNumber));
+        return selfStep ? undefined : { name: node.left.text, change: 'set' };
+      }
+      if (node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && flowVariables.get(node.left.text)!.isString) {
+        return { name: node.left.text, change: 'appended to' };
+      }
+    }
+    return undefined;
+  }
+
+  const reported = new Set<string>();
+  function visit(node: ts.Node, parallelLoop: string | undefined): void {
+    let loop = parallelLoop;
+    if (ts.isForOfStatement(node)) loop = parallelLoop ?? parallelLoopName(node);
+    // A while / do...while is an Until, which runs its iterations one at a time.
+
+    const change = loop ? orderDependentChange(node) : undefined;
+    if (change && loop && !reported.has(`${loop}\u0000${change.name}`)) {
+      reported.add(`${loop}\u0000${change.name}`);
+      diagnostics.push({
+        code: DiagnosticCodes.DSL047.code,
+        severity: DiagnosticCodes.DSL047.severity,
+        message: DiagnosticCodes.DSL047.format!(change.name, loop, change.change),
+        range: getNodeRange(sourceFile, node),
+        source: 'flowforger',
+      });
+    }
+    ts.forEachChild(node, child => visit(child, loop));
+  }
+  visit(sourceFile, undefined);
+  return diagnostics;
+}
+
+/**
+ * DSL twin of the validator's EXPR_RUNAFTER_PATH / EXPR_SELF_REFERENCE: an action may read only
+ * the actions on its runAfter path — the transitive @runAfter predecessors (default: the previous
+ * statement) of its statement and of every block enclosing it, with everything nested inside them.
+ * A while/do...while (Until) may also read its body in its condition. Measured in the cloud:
+ * conformance/save-rules/runafter-path.mjs.
+ *
+ * The statement tree mirrors the transformer: plain `{}` blocks are flattened, `@type scope`
+ * blocks, if/else branches, switch cases and loop bodies are sibling groups. Reads are
+ * `ctx.body/outputs/actions/result('X')`, the same functions inside expression strings, and
+ * `const x = await ctx.<action>("X", ...)` identifiers. Nothing is reported when a name or a
+ * @runAfter target cannot be resolved; `flowforger validate` still checks the transformed IR.
+ */
+function checkRunAfterPath(sourceFile: ts.SourceFile, index: SymbolIndex): Diagnostic[] {
+  const flowClass = findFlowClass(sourceFile);
+  const actionMethod = flowClass && findActionMethod(flowClass);
+  if (!actionMethod?.body) return [];
+
+  interface PathNode {
+    names: string[];
+    parent?: PathNode;
+    group: number;
+    /** Until: its condition may read its body. */
+    isUntil: boolean;
+    /** Lower-cased @runAfter names; [] = start of its container; undefined = previous sibling. */
+    runAfter?: string[];
+    prev?: PathNode;
+    preds?: PathNode[];
+    /** A @runAfter name did not resolve to a sibling. */
+    uncertain?: boolean;
+    children: PathNode[];
+    refs: Array<{ name: string; node: ts.Node; start: number; end: number }>;
+  }
+
+  const text = sourceFile.text;
+  const nodes: PathNode[] = [];
+  const constActions = new Map<string, PathNode>(); // `const x = await ctx.compose("X")` → node
+  let groupCount = 0;
+  /** Leave a block: its consts go out of scope. */
+  const restore = (outer: Map<string, PathNode>): void => {
+    constActions.clear();
+    for (const [k, v] of outer) constActions.set(k, v);
+  };
+
+  const leadingJSDoc = (node: ts.Node): string => {
+    const ranges = ts.getLeadingCommentRanges(text, node.getFullStart()) ?? [];
+    const docs = ranges.map(r => text.slice(r.pos, r.end)).filter(t => t.startsWith('/**'));
+    return docs[docs.length - 1] ?? '';
+  };
+  const statementsOf = (s: ts.Statement): readonly ts.Statement[] => (ts.isBlock(s) ? s.statements : [s]);
+
+  /** Action calls (`ctx.compose("X", ...)`, connector operations) by the offset they start at. */
+  const actionCallsAt = new Map<number, string>();
+  for (const a of index.actions) {
+    if (a.type === 'scope' || a.type === 'if' || a.type === 'foreach' || a.type === 'switch' || a.type === 'dountil') continue;
+    actionCallsAt.set(sourceFile.getPositionOfLineAndCharacter(a.range.start.line, a.range.start.character), a.name);
+  }
+
+  /** Reads in `node` that are not inside a nested group (those belong to the nested statements). */
+  function collectRefs(node: ts.Node, into: PathNode['refs'], skip: Set<ts.Node>): void {
+    if (skip.has(node)) return;
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'ctx' &&
+        /^(body|outputs|actions|result)$/i.test(node.expression.name.text)) {
+      const arg = node.arguments[0];
+      if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) {
+        into.push({ name: arg.text, node: arg, start: arg.getStart(sourceFile), end: arg.getEnd() });
+        return;
+      }
+    }
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ||
+        ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      const start = node.getStart(sourceFile);
+      const raw = text.slice(start, node.getEnd());
+      const re = /\b(?:body|outputs|actions|result)\s*\(\s*'([^']+)'\s*\)/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(raw)) !== null) {
+        into.push({ name: m[1], node, start: start + m.index, end: start + m.index + m[0].length });
+      }
+      return;
+    }
+    if (ts.isIdentifier(node) && constActions.has(node.text)) {
+      const parent = node.parent;
+      const isName =
+        (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+        (ts.isPropertyAssignment(parent) && parent.name === node) ||
+        (ts.isVariableDeclaration(parent) && parent.name === node);
+      if (!isName) {
+        const target = constActions.get(node.text)!;
+        into.push({ name: target.names[0], node, start: node.getStart(sourceFile), end: node.getEnd() });
+      }
+    }
+    ts.forEachChild(node, child => collectRefs(child, into, skip));
+  }
+
+  function buildGroup(statements: readonly ts.Statement[], parent: PathNode | undefined, group: number, prev: { node?: PathNode }): void {
+    for (const s of statements) {
+      if (ts.isBlock(s) && !/@type\s+scope\b/.test(leadingJSDoc(s))) {
+        const outer = new Map(constActions);
+        buildGroup(s.statements, parent, group, prev); // flattened, like the transformer
+        restore(outer);
+        continue;
+      }
+      if (ts.isEmptyStatement(s) || ts.isBreakStatement(s) || ts.isContinueStatement(s) || ts.isReturnStatement(s)) continue;
+
+      const jsDoc = leadingJSDoc(s);
+      const node: PathNode = { names: [], parent, group, isUntil: ts.isWhileStatement(s) || ts.isDoStatement(s), prev: prev.node, children: [], refs: [] };
+      const named = jsDoc.match(/@action\s+([^\s*@]+)/)?.[1];
+      if (named) node.names.push(named);
+      if (/@runAfter\s+(?:trigger|first)\b/.test(jsDoc)) {
+        node.runAfter = [];
+      } else {
+        const entries = [...jsDoc.matchAll(/@runAfter\s+(?:"([^"]+)"|([^:@\s]+)):/g)].map(m => (m[1] || m[2]).trim().toLowerCase());
+        if (entries.length > 0) node.runAfter = entries;
+      }
+
+      // Child groups, and the parts of a block statement its own expressions live in.
+      const childGroups: Array<readonly ts.Statement[]> = [];
+      const skip = new Set<ts.Node>();
+      if (ts.isBlock(s)) {
+        childGroups.push(s.statements);
+        s.statements.forEach(c => skip.add(c));
+      } else if (ts.isIfStatement(s)) {
+        childGroups.push(statementsOf(s.thenStatement));
+        skip.add(s.thenStatement);
+        if (s.elseStatement) {
+          childGroups.push(statementsOf(s.elseStatement));
+          skip.add(s.elseStatement);
+        }
+      } else if (ts.isForOfStatement(s) || ts.isWhileStatement(s) || ts.isDoStatement(s)) {
+        childGroups.push(statementsOf(s.statement));
+        skip.add(s.statement);
+      } else if (ts.isSwitchStatement(s)) {
+        for (const clause of s.caseBlock.clauses) {
+          childGroups.push(clause.statements);
+          clause.statements.forEach(c => skip.add(c));
+        }
+      } else {
+        // A simple statement: its ctx action call names it.
+        const visit = (n: ts.Node): void => {
+          const name = ts.isCallExpression(n) ? actionCallsAt.get(n.getStart(sourceFile)) : undefined;
+          if (name) {
+            node.names.push(name);
+            return;
+          }
+          if (!ts.isArrowFunction(n) && !ts.isFunctionExpression(n)) ts.forEachChild(n, visit);
+        };
+        visit(s);
+      }
+      collectRefs(s, node.refs, skip);
+      nodes.push(node);
+      prev.node = node;
+
+      // `const x = await ctx.compose("X", ...)`: later reads of `x` read X.
+      if (ts.isVariableStatement(s) && (s.declarationList.flags & ts.NodeFlags.Const) && node.names.length > 0) {
+        for (const d of s.declarationList.declarations) {
+          if (ts.isIdentifier(d.name) && d.initializer && ts.isAwaitExpression(d.initializer)) constActions.set(d.name.text, node);
+        }
+      }
+
+      for (const statementsInGroup of childGroups) {
+        const before = nodes.length;
+        const outer = new Map(constActions);
+        buildGroup(statementsInGroup, node, ++groupCount, {});
+        restore(outer);
+        for (let i = before; i < nodes.length; i++) if (nodes[i].parent === node) node.children.push(nodes[i]);
+      }
+    }
+  }
+  buildGroup(actionMethod.body.statements, undefined, ++groupCount, {});
+
+  // Names → nodes (a name used twice is DSL005's problem, and ambiguous here).
+  const byName = new Map<string, PathNode | null>();
+  for (const n of nodes) for (const name of new Set(n.names.map(x => x.toLowerCase()))) byName.set(name, byName.has(name) ? null : n);
+
+  for (const n of nodes) {
+    if (n.runAfter === undefined) {
+      n.preds = n.prev ? [n.prev] : [];
+    } else {
+      n.preds = [];
+      for (const name of n.runAfter) {
+        const p = byName.get(name);
+        if (p && p.group === n.group && p !== n) n.preds.push(p);
+        else n.uncertain = true;
+      }
+    }
+  }
+
+  const addTree = (n: PathNode, into: Set<PathNode>): void => {
+    into.add(n);
+    n.children.forEach(c => addTree(c, into));
+  };
+  /** Everything `from` may read, or undefined when an unresolved @runAfter makes it unknowable. */
+  const readable = (from: PathNode): Set<PathNode> | undefined => {
+    const out = new Set<PathNode>();
+    const seen = new Set<PathNode>();
+    for (let n: PathNode | undefined = from; n; n = n.parent) {
+      if (n.uncertain) return undefined;
+      const stack = [...n.preds!];
+      while (stack.length) {
+        const p = stack.pop()!;
+        if (seen.has(p)) continue;
+        if (p.uncertain) return undefined;
+        seen.add(p);
+        addTree(p, out);
+        stack.push(...p.preds!);
+      }
+    }
+    if (from.isUntil) from.children.forEach(c => addTree(c, out));
+    return out;
+  };
+
+  const chain = (n: PathNode): PathNode[] => {
+    const out: PathNode[] = [];
+    for (let x: PathNode | undefined = n; x; x = x.parent) out.push(x);
+    return out;
+  };
+  const label = (n: PathNode): string | undefined => n.names[0];
+
+  const diagnostics: Diagnostic[] = [];
+  for (const from of nodes) {
+    if (from.refs.length === 0) continue;
+    let allowed: Set<PathNode> | undefined | null = null;
+    const reported = new Set<string>();
+    for (const ref of from.refs) {
+      const read = byName.get(ref.name.toLowerCase());
+      if (!read || reported.has(ref.name.toLowerCase())) continue;
+      let why = '';
+      let fix = '';
+      if (read !== from) {
+        if (allowed === null) allowed = readable(from);
+        if (!allowed || allowed.has(read)) continue;
+        const fromChain = chain(from);
+        const readChain = chain(read);
+        const common = fromChain.find(x => readChain.includes(x));
+        const fromTop = common ? fromChain[fromChain.indexOf(common) - 1] : fromChain[fromChain.length - 1];
+        const readTop = common ? readChain[readChain.indexOf(common) - 1] : readChain[readChain.length - 1];
+        if (common === read) {
+          why = `it is inside '${label(read)}', and a block can only be read from outside, by an action that runs after it`;
+          fix = `Read '${label(read)}' after the block.`;
+        } else if (common === from) {
+          why = `'${label(read)}' is inside this block, which evaluates its condition or items before anything inside it runs`;
+          fix = `Read '${label(read)}' after the block.`;
+        } else if (common && fromTop.group !== readTop.group) {
+          why = `'${label(read)}' is in another branch of '${label(common) ?? 'the enclosing block'}'`;
+          fix = `Read it after the block instead.`;
+        } else {
+          const readsName = label(readTop);
+          why = readTop === read
+            ? `'${label(read)}' is not a runAfter predecessor: it runs in parallel or later`
+            : `'${readsName ?? 'the block'}' (which contains '${label(read)}') is not a runAfter predecessor: it runs in parallel or later`;
+          fix = readsName
+            ? `Add '@runAfter ${readsName}: Succeeded' to ${fromTop === from ? 'this action' : `'${label(fromTop) ?? 'the enclosing block'}'`}, or read it after the branches join.`
+            : `Read it after the branches join.`;
+        }
+      }
+      reported.add(ref.name.toLowerCase());
+      diagnostics.push({
+        code: DiagnosticCodes.DSL048.code,
+        severity: DiagnosticCodes.DSL048.severity,
+        message: DiagnosticCodes.DSL048.format!(
+          read === from ? label(from)! : label(from) ? `'${label(from)}'` : 'This action',
+          label(read)!,
+          why,
+          fix,
+        ),
+        range: { start: getPositionFromOffset(sourceFile, ref.start), end: getPositionFromOffset(sourceFile, ref.end) },
+        source: 'flowforger',
+      });
+    }
+  }
   return diagnostics;
 }
 
@@ -2196,18 +2637,52 @@ function checkEvalLiteral(
     }
   };
 
+  // What the cloud refuses to save beyond the grammar: a double-quoted string (DSL033) and a
+  // reference function without a usable name (DSL049).
+  const pushSaveErrors = (node: ExprNode) => {
+    for (const e of expressionSaveErrors(node)) {
+      if (e.code === 'EXPR_SYNTAX') {
+        pushSyntax(e.message, 0, content.length);
+        continue;
+      }
+      const idx = e.name ? content.indexOf(e.name) : -1;
+      diagnostics.push({
+        code: DiagnosticCodes.DSL049.code,
+        severity: DiagnosticCodes.DSL049.severity,
+        message: DiagnosticCodes.DSL049.format(e.message),
+        range: idx >= 0 ? rangeAt(idx, e.name!.length) : literalRange,
+        source: 'flowforger',
+      });
+    }
+    // Saved by the cloud, but the call fails whenever it is evaluated (DSL050).
+    for (const e of expressionRuntimeErrors(node)) {
+      const idx = content.indexOf(e.name);
+      diagnostics.push({
+        code: DiagnosticCodes.DSL050.code,
+        severity: DiagnosticCodes.DSL050.severity,
+        message: DiagnosticCodes.DSL050.format(e.message),
+        range: idx >= 0 ? rangeAt(idx, e.name.length) : literalRange,
+        source: 'flowforger',
+      });
+    }
+  };
+
   const trimmed = content.trim();
   const leadWs = content.length - content.trimStart().length;
 
-  // Full expression form: @... (not the @{...} template, not the @@ escape)
-  if (trimmed.startsWith('@') && !trimmed.startsWith('@{') && !trimmed.startsWith('@@')) {
+  // Full expression form: @... (not the @{...} template, not the @@ escape, not a lone '@')
+  if (trimmed.startsWith('@') && !trimmed.startsWith('@{') && !trimmed.startsWith('@@') && trimmed !== '@') {
+    let node: ExprNode;
     try {
-      pushUnknowns(parseExpression(trimmed));
+      node = parseExpression(trimmed);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const pos = err instanceof ParseError && err.pos !== undefined ? leadWs + err.pos : 0;
       pushSyntax(message, pos, content.length - pos);
+      return;
     }
+    pushUnknowns(node);
+    pushSaveErrors(node);
     return;
   }
 
@@ -2219,7 +2694,9 @@ function checkEvalLiteral(
       pushSyntax(e.message, offset, e.start + e.length - offset);
     }
     for (const part of parts) {
-      if (part.kind === 'expr') pushUnknowns(part.node);
+      if (part.kind !== 'expr') continue;
+      pushUnknowns(part.node);
+      pushSaveErrors(part.node);
     }
   }
 }

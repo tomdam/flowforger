@@ -65,6 +65,37 @@ describe('resolved action inputs', () => {
     assert.deepEqual(dataverse.ctx!.actions.get('Create_account')?.inputs, expected);
   });
 
+  it('passes a parameter whose expression finds nothing as null, not undefined', async () => {
+    // The cloud sends null here (a column set this way is cleared), so the key must survive.
+    const dataverse = new SpyConnector();
+    const flow: FlowIR = {
+      name: 'missing-as-null',
+      nodes: [
+        TRIGGER,
+        {
+          id: 'con_1',
+          name: 'Update_account',
+          type: 'connector',
+          connector: 'dataverse',
+          operation: 'UpdateRecord',
+          params: {
+            entityName: 'accounts',
+            $filter: "@triggerBody()?['missing']",
+            item: { name: 'Contoso', description: "@triggerBody()?['missing']", tags: ["@triggerBody()?['missing']"] },
+          },
+        } as any,
+      ],
+    };
+
+    await run(flow, { input: {}, connectors: { dataverse } });
+
+    assert.deepEqual(dataverse.seen[0].inputs, {
+      entityName: 'accounts',
+      $filter: null,
+      item: { name: 'Contoso', description: null, tags: [null] },
+    });
+  });
+
   it('stamps ctx.currentAction.inputs so action().inputs resolves', async () => {
     const dataverse = new SpyConnector();
     const flow: FlowIR = {
@@ -218,8 +249,9 @@ describe('resolved action inputs', () => {
       loadChildFlow: async () => child,
     });
     const entry = result.trace.find((t) => t.name === 'Call_child');
+    // The cloud's record of a Workflow action's inputs.
     assert.deepEqual(entry?.inputs, {
-      workflowReferenceName: 'child-guid',
+      host: { workflowReferenceName: 'child-guid' },
       body: { name: 'Jane' },
     });
   });

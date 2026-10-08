@@ -644,7 +644,8 @@ export class SessionManager {
           : undefined,
       file: live.host.displayName(activeKey),
       line: this.lineForNode(sourceMap, node ?? undefined),
-      flow: live.session.getRootFlowName(),
+      // The paused flow: inside a stepped-into child flow that is the child, not the root
+      flow: this.logicalFrames()[0].name,
       stackDepth: live.session.getCallStackDepth(),
       iteration: this.iterationInfo(),
       variables: this.snapshotVariables(),
@@ -657,13 +658,17 @@ export class SessionManager {
   private buildTerminated(drain: boolean = true): Snapshot {
     const live = this.current;
     const ctx = live?.session.getRootContext();
-    let failed = false;
-    if (ctx) for (const [, entry] of ctx.actions) if ((entry as any).status === 'Failed') failed = true;
+    // The run's own status, as run() reports it: a failure a catch handled leaves it
+    // Succeeded, and a Terminate sets it (with its runError). Null after a stop.
+    const outcome = live?.session.getRunOutcome();
+    const runError = outcome?.error?.message ?? (outcome?.error !== undefined ? JSON.stringify(outcome.error) : undefined);
+    let ran = 0;
+    if (ctx) for (const [, entry] of ctx.actions) if (entry.status !== 'Skipped') ran++;
     return {
       state: 'terminated',
-      status: live?.terminalError ? 'Failed' : failed ? 'Failed' : 'Succeeded',
-      error: live?.terminalError,
-      actionsRun: ctx ? ctx.actions.size : 0,
+      status: live?.terminalError ? 'Failed' : outcome?.status ?? 'Stopped',
+      error: live?.terminalError ?? runError,
+      actionsRun: ran,
       ...this.counters(),
       output: this.collectOutput(drain),
     };

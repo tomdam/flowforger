@@ -1081,47 +1081,6 @@ export const flowContextMethods: MethodSignature[] = [
     examples: ["ctx.max(a, b, c)"],
   },
   {
-    name: 'abs',
-    category: 'Math',
-    description: 'Absolute value. Emits `@abs(...)`.',
-    parameters: [
-      { name: 'value', type: 'number', description: 'Number' },
-    ],
-    returnType: 'number',
-    examples: ["ctx.abs(delta)"],
-  },
-  {
-    name: 'ceil',
-    category: 'Math',
-    description: 'Round up to the nearest integer. Emits `@ceil(...)`.',
-    parameters: [
-      { name: 'value', type: 'number', description: 'Number' },
-    ],
-    returnType: 'number',
-    examples: ["ctx.ceil(pages)"],
-  },
-  {
-    name: 'floor',
-    category: 'Math',
-    description: 'Round down to the nearest integer. Emits `@floor(...)`.',
-    parameters: [
-      { name: 'value', type: 'number', description: 'Number' },
-    ],
-    returnType: 'number',
-    examples: ["ctx.floor(ratio)"],
-  },
-  {
-    name: 'round',
-    category: 'Math',
-    description: 'Round to the given number of decimal places. Emits `@round(...)`.',
-    parameters: [
-      { name: 'value', type: 'number', description: 'Number to round' },
-      { name: 'digits', type: 'number', description: 'Decimal places', optional: true },
-    ],
-    returnType: 'number',
-    examples: ["ctx.round(price, 2)"],
-  },
-  {
     name: 'rand',
     category: 'Math',
     description: 'Random integer in the range [minValue, maxValue). Emits `@rand(...)`.',

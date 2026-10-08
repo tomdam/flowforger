@@ -19,7 +19,7 @@ class JsonParsing {
     // The trigger body contains raw JSON strings that need parsing
     await ctx.compose('RawPayloads', ctx.triggerBody()?.['payloads']);
 
-    /** @action ParseEachPayload */
+    /** @action ParseEachPayload @runtimeConfig {"concurrency":{"repetitions":1}} */
     for (const rawItem of ctx.outputs('RawPayloads') ?? []) {
       // Parse the JSON string into an object
       await ctx.compose('ParsedData', ctx.json(rawItem?.['jsonString']));

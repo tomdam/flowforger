@@ -47,7 +47,7 @@ export class WebContentsConnector implements BaseConnector {
     ctx.log?.({ type: 'webcontents.request', method, url });
 
     let payload: any = undefined;
-    if (body !== undefined) {
+    if (body != null) {
       if (typeof body === 'string') {
         payload = body;
       } else if (typeof Buffer !== 'undefined' && Buffer.isBuffer(body)) {

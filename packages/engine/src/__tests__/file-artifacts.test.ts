@@ -146,6 +146,8 @@ describe('run collects file artifacts', () => {
           name: 'DumpChild',
           inputs: { value: { '@@ff:saveFile': true, contentType: 'text/plain', content: 'hi' } },
         } as any,
+        // A child that does not respond fails the parent's call (502), as in the cloud.
+        { id: 'act_r', type: 'action', kind: 'response', name: 'Respond', inputs: { statusCode: 200 } } as any,
       ],
     };
     const parentFlow: FlowIR = {

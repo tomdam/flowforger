@@ -127,7 +127,8 @@ export const DiagnosticCodes = {
   // Undefined Parameter Reference (DSL015)
   DSL015: {
     code: 'DSL015',
-    severity: 'error' as DiagnosticSeverity,
+    // A warning: Power Automate saves a flow that reads an undefined parameter (conformance/save-rules/structure.mjs).
+    severity: 'warning' as DiagnosticSeverity,
     message: "Undefined parameter: '{0}'",
     format: (name: string, defined?: string) =>
       defined
@@ -335,14 +336,15 @@ export const DiagnosticCodes = {
         : `Set a flag variable inside the loop and call ctx.terminate() after it, or filter the items before the loop.`),
   },
 
-  // Response without a request trigger (DSL038)
+  // Response with a trigger that runs on a recurrence (DSL038)
   DSL038: {
     code: 'DSL038',
     severity: 'error' as DiagnosticSeverity,
-    message: 'ctx.response() requires a request trigger',
+    message: 'ctx.response() cannot be used with a recurring trigger',
     format: (trigger: string) =>
-      `ctx.response() requires a request trigger (@HttpTrigger or @ManualTrigger), but this flow uses @${trigger}. ` +
-      `Power Automate rejects the flow on save. Remove the response (there is no caller to respond to) or change the trigger.`,
+      `ctx.response() cannot be used with ${trigger === 'ConnectorTrigger' ? 'a polling @ConnectorTrigger (one with a recurrence)' : `@${trigger}`}. ` +
+      `Power Automate rejects the flow on save ("The workflow with 'Response' action type should not have triggers with 'recurrence' property defined"). ` +
+      `Remove the response (there is no caller to respond to) or use @HttpTrigger, @ManualTrigger or a webhook trigger.`,
   },
 
   // Definition limits (DSL039-DSL042) — learn.microsoft.com/power-automate/limits-and-config
@@ -355,7 +357,7 @@ export const DiagnosticCodes = {
   },
   DSL040: {
     code: 'DSL040',
-    severity: 'warning' as DiagnosticSeverity,
+    severity: 'error' as DiagnosticSeverity,
     message: 'Flow exceeds 500 actions',
     format: (count: string) =>
       `Flow declares ${count} actions; Power Automate limits a flow to 500 actions. Move part of the logic into a child flow.`,
@@ -392,7 +394,7 @@ export const DiagnosticCodes = {
       `ctx.response() with kind '${kind}' pairs with ${expected}, but this flow uses ${actual}. The maker portal will not offer this combination.`,
   },
 
-  // @RecurrenceTrigger options (DSL045 error, DSL046 warning)
+  // @RecurrenceTrigger options (DSL045) and schedule (DSL046)
   DSL045: {
     code: 'DSL045',
     severity: 'error' as DiagnosticSeverity,
@@ -401,9 +403,52 @@ export const DiagnosticCodes = {
   },
   DSL046: {
     code: 'DSL046',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'Invalid @RecurrenceTrigger schedule',
+    format: (detail: string) => `Invalid @RecurrenceTrigger schedule: ${detail} Power Automate rejects the flow on save.`,
+  },
+
+  // Flow variable changed inside a foreach that runs in parallel in the cloud (DSL047)
+  DSL047: {
+    code: 'DSL047',
     severity: 'warning' as DiagnosticSeverity,
-    message: 'Ignored @RecurrenceTrigger schedule option',
-    format: (detail: string) => `@RecurrenceTrigger schedule option is ignored: ${detail}`,
+    message: "Variable '{0}' is changed inside a parallel loop",
+    format: (variable: string, loop: string, change: string) =>
+      `'${variable}' is ${change} inside '${loop}', which Power Automate runs in parallel (up to 20 items at a time) ` +
+      `while a local run takes one item at a time, so the result can differ after deploy. ` +
+      `Add @runtimeConfig {"concurrency":{"repetitions":1}} to the loop to run it one item at a time, ` +
+      `or build the result with ctx.select() / ctx.filterArray() instead of a variable.`,
+  },
+
+  // Reads an action that is not on its runAfter path (DSL048)
+  DSL048: {
+    code: 'DSL048',
+    severity: 'error' as DiagnosticSeverity,
+    message: "'{0}' is not on the runAfter path of '{1}'",
+    format: (reader: string, read: string, why: string, fix: string) =>
+      reader === read
+        ? `'${reader}' reads its own outputs. Power Automate rejects the flow on save ("The action cannot reference itself").`
+        : `${reader} reads '${read}', but ${why}. Power Automate rejects the flow on save ` +
+          `("Action '${read}' must either be in 'runAfter' path or within a scope action on the 'runAfter' path"): ` +
+          `an action can read only actions that finish before it on its @runAfter chain, or on the chain of a block enclosing it, ` +
+          `including anything nested inside them. ${fix}`,
+  },
+
+  // A reference function without a usable name in ctx.eval (DSL049)
+  DSL049: {
+    code: 'DSL049',
+    severity: 'error' as DiagnosticSeverity,
+    message: "'{0}' needs the name of an action, loop or variable",
+    format: (cloudMessage: string) =>
+      `${cloudMessage} Power Automate rejects the flow on save: pass the name as text, e.g. body('Get_items').`,
+  },
+
+  // A call with a number of arguments the function does not take, in ctx.eval (DSL050)
+  DSL050: {
+    code: 'DSL050',
+    severity: 'warning' as DiagnosticSeverity,
+    message: "'{0}' is called with the wrong number of arguments",
+    format: (cloudMessage: string) => `${cloudMessage} Power Automate saves the flow, but this fails when it runs.`,
   },
 } as const;
 

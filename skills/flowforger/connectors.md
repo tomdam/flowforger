@@ -289,6 +289,14 @@ await ctx.connectors.sharepoint.HttpRequest('ActionName', {
 }, 'shared_sharepointonline');
 ```
 
+What the action returns (measured against the cloud):
+
+- Without an `Accept` header the response is OData verbose: read `body('X')?['d']?['results']` (a collection) or `body('X')?['d']?['Title']`. With `Accept: application/json;odata=nometadata` it is `body('X')?['value']` / `body('X')?['Title']`.
+- Null properties at the top level of the JSON body are dropped, so use `?[...]` for columns that may be empty.
+- A non-JSON response (a file's `/$value`) is `{ $content-type, $content }`. `string(body('X'))` gives its text.
+- A MERGE or DELETE (`X-HTTP-Method`) answers 204 with no body: check `outputs('X')?['statusCode']`, not `body('X')`.
+- On failure, `body('X')` is `{ status, message, source, errors }`. `message` is SharePoint's message.
+
 ---
 
 ## Dataverse Connector

@@ -114,8 +114,8 @@ export class Office365GroupsConnector extends BaseHttpClient implements BaseConn
       displayName,
       mailNickname,
       groupTypes: p['groupTypes'] || ['Unified'],
-      mailEnabled: p['mailEnabled'] !== undefined ? p['mailEnabled'] : true,
-      securityEnabled: p['securityEnabled'] !== undefined ? p['securityEnabled'] : false,
+      mailEnabled: p['mailEnabled'] != null ? p['mailEnabled'] : true,
+      securityEnabled: p['securityEnabled'] != null ? p['securityEnabled'] : false,
     };
 
     if (p['description']) body['description'] = p['description'];
@@ -310,8 +310,8 @@ export class Office365GroupsConnector extends BaseHttpClient implements BaseConn
     if (rest['start']) updates['start'] = { dateTime: rest['start'], timeZone: rest['timeZone'] || 'UTC' };
     if (rest['end']) updates['end'] = { dateTime: rest['end'], timeZone: rest['timeZone'] || 'UTC' };
     if (rest['location']) updates['location'] = { displayName: rest['location'] };
-    if (rest['isAllDay'] !== undefined) updates['isAllDay'] = rest['isAllDay'];
-    if (rest['reminderMinutes'] !== undefined) {
+    if (rest['isAllDay'] != null) updates['isAllDay'] = rest['isAllDay'];
+    if (rest['reminderMinutes'] != null) {
       updates['reminderMinutesBeforeStart'] = rest['reminderMinutes'];
       updates['isReminderOn'] = rest['reminderMinutes'] > 0;
     }
@@ -401,8 +401,8 @@ export class Office365GroupsConnector extends BaseHttpClient implements BaseConn
     ];
     if (attendees.length) event['attendees'] = attendees;
 
-    if (p['isAllDay'] !== undefined) event['isAllDay'] = p['isAllDay'];
-    if (p['reminderMinutes'] !== undefined) {
+    if (p['isAllDay'] != null) event['isAllDay'] = p['isAllDay'];
+    if (p['reminderMinutes'] != null) {
       event['reminderMinutesBeforeStart'] = p['reminderMinutes'];
       event['isReminderOn'] = p['reminderMinutes'] > 0;
     }

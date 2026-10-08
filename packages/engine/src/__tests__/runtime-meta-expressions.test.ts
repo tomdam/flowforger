@@ -86,8 +86,16 @@ describe('actionBody — alias for body()', () => {
 });
 
 describe('action() — current action metadata', () => {
+  // action() answers only in the debugger console; a flow itself cannot use it.
+  const debugContext = (opts: Parameters<typeof makeContext>[0] = {}): RunContext => ({ ...makeContext(opts), debugEvaluation: true });
+
+  it('fails in a flow, where the cloud allows it only in trackedProperties (expr-errors.ff.ts)', () => {
+    const ctx = makeContext({ currentAction: { name: 'Foo' } });
+    assert.throws(() => evalExpression(`@action()`, ctx), /The template function 'action' is not expected at this location\./);
+  });
+
   it('returns the entire record as object', () => {
-    const ctx = makeContext({
+    const ctx = debugContext({
       currentAction: { name: 'Foo', inputs: { a: 1 }, startTime: '2026-01-01T00:00:00Z' },
       actions: { Foo: { result: 'ok' } },
     });
@@ -99,7 +107,7 @@ describe('action() — current action metadata', () => {
   });
 
   it('navigates into outputs', () => {
-    const ctx = makeContext({
+    const ctx = debugContext({
       currentAction: { name: 'Foo' },
       actions: { Foo: { body: { user: 'bob' } } },
     });
@@ -107,13 +115,13 @@ describe('action() — current action metadata', () => {
   });
 
   it('returns undefined when no current action is set', () => {
-    const ctx = makeContext({});
+    const ctx = debugContext({});
     assert.equal(evalExpression(`@action()`, ctx), undefined);
   });
 
   it('reflects status from ctx.actions even after currentAction was set without it', () => {
     // currentAction is set at action start; status comes from ctx.actions after completion.
-    const ctx = makeContext({
+    const ctx = debugContext({
       currentAction: { name: 'Risky' },
       actions: {},
     });
@@ -277,7 +285,7 @@ describe('result — via real run() of a Scope', () => {
     assert.equal(count?.outputs, 2);
   });
 
-  it('accumulates child results across foreach iterations', async () => {
+  it('lists each foreach child once, with every iteration under it', async () => {
     const flow: FlowIR = {
       name: 'foreach-result-test',
       nodes: [
@@ -304,7 +312,7 @@ describe('result — via real run() of a Scope', () => {
     const result = await run(flow);
     assert.equal(result.status, 'Succeeded');
     const count = result.trace.find(t => t.name === 'CountAll');
-    // 3 iterations * 1 child action = 3 accumulated results
-    assert.equal(count?.outputs, 3);
+    // Like the cloud: one entry per child action, with each iteration's record as its outputs
+    assert.equal(count?.outputs, 1);
   });
 });

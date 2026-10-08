@@ -719,6 +719,7 @@ function extractFromConstructor(flowClass: ClassDeclaration): ConstructorConfig 
               };
               if (valueObj.description) def.description = valueObj.description;
               if (valueObj.parameters) def.parameters = valueObj.parameters;
+              if (valueObj.dslPath) def.dslPath = valueObj.dslPath;
               childFlows[flowName] = def;
             }
           }

@@ -13,6 +13,10 @@ export interface HttpInputs {
   method: string;
   url: string;
   headers?: Record<string, string>;
+  /** Query parameters. They replace any query string already in `url`, as in the cloud. */
+  queries?: Record<string, string>;
+  /** Sent as the Cookie header. */
+  cookie?: string;
   body?: any;
   authentication?: {
     type: string;
@@ -28,7 +32,10 @@ export interface HttpInputs {
   retryPolicy?: {
     type: 'none' | 'fixed' | 'exponential';
     count?: number;
-    interval?: number;
+    /** ISO 8601 duration ('PT10S'), or milliseconds. */
+    interval?: string | number;
+    minimumInterval?: string;
+    maximumInterval?: string;
   };
 }
 
@@ -896,16 +903,18 @@ export interface FlowContext {
   last<T = any>(collection: T[] | string): T;
 
   /**
-   * Skip the first count elements of an array.
+   * Skip the first count elements of an array or characters of a string.
    * Emits `@skip(...)`.
    */
+  skip(collection: string, count: number): string;
   skip<T = any>(collection: T[], count: number): T[];
 
   /**
    * Take the first count elements of an array or characters of a string.
    * Emits `@take(...)`.
    */
-  take<T = any>(collection: T[] | string, count: number): T;
+  take(collection: string, count: number): string;
+  take<T = any>(collection: T[], count: number): T[];
 
   /**
    * Check whether an array, string, or object is empty.
@@ -1072,29 +1081,8 @@ export interface FlowContext {
    */
   max(...numbers: (number | number[])[]): number;
 
-  /**
-   * Absolute value.
-   * Emits `@abs(...)`.
-   */
-  abs(value: number): number;
-
-  /**
-   * Round up to the nearest integer.
-   * Emits `@ceil(...)`.
-   */
-  ceil(value: number): number;
-
-  /**
-   * Round down to the nearest integer.
-   * Emits `@floor(...)`.
-   */
-  floor(value: number): number;
-
-  /**
-   * Round to the given number of decimal places.
-   * Emits `@round(...)`.
-   */
-  round(value: number, digits?: number): number;
+  // No abs/ceil/floor/round: Power Automate has none of them (the cloud fails with
+  // "The template function 'round' is not defined or not valid").
 
   /**
    * Random integer in the range [minValue, maxValue).
@@ -1516,7 +1504,7 @@ export interface FlowContext {
   /**
    * Generate a new GUID.
    */
-  guid(): string;
+  guid(format?: 'N' | 'D' | 'B' | 'P' | 'X' | 'n' | 'd' | 'b' | 'p' | 'x'): string;
 
   /**
    * Format a number as a string using a .NET numeric format string and optional locale.

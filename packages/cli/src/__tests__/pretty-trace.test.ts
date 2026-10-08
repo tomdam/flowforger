@@ -11,7 +11,7 @@ async function prettyRun(dsl: string): Promise<string[]> {
 }
 
 describe("pretty run output", () => {
-  it("prints an if before the branch that ran, with the branch indented under it", async () => {
+  it("prints an if before its branches: the one that ran, then the skipped one", async () => {
     const lines = await prettyRun(`
 @Flow('welcome-flow')
 class WelcomeFlow {
@@ -38,6 +38,7 @@ class WelcomeFlow {
       '  ✓ Member → "Alice"',
       "  ✓ Check_Member condition → true (then branch)",
       '    ✓ Note → "Welcome back!"',
+      "    ↷ Note2",
       "",
       "✓ Flow succeeded — 3 actions executed",
       "",
@@ -86,14 +87,15 @@ class MixedFlow {
       '  ✓ Work → {"scopeStatus":"Succeeded"}',
       "    ✓ InScope → 1",
       '    ✓ RouteByRegion → {"matched":true,"matchedCase":"CaseEU","value":"EU"}',
-      "      ✓ TaxEU → 0.2",
       "      ↷ TaxUS",
+      "      ✓ TaxEU → 0.2",
       "  ✓ Loop — 2 iterations",
       "    [1/2] 1",
       "      ✓ IsOne condition → true (then branch)",
       "        ✓ One → 1",
       "    [2/2] 2",
       "      ✓ IsOne condition → false (else branch)",
+      "        ↷ One",
     ]);
   });
 
@@ -120,6 +122,35 @@ class CountFlow {
 
     // Outer, A, Inner, B
     assert.ok(lines.includes("✓ Flow succeeded — 4 actions executed"), lines.join("\n"));
+  });
+
+  it("reports a terminated run with its runError, and the rest of the flow as skipped", async () => {
+    const lines = await prettyRun(`
+@Flow('stop-flow')
+class StopFlow {
+  @HttpTrigger({ method: 'POST' })
+  trigger() {}
+
+  @Action()
+  async run(ctx: FlowContext) {
+    /** @action Work @type scope */
+    {
+      await ctx.terminate('Stop', 'Failed', { code: 'BAD', message: 'bad input' });
+    }
+    await ctx.compose('After', 1);
+  }
+}
+`);
+
+    assert.deepEqual(lines.slice(3), [
+      "  ⚡ manual (trigger)",
+      '  ⊘ Work → {"scopeStatus":"Cancelled"}',
+      "    ✓ Stop",
+      "  ↷ After",
+      "",
+      "✗ Flow failed — bad input",
+      "",
+    ]);
   });
 
   it("labels connector records by their title and prints list results as a count", async () => {

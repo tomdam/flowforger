@@ -31,23 +31,23 @@ describe('xml()', () => {
     assert.equal(r, '<root><a>1</a></root>');
   });
 
-  it('returns input as-is on invalid XML (best-effort)', () => {
-    const r = evalExpression(`@xml('not even xml')`, ctx);
-    assert.equal(typeof r, 'string');
-    // xmldom is lenient; we only require that it doesn't throw
+  it('fails on text that is not XML, as the cloud does', () => {
+    assert.throws(() => evalExpression(`@xml('not even xml')`, ctx), /cannot be converted to XML/);
   });
 });
 
 describe('xpath() — node-set queries', () => {
   const ctx = makeContext();
 
-  it('returns an array of element nodes serialized as XML strings', () => {
+  it('returns element nodes as application/xml binary objects (like the cloud)', () => {
     const r = evalExpression(`@xpath(xml('${sampleXml}'), '/orders/order')`, ctx);
     assert.ok(Array.isArray(r));
     assert.equal(r.length, 3);
-    assert.match(r[0], /<order[^>]*id="1"/);
-    assert.match(r[1], /<order[^>]*id="2"/);
-    assert.match(r[2], /<order[^>]*id="3"/);
+    for (const node of r) assert.equal(node['$content-type'], 'application/xml;charset=utf-8');
+    const decoded = r.map((node: any) => Buffer.from(node['$content'], 'base64').toString('utf8'));
+    assert.equal(decoded[0], '<order id="1" status="pending"><total>100</total></order>');
+    assert.match(decoded[1], /<order[^>]*id="2"/);
+    assert.match(decoded[2], /<order[^>]*id="3"/);
   });
 
   it('filters nodes via predicate', () => {

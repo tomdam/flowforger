@@ -66,8 +66,8 @@ function findJSDocStart(lines: string[], lineIdx: number): number {
   return lineIdx;
 }
 
-/** Find the matching closing brace starting from startLineIdx. */
-function findMatchingBrace(lines: string[], startLineIdx: number): number {
+/** Find the matching closing brace starting from startLineIdx (at startCol on that line). */
+function findMatchingBrace(lines: string[], startLineIdx: number, startCol = 0): number {
   let braceDepth = 0;
   let foundOpen = false;
 
@@ -75,7 +75,7 @@ function findMatchingBrace(lines: string[], startLineIdx: number): number {
     const line = lines[i];
     let inString = false;
     let stringChar = '';
-    for (let j = 0; j < line.length; j++) {
+    for (let j = i === startLineIdx ? startCol : 0; j < line.length; j++) {
       const ch = line[j];
       if (inString) {
         if (ch === '\\') { j++; continue; }
@@ -154,7 +154,8 @@ export function sanitizeVarName(name: string): string {
  *
  * Uses the same 3-pass pattern-matching algorithm as generateNativeDslWithSourceMap
  * (JSDoc @action tags, ctx.method() calls, trigger decorators) plus a 4th pass
- * for variable declarations/assignments that don't use those patterns.
+ * for variable declarations/assignments that don't use those patterns and a 5th
+ * for control-flow statements without an @action tag.
  */
 export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap {
   const lines = dslCode.split('\n');
@@ -188,20 +189,16 @@ export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap
       const nodeType = nodeInfo.get(actionName)!;
       const isControl = isControlFlowType(nodeType);
 
-      let endIdx: number;
-      if (isControl) {
-        endIdx = findMatchingBrace(lines, startIdx);
-      } else {
-        let stmtStart = i;
-        for (let j = i; j < lines.length; j++) {
-          const t = lines[j].trim();
-          if (!t.startsWith('/**') && !t.startsWith('*') && !t.endsWith('*/') && t !== '') {
-            stmtStart = j;
-            break;
-          }
+      let stmtStart = i;
+      for (let j = i; j < lines.length; j++) {
+        const t = lines[j].trim();
+        if (!t.startsWith('/**') && !t.startsWith('*') && !t.endsWith('*/') && t !== '') {
+          stmtStart = j;
+          break;
         }
-        endIdx = findSimpleActionEnd(lines, stmtStart);
       }
+      // From the statement, not the JSDoc: a tag like @limit {"count":3} has braces of its own
+      const endIdx = isControl ? findMatchingBrace(lines, stmtStart) : findSimpleActionEnd(lines, stmtStart);
 
       nameToLines.set(actionName, {
         startLine: startIdx + 1,
@@ -215,13 +212,24 @@ export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i].trim();
 
-    // Match ctx.method('Name' or .method('Name' patterns (covers connector chains too)
-    const ctxCallMatch = trimmed.match(/\.(\w+)\s*\(\s*['"]([^'"]+)['"]/);
+    // Match ctx.method('Name' or .method('Name' patterns (covers connector chains too),
+    // or a call opened at the end of the line with the name on the next one:
+    //   await ctx.response(
+    //     "Respond_to_a_PowerApp_or_flow",
+    let ctxCallMatch: [string, string] | null = null;
+    const sameLine = trimmed.match(/\.(\w+)\s*\(\s*['"]([^'"]+)['"]/);
+    if (sameLine) {
+      ctxCallMatch = [sameLine[1], sameLine[2]];
+    } else {
+      const openCall = trimmed.match(/\.(\w+)\s*\(\s*$/);
+      const nameLine = openCall ? lines.slice(i + 1).find(l => l.trim() !== '') : undefined;
+      const nameMatch = nameLine?.trim().match(/^['"]([^'"]+)['"]/);
+      if (openCall && nameMatch) ctxCallMatch = [openCall[1], nameMatch[1]];
+    }
     if (ctxCallMatch) {
-      const methodName = ctxCallMatch[1];
+      const [methodName, actionName] = ctxCallMatch;
       // Skip reference methods that read other actions' outputs (not action-creating)
       if (['body', 'outputs', 'triggerBody', 'triggerOutputs', 'trigger', 'actions', 'eval', 'parameters', 'workflow'].includes(methodName)) continue;
-      const actionName = ctxCallMatch[2];
       if (!remainingNames.has(actionName)) continue;
 
       const startIdx = findPrecedingJSDoc(lines, i);
@@ -266,11 +274,32 @@ export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap
         n.type === 'action' && 'kind' in n && variableKinds.includes((n as any).kind) && remainingNames.has(n.name)
     );
 
+    const varNameOf = (n: any) => sanitizeVarName(n.inputs?.name || n.inputs?.variableName || '');
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Pattern 4a: let varName: type = ... (initializevariable)
-      let nameMatch = line.match(/^\s*let\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*:/u);
+      // Pattern 4d: varName++ / ++varName / varName-- / --varName (increment/decrementvariable)
+      const unaryMatch = line.match(/^\s*(?:(\+\+|--)\s*([\p{L}_$][\p{L}\p{N}_$]*)|([\p{L}_$][\p{L}\p{N}_$]*)\s*(\+\+|--))\s*;?\s*$/u);
+      // Pattern 4e: ctx.appendToStringVariable('varName', ...) (the generator writes it)
+      const appendMatch = line.match(/\.appendToStringVariable\s*\(\s*['"]([^'"]+)['"]/);
+      if (unaryMatch || appendMatch) {
+        const kind = appendMatch
+          ? 'appendtostringvariable'
+          : (unaryMatch![1] ?? unaryMatch![4]) === '++' ? 'incrementvariable' : 'decrementvariable';
+        const sanitized = appendMatch ? sanitizeVarName(appendMatch[1]) : (unaryMatch![2] ?? unaryMatch![3]);
+        const node = varNodes.find(n => n.kind === kind && varNameOf(n) === sanitized && remainingNames.has(n.name));
+        if (node) {
+          const startIdx = findPrecedingJSDoc(lines, i);
+          const endIdx = findSimpleActionEnd(lines, i);
+          nameToLines.set(node.name, { startLine: startIdx + 1, endLine: endIdx + 1 });
+          remainingNames.delete(node.name);
+        }
+        continue;
+      }
+
+      // Pattern 4a: let varName: type = ... / let varName = ... (initializevariable)
+      let nameMatch = line.match(/^\s*let\s+([\p{L}_$][\p{L}\p{N}_$]*)\s*[:=]/u);
       if (nameMatch) {
         const sanitized = nameMatch[1];
         const node = varNodes.find(
@@ -311,9 +340,9 @@ export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap
       nameMatch = line.match(/^\s*([\p{L}_$][\p{L}\p{N}_$]*)\s*[+\-*/]?=\s/u);
       if (nameMatch) {
         const sanitized = nameMatch[1];
+        // Never the initializer: its `let` line is mapped by 4a, and `x = x + 1` must not claim it
         const node = varNodes.find(
-          n => sanitizeVarName((n as any).inputs?.name || (n as any).inputs?.variableName || '') === sanitized &&
-            remainingNames.has(n.name)
+          n => n.kind !== 'initializevariable' && varNameOf(n) === sanitized && remainingNames.has(n.name)
         );
         if (node) {
           const startIdx = findPrecedingJSDoc(lines, i);
@@ -322,6 +351,38 @@ export function buildSourceMapFromDsl(dslCode: string, ir: FlowIR): DslSourceMap
           remainingNames.delete(node.name);
         }
       }
+    }
+  }
+
+  // Pass 5: control-flow statements without an @action tag (the transformer names them
+  // Switch, Condition, ...). The IR lists nodes in source order (collectAllNodes is
+  // pre-order), so the k-th statement of a kind is the k-th node of its type — paired
+  // only when the counts agree, so a stray `if` in helper code can't shift the mapping.
+  if (remainingNames.size > 0) {
+    const statementKinds: Array<{ type: string; pattern: RegExp }> = [
+      { type: 'if', pattern: /^\s*(?:\}\s*else\s+)?if\s*\(/ },
+      { type: 'foreach', pattern: /^\s*for\s*(?:await\s*)?\(\s*(?:const|let|var)\s.*\sof\s/ },
+      { type: 'switch', pattern: /^\s*switch\s*\(/ },
+      { type: 'dountil', pattern: /^\s*(?:do\s*(?:\{|$)|while\s*\()/ },
+    ];
+    for (const { type, pattern } of statementKinds) {
+      const statementLines: number[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) statementLines.push(i);
+      }
+      const nodes = allNodes.filter(n => n.type === type);
+      if (statementLines.length !== nodes.length) continue;
+
+      nodes.forEach((node, k) => {
+        if (!remainingNames.has(node.name)) return;
+        const i = statementLines[k];
+        // `} else if (...) {` starts after the closing brace of the previous branch
+        const elseIf = lines[i].match(/^\s*\}\s*else\s+/);
+        const startIdx = elseIf ? i : findPrecedingJSDoc(lines, i);
+        const endIdx = findMatchingBrace(lines, i, elseIf ? elseIf[0].length : 0);
+        nameToLines.set(node.name, { startLine: startIdx + 1, endLine: endIdx + 1 });
+        remainingNames.delete(node.name);
+      });
     }
   }
 

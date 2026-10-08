@@ -396,8 +396,10 @@ function transformContextMethodCall(methodName: string, node: CallExpression, ct
     }
 
     // GUID
-    case 'guid':
-      return maybePrefix('guid()');
+    case 'guid': {
+      const argStrs = args.map((a) => transformExpression(a as Expression, ctx, false));
+      return maybePrefix(`guid(${argStrs.join(', ')})`);
+    }
 
     // Base64 functions
     case 'base64': {

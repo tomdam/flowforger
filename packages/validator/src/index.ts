@@ -93,7 +93,6 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   }
   // Track initializevariable actions by variableName to detect duplicates across the whole IR.
   // PA rejects two InitializeVariable actions targeting the same variable name on import.
-  const initVarNames = new Map<string, string[]>(); // variableName -> [actionName, actionName, ...]
 
   issues.push(...collectDescriptionIssues(ir.description, 'description', 'Flow description'));
 
@@ -110,15 +109,6 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
         });
       }
 
-      // Collect initializevariable variableNames to flag duplicates later
-      if (n.type === 'action' && (n as any).kind === 'initializevariable') {
-        const varName = (n as any).inputs?.variableName;
-        if (typeof varName === 'string' && varName.length > 0) {
-          const existing = initVarNames.get(varName) || [];
-          existing.push(n.name);
-          initVarNames.set(varName, existing);
-        }
-      }
 
       if (n.type === 'if') {
         // @ts-ignore
@@ -229,27 +219,16 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   }
   walk(ir.nodes as any);
 
-  // Placement rules the cloud enforces on save: Response/Terminate not inside loops, Response
-  // needs a request trigger and no parallel branch, nesting depth ≤ 8
+  // Placement rules the cloud enforces on save: Response/Terminate not inside loops, no Response
+  // with a recurring trigger, InitializeVariable at the top level, nesting level ≤ 8
   issues.push(...collectIrPlacementIssues(ir));
 
   // Structural rules and definition limits: duplicate/long names, counts, runAfter integrity,
-  // until/terminate/retry/recurrence shapes, expression references to actions/loops/parameters
+  // until/terminate/retry/recurrence shapes, variables, expression references to actions/loops/parameters
   issues.push(...collectIrStructureIssues(ir));
 
   // Expression syntax + unknown-function checks across every node value
   issues.push(...collectExpressionIssues(ir.nodes, 'nodes'));
-
-  // Report duplicate InitializeVariable variable names
-  for (const [varName, actionNames] of initVarNames) {
-    if (actionNames.length > 1) {
-      issues.push({
-        level: 'error',
-        code: 'VAR_INIT_DUPLICATE',
-        message: `Variable '${varName}' is initialized more than once (actions: ${actionNames.join(', ')}). Power Automate requires a single InitializeVariable per variable name.`,
-      });
-    }
-  }
 
   return { ok: issues.find((i) => i.level === 'error') === undefined, issues };
 }

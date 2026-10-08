@@ -23,9 +23,9 @@ This example demonstrates the comprehensive expression functions in FlowForger t
 
 ### Trigger Reference Functions
 
-- **`trigger()`** - Get trigger data object
+- **`trigger()`** - Get the trigger's run record (`name`, `inputs`, `outputs`, `startTime`, `status`, ...)
   ```typescript
-  "@trigger().body" // Returns trigger input
+  "@trigger().outputs.body" // Returns trigger input (trigger() itself has no body)
   ```
 
 - **`triggerBody()`** - Get trigger body directly
@@ -99,24 +99,11 @@ This example demonstrates the comprehensive expression functions in FlowForger t
   "@float('3.14')" // Returns: 3.14
   ```
 
-- **`abs(number)`** - Absolute value
+- **No `abs`, `ceil`, `floor` or `round`** - Power Automate has none of these; a flow that
+  calls one fails at run time ("The template function 'round' is not defined or not valid"),
+  and FlowForger fails the same way. To round, format and convert back:
   ```typescript
-  "@abs(-5)" // Returns: 5
-  ```
-
-- **`ceil(number)`** - Round up
-  ```typescript
-  "@ceil(3.2)" // Returns: 4
-  ```
-
-- **`floor(number)`** - Round down
-  ```typescript
-  "@floor(3.9)" // Returns: 3
-  ```
-
-- **`round(number)`** - Round to nearest integer
-  ```typescript
-  "@round(3.6)" // Returns: 4
+  "@int(formatNumber(3.6, 'F0'))" // Returns: 4 (standard formats round half to even: 2.5 → 2)
   ```
 
 ### Collection Functions
@@ -138,7 +125,7 @@ All expression functions support dot notation for accessing nested properties:
 ```typescript
 "@body('GetUserData').user.name"          // Access nested object
 "@actions('GetData').outputs.items[0]"    // Access array elements
-"@trigger().body.request.headers"         // Access nested paths
+"@trigger().outputs.body.request.headers" // Access nested paths
 ```
 
 ## Complex Expressions
@@ -147,7 +134,7 @@ Functions can be nested and combined:
 
 ```typescript
 "@concat(base64ToString('SGVsbG8='), ' ', 'World')"  // "Hello World"
-"@add(abs(-10), ceil(2.3))"                          // 13
+"@add(div(10, 4), 1)"                                // 3 (div of two integers is integer division)
 "@length(createArray(1, 2, 3, 4, 5))"                // 5
 "@indexOf(toLower('HELLO WORLD'), 'world')"          // 6
 ```

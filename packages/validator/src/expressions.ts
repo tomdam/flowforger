@@ -4,7 +4,15 @@
  * (`...@{...}...`), and reports:
  *   - EXPR_SYNTAX (error): the string does not parse against the shared grammar
  *   - EXPR_UNKNOWN_FUNCTION (warning): a call references a function that is
- *     neither engine-implemented nor a documented cloud function
+ *     neither engine-implemented nor a documented cloud function (the cloud
+ *     saves it and fails at run time)
+ *   - EXPR_ARG_COUNT / EXPR_ARG_TYPE (error): body(), variables(), items(), ...
+ *     without a name or with a non-text literal name, and EXPR_SYNTAX for a
+ *     double-quoted string: what the cloud refuses to save beyond the grammar
+ *     (`expressionSaveErrors`, measured by conformance/save-rules/expressions)
+ *   - EXPR_ARG_COUNT (warning): any other call with a number of arguments the
+ *     function does not take; the cloud saves it and fails it at run time
+ *     (`expressionRuntimeErrors`, conformance/flows/expr-errors.ff.ts)
  *
  * Object keys are never checked (Dataverse payloads legitimately use keys
  * like '@odata.type'). '@@' escapes and plain strings are ignored — the
@@ -16,6 +24,8 @@ import {
   parseTemplateStrict,
   walkCalls,
   KNOWN_FUNCTIONS,
+  expressionSaveErrors,
+  expressionRuntimeErrors,
   type ExprNode,
 } from '@flowforger/expressions';
 import type { ValidationIssue } from './index.js';
@@ -53,7 +63,8 @@ function checkString(s: string, path: string, issues: ValidationIssue[]): void {
 
   // Full expression: starts with '@' (but not the '@{' template form and not
   // the '@@' literal escape).
-  if (trimmed.startsWith('@') && !trimmed.startsWith('@{') && !trimmed.startsWith('@@')) {
+  // A lone '@' is saved as text (conformance/save-rules/expressions: syntax-at-alone).
+  if (trimmed.startsWith('@') && !trimmed.startsWith('@{') && !trimmed.startsWith('@@') && trimmed !== '@') {
     const node = tryParseExpression(trimmed);
     if (!node) {
       issues.push({
@@ -65,6 +76,7 @@ function checkString(s: string, path: string, issues: ValidationIssue[]): void {
       return;
     }
     reportUnknownFunctions(node, path, issues);
+    reportSaveErrors(node, trimmed, path, issues);
     return;
   }
 
@@ -81,8 +93,23 @@ function checkString(s: string, path: string, issues: ValidationIssue[]): void {
       return;
     }
     for (const part of parts) {
-      if (part.kind === 'expr') reportUnknownFunctions(part.node, path, issues);
+      if (part.kind !== 'expr') continue;
+      reportUnknownFunctions(part.node, path, issues);
+      reportSaveErrors(part.node, s, path, issues);
     }
+  }
+}
+
+/** What the cloud refuses to save beyond the grammar: unnamed references, double quotes. */
+function reportSaveErrors(node: ExprNode, text: string, path: string, issues: ValidationIssue[]): void {
+  for (const e of expressionSaveErrors(node)) {
+    const message =
+      e.code === 'EXPR_SYNTAX' ? `Invalid expression: ${e.message}: ${truncate(text)}` : `${e.message} (${truncate(text)})`;
+    issues.push({ level: 'error', code: e.code, message, path });
+  }
+  // Saved by the cloud, but the call fails whenever it is evaluated.
+  for (const e of expressionRuntimeErrors(node)) {
+    issues.push({ level: 'warning', code: e.code, message: `${e.message} The flow saves, but this fails when it runs (${truncate(text)})`, path });
   }
 }
 

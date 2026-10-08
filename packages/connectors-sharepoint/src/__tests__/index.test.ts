@@ -97,14 +97,15 @@ describe('SharePointConnector choice expansion', () => {
     ]);
   });
 
-  it('leaves null choice values untouched', async () => {
+  // The cloud connector leaves null columns out of the item altogether.
+  it('omits null choice values', async () => {
     routes = [
       { match: '/fields?', body: choiceFieldsResponse },
       { match: '/items', body: { value: [{ Id: 1, UserType: null }] } },
     ];
 
     const result: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
-    assert.equal(result.value[0].UserType, null);
+    assert.ok(!('UserType' in result.value[0]));
   });
 
   it('returns raw items when the fields metadata request fails', async () => {
@@ -164,7 +165,7 @@ describe('SharePointConnector lookup/person expansion', () => {
     Claims: 'i:0#.f|membership|jane@contoso.com',
     DisplayName: 'Jane Doe',
     Email: 'jane@contoso.com',
-    Picture: `${SITE}/_layouts/15/UserPhoto.aspx?Size=L&AccountName=jane%40contoso.com`,
+    Picture: `${SITE}/_layouts/15/UserPhoto.aspx?Size=L&AccountName=jane@contoso.com`,
     Department: null,
     JobTitle: null,
   };
@@ -249,7 +250,10 @@ describe('SharePointConnector lookup/person expansion', () => {
   it('falls back to a raw query when every expanded query fails, still wrapping choices', async () => {
     routes = [
       { match: '/fields?', body: refFieldsResponse },
-      { match: '$expand=', body: { error: 'lookup threshold exceeded' }, status: 400 },
+      // Every query that expands a ref field fails; the system-column query without refs does not.
+      { match: 'Project', body: { error: 'lookup threshold exceeded' }, status: 400 },
+      { match: 'Approvers', body: { error: 'lookup threshold exceeded' }, status: 400 },
+      { match: 'Author', body: { error: 'lookup threshold exceeded' }, status: 400 },
       { match: '/items', body: { value: [{ Id: 1, UserType: 'Current', ProjectId: 12 }] } },
     ];
 
@@ -268,13 +272,13 @@ describe('SharePointConnector lookup/person expansion', () => {
     // Raw lookup sibling untouched
     assert.equal(result.value[0].ProjectId, 12);
 
-    // The empty verified set is cached: a second call goes straight to raw
-    // without retrying the failing expansion or re-probing.
+    // The empty verified set is cached: a second call expands no ref field
+    // and does not retry the failing expansion or re-probe.
     const before = fetchCalls.length;
     await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
     const newCalls = fetchCalls.slice(before);
     assert.equal(newCalls.length, 1);
-    assert.ok(!newCalls[0].url.includes('$expand='));
+    assert.ok(!/Project|Approvers|Author/.test(newCalls[0].url));
   });
 
   it('projects dependent lookup columns through the primary nav property', async () => {
@@ -400,19 +404,25 @@ describe('SharePointConnector lookup/person expansion', () => {
     });
   });
 
-  it('applies expansion to GetFilesPropertiesOnly and keeps File/Folder expanded', async () => {
+  it('applies expansion to GetFilesPropertiesOnly; a library expands File for the drive ids only', async () => {
     routes = [
+      { match: 'BaseType', body: { BaseType: 1 } },
       { match: '/fields?', body: refFieldsResponse },
-      { match: '/items', body: { value: [{ Id: 1, Author: janeRaw, File: { Name: 'a.docx' } }] } },
+      {
+        match: '/items',
+        body: { value: [{ Id: 1, Author: janeRaw, File: { VroomDriveID: 'b!drive', VroomItemID: '01ITEM' } }] },
+      },
     ];
 
     const result: any = await connector.invoke('GetFilesPropertiesOnly', { dataset: SITE, table: LIST }, ctx);
 
     const itemsUrl = decodeURIComponent(fetchCalls.find((c) => c.url.includes('/items'))!.url);
-    assert.ok(itemsUrl.includes('$expand=File,Folder,Project,Approvers,Author'));
-    assert.ok(itemsUrl.includes('$select=*,File,Folder,'));
+    assert.ok(itemsUrl.includes('$expand=Project,Approvers,Author,ContentType,File'), itemsUrl);
+    assert.ok(itemsUrl.includes('File/VroomDriveID'), itemsUrl);
+    assert.ok(!itemsUrl.includes('Folder'), itemsUrl);
     assert.deepEqual(result.value[0].Author, janeExpanded);
-    assert.deepEqual(result.value[0].File, { Name: 'a.docx' });
+    // The cloud returns no File/Folder objects.
+    assert.ok(!('File' in result.value[0]));
   });
 });
 
@@ -452,6 +462,17 @@ describe('SharePointConnector cloud operationId aliases', () => {
       inputs: { dataset: SITE, id: 5 },
       expectUrl: `GetFileById('5')/ListItemAllFields/UnshareLink`,
     },
+    // Check in/out address the library item (table + id), as the cloud does (sp-checkout.ff.ts).
+    {
+      op: 'DiscardFileCheckOut',
+      inputs: { dataset: SITE, table: LIST, id: 4 },
+      expectUrl: `lists(guid'${LIST}')/items(4)/File/UndoCheckOut()`,
+    },
+    {
+      op: 'CheckInFile',
+      inputs: { dataset: SITE, table: LIST, id: 4, 'parameter/comment': 'done', 'parameter/checkinType': 0 },
+      expectUrl: `lists(guid'${LIST}')/items(4)/File/CheckIn(comment=@c,checkintype=0)?@c='done'`,
+    },
   ];
 
   for (const { op, inputs, expectUrl } of cases) {
@@ -479,6 +500,103 @@ describe('SharePointConnector cloud operationId aliases', () => {
   });
 });
 
+// Shapes verified against real cloud runs (conformance/flows/sp-attachments, sp-folders).
+describe('SharePointConnector attachments and folders (cloud shapes)', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+
+  beforeEach(() => {
+    fetchCalls = [];
+    routes = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      fetchCalls.push({ url, method: opts?.method || 'GET' });
+      const route = routes.find((r) => url.includes(r.match));
+      if (!route) throw new Error(`No mocked route for ${url}`);
+      return jsonResponse(route.body, route.status);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('adds an attachment through AddUsingPath and answers with SPListItemAttachment', async () => {
+    routes = [
+      {
+        match: 'AddUsingPath',
+        body: { FileName: 'w pixel.png', ServerRelativeUrl: '/sites/test/Lists/My Items/Attachments/9/w pixel.png' },
+      },
+    ];
+    const added = await connector.invoke(
+      'CreateAttachment',
+      { dataset: SITE, table: LIST, itemId: 9, displayName: 'w pixel.png', body: 'x' },
+      ctx,
+    );
+    assert.ok(fetchCalls[0].url.endsWith(`/Items(9)/AttachmentFiles/AddUsingPath(decodedUrl=@f)?@f='w+pixel.png'`));
+    assert.deepEqual(added, {
+      Id: '%252fLists%252fMy%2bItems%252fAttachments%252f9%252fw%2bpixel.png',
+      AbsoluteUri: 'https://tenant.sharepoint.com/sites/test/Lists/My Items/Attachments/9/w pixel.png',
+      DisplayName: 'w pixel.png',
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListItemAttachment',
+    });
+  });
+
+  it('reports an Add attachment failure like an HTTP request: { status, message, source, errors }', async () => {
+    routes = [
+      {
+        match: 'AddUsingPath',
+        status: 400,
+        body: { 'odata.error': { code: '-2130575257, Microsoft.SharePoint.SPException', message: { value: 'The specified name is already in use.' } } },
+      },
+    ];
+    const err = await connector.invoke('CreateAttachment', { dataset: SITE, table: LIST, itemId: 9, displayName: 'a.txt', body: 'x' }, ctx).catch((e) => e);
+    const outputs = connector.errorOutputs('CreateAttachment', err) as any;
+    assert.equal(outputs.statusCode, 400);
+    assert.equal(outputs.body.message, 'The specified name is already in use.');
+    assert.deepEqual(outputs.body.errors, ['-2130575257', 'Microsoft.SharePoint.SPException']);
+    assert.ok(outputs.body.source.endsWith(`AddUsingPath(decodedUrl=@f)?@f='a.txt'`));
+  });
+
+  it('fails a copy with "fail on conflict" with the cloud message when the name is taken', async () => {
+    routes = [
+      { match: 'GetFileByServerRelativeUrl(\'/sites/test/Docs/a.txt\')?$select=Name', body: { Name: 'a.txt', ServerRelativeUrl: '/sites/test/Docs/a.txt' } },
+      { match: 'Exists', body: { Exists: true } },
+    ];
+    const err: any = await connector
+      .invoke('CopyFileAsync', {
+        dataset: SITE,
+        'parameters/sourceFileId': '%252fDocs%252fa.txt',
+        'parameters/destinationFolderPath': '/Target',
+        'parameters/nameConflictBehavior': 0,
+      }, ctx)
+      .catch((e) => e);
+    assert.equal(err.status, 400);
+    assert.equal(err.message, "A file or folder with the name 'a.txt' already exists at the destination.");
+    assert.ok(!fetchCalls.some((c) => c.url.includes('MoveCopyUtil')));
+  });
+});
+
+describe('readZipEntries', () => {
+  it('reads stored entries, including those in folders', async () => {
+    const { readZipEntries } = await import('../zip.js');
+    // The two-entry archive sp-folders.ff.ts extracts: a.txt and dir/b.txt.
+    const zip = Uint8Array.from(
+      atob(
+        'UEsDBAoAAAAAAAAAAACzL55LCgAAAAoAAAAFAAAAYS50eHR6aXAgZmlsZSBhUEsDBAoAAAAAAAAAAAAJfpfSCgAAAAoAAAAJAAAAZGlyL2IudHh0emlwIGZpbGUgYlBLAQIUAAoAAAAAAAAAAACzL55LCgAAAAoAAAAFAAAAAAAAAAAAAAAAAAAAAABhLnR4dFBLAQIUAAoAAAAAAAAAAAAJfpfSCgAAAAoAAAAJAAAAAAAAAAAAAAAAAC0AAABkaXIvYi50eHRQSwUGAAAAAAIAAgBqAAAAXgAAAAAA',
+      ),
+      (c) => c.charCodeAt(0),
+    );
+    const entries = await readZipEntries(zip);
+    assert.deepEqual(
+      entries.map((e) => [e.name, new TextDecoder().decode(e.data)]),
+      [['a.txt', 'zip file a'], ['dir/b.txt', 'zip file b']],
+    );
+  });
+
+  it('rejects something that is not a zip', async () => {
+    const { readZipEntries } = await import('../zip.js');
+    await assert.rejects(() => readZipEntries(new TextEncoder().encode('not a zip at all, just text')), /not a \.zip/);
+  });
+});
+
 describe('SharePointConnector cloud item/* payloads', () => {
   let connector: SharePointConnector;
   let ctx: RunContext;
@@ -497,7 +615,7 @@ describe('SharePointConnector cloud item/* payloads', () => {
   });
 
   it('accepts item/* column values on PatchFileItem', async () => {
-    routes = [{ match: '/', body: {} }];
+    routes = [{ match: '/', body: { ID: 9, Title: 'New title' } }];
 
     // Exactly the shape the maker portal emits for "Update file properties".
     const result: any = await connector.invoke(
@@ -506,7 +624,8 @@ describe('SharePointConnector cloud item/* payloads', () => {
       ctx,
     );
 
-    assert.equal(result.ok, true);
+    // Like the cloud, it answers with the item (re-read after the MERGE).
+    assert.equal(result.ID, 9);
     const call = fetchCalls.find((c) => c.url.includes('items(9)'));
     assert.ok(call, `never patched items(9); called: ${fetchCalls.map((c) => c.url).join(', ')}`);
   });
@@ -553,6 +672,352 @@ describe('SharePointConnector cloud item/* payloads', () => {
   });
 });
 
+// Shapes verified against real cloud runs (conformance/flows/sp-read, sp-write).
+describe('SharePointConnector cloud parity (designer writes, item layout)', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+  let requests: Array<{ url: string; method: string; body?: any }>;
+
+  const fields = {
+    value: [
+      { InternalName: 'Status', TypeAsString: 'Choice', Choices: ['Open', 'Closed'] },
+      { InternalName: 'Tags', TypeAsString: 'MultiChoice', Choices: ['Red', 'Green', 'Blue'] },
+      { InternalName: 'Category', TypeAsString: 'Lookup', LookupField: 'Title' },
+      { InternalName: 'Related', TypeAsString: 'LookupMulti', LookupField: 'Title' },
+      { InternalName: 'Owner', TypeAsString: 'User' },
+      { InternalName: 'Reviewers', TypeAsString: 'UserMulti' },
+      { InternalName: 'Author', TypeAsString: 'User' },
+      { InternalName: 'DueDate', TypeAsString: 'DateTime', DisplayFormat: 0 },
+      { InternalName: 'DueTime', TypeAsString: 'DateTime', DisplayFormat: 1 },
+      { InternalName: 'Link', TypeAsString: 'URL' },
+    ],
+  };
+  const jane = { Id: 7, Title: 'Jane Doe', EMail: 'jane@contoso.com', Name: 'i:0#.f|membership|jane@contoso.com' };
+  // A REST item as SharePoint returns it for the connector's expanded query.
+  const restItem = {
+    FileSystemObjectType: 0,
+    Id: 1,
+    ServerRedirectedEmbedUri: null,
+    ContentTypeId: '0x0100AB',
+    Title: 'Alpha',
+    Status: 'Closed',
+    Tags: null,
+    Amount: null,
+    DueDate: '2026-03-15T07:00:00Z',
+    DueTime: '2026-03-15T14:30:00Z',
+    Link: { Description: 'Docs', Url: 'https://example.com/a' },
+    OwnerId: 7,
+    OwnerStringId: '7',
+    CategoryId: 2,
+    RelatedId: [],
+    ID: 1,
+    Modified: '2026-03-01T00:00:00Z',
+    AuthorId: 7,
+    OData__UIVersionString: '2.0',
+    Attachments: false,
+    GUID: 'abc',
+    FileRef: '/sites/test/Lists/My Items/1_.000',
+    FileLeafRef: '1_.000',
+    FileDirRef: '/sites/test/Lists/My Items',
+    FSObjType: '0',
+    owshiddenversion: 3,
+    ContentType: { Id: { StringValue: '0x0100AB' }, Name: 'Item' },
+    Owner: jane,
+    Category: { Id: 2, Title: 'Software' },
+    Author: jane,
+  };
+
+  beforeEach(() => {
+    requests = [];
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      const body = opts?.body ? JSON.parse(opts.body) : undefined;
+      requests.push({ url, method: opts?.method || 'GET', body });
+      if (url.includes('/fields?')) return jsonResponse(fields);
+      if (url.includes('/ensureuser')) return jsonResponse({ Id: 7 });
+      if (url.includes('utcToLocalTime')) return jsonResponse({ value: '2026-03-15T00:00:00' });
+      if (url.includes('/items(1)') || url.includes('/items?')) return jsonResponse(url.includes('/items?') ? { value: [{ ...restItem }] } : { ...restItem });
+      if (url.endsWith('/items')) return jsonResponse({ Id: 1 }, 201);
+      return jsonResponse({ ok: true }, 204);
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('translates the designer field format into a REST item body on PostItem', async () => {
+    await connector.invoke(
+      'PostItem',
+      {
+        dataset: SITE,
+        table: LIST,
+        'item/Title': 'W',
+        'item/Status/Value': 'Open',
+        'item/Tags': [{ Value: 'Red' }, { Value: 'Green' }],
+        'item/Category/Id': '2',
+        'item/Related': [{ Id: 1 }],
+        'item/Owner/Claims': 'i:0#.f|membership|jane@contoso.com',
+        'item/Reviewers': [{ Claims: 'i:0#.f|membership|jane@contoso.com' }],
+      },
+      ctx,
+    );
+
+    const post = requests.find((r) => r.method === 'POST' && r.url.endsWith('/items'));
+    assert.deepEqual(post?.body, {
+      Title: 'W',
+      Status: 'Open',
+      Tags: ['Red', 'Green'],
+      CategoryId: 2,
+      RelatedId: [1],
+      OwnerId: 7,
+      ReviewersId: [7],
+    });
+    // One ensureuser call for the same claims, then cached.
+    assert.equal(requests.filter((r) => r.url.includes('/ensureuser')).length, 1);
+  });
+
+  it('clears a plain column set to null but leaves a choice/lookup/person sub-value of null alone', async () => {
+    // Verified in the cloud (conformance/flows/null-params.ff.ts).
+    await connector.invoke(
+      'PatchItem',
+      {
+        dataset: SITE,
+        table: LIST,
+        id: 1,
+        'item/Title': 'W',
+        'item/Amount': null,
+        'item/Status/Value': null,
+        'item/Category/Id': null,
+        'item/Owner/Claims': null,
+      },
+      ctx,
+    );
+
+    const merge = requests.find((r) => r.method === 'POST' && r.url.endsWith('/items(1)'));
+    assert.deepEqual(merge?.body, { Title: 'W', Amount: null });
+    assert.equal(requests.filter((r) => r.url.includes('/ensureuser')).length, 0);
+  });
+
+  it('answers PostItem and PatchItem with the item in cloud shape', async () => {
+    const created: any = await connector.invoke('PostItem', { dataset: SITE, table: LIST, 'item/Title': 'W' }, ctx);
+    const patched: any = await connector.invoke('PatchItem', { dataset: SITE, table: LIST, id: 1, 'item/Title': 'W2' }, ctx);
+    assert.equal(created.ItemInternalId, '1');
+    assert.equal(patched['@odata.etag'], '"3"');
+  });
+
+  it('lays an item out the way the cloud connector returns it', async () => {
+    const item: any = await connector.invoke('GetItem', { dataset: SITE, table: LIST, id: 1 }, ctx);
+
+    assert.deepEqual(Object.keys(item), [
+      '@odata.etag', 'ItemInternalId', 'ID', 'Title', 'Status', 'Status#Id',
+      'Tags', 'Tags@odata.type', 'Tags#Id', 'Tags#Id@odata.type',
+      'DueDate', 'DueTime', 'Link', 'Owner', 'Owner#Claims', 'Category', 'Category#Id',
+      'Related', 'Related@odata.type', 'Related#Id', 'Related#Id@odata.type',
+      'Modified', 'Author', 'Author#Claims',
+      'Reviewers', 'Reviewers@odata.type', 'Reviewers#Claims', 'Reviewers#Claims@odata.type',
+      '{Identifier}', '{IsFolder}', '{Link}', '{Name}', '{FilenameWithExtension}', '{Path}', '{FullPath}',
+      '{ContentType}', '{ContentType}#Id', '{HasAttachments}', '{VersionNumber}',
+    ]);
+    assert.equal(item['@odata.etag'], '"3"');
+    assert.equal(item.Status['#Id'], undefined);
+    assert.equal(item['Status#Id'], 1);
+    assert.deepEqual(item.Tags, []);
+    assert.equal(item.DueDate, '2026-03-15'); // date-only → site-local calendar date
+    assert.equal(item.DueTime, '2026-03-15T14:30:00Z'); // date+time stays UTC
+    assert.equal(item.Link, 'https://example.com/a');
+    assert.equal(item['Owner#Claims'], 'i:0#.f|membership|jane@contoso.com');
+    assert.equal(item['Category#Id'], 2);
+    assert.equal(item['{Identifier}'], 'Lists%252fMy%2bItems%252f1_.000');
+    assert.equal(item['{Path}'], 'Lists/My Items/');
+    assert.equal(item['{FullPath}'], 'Lists/My Items/1_.000');
+    assert.equal(item['{Name}'], 'Alpha');
+    assert.equal(
+      item['{Link}'],
+      `${SITE}/_layouts/15/listform.aspx?PageType=4&ListId=11111111%2D2222%2D3333%2D4444%2D555555555555&ID=1&ContentTypeID=0x0100AB`,
+    );
+    assert.deepEqual(item['{ContentType}'], {
+      '@odata.type': '#Microsoft.Azure.Connectors.SharePoint.SPListExpandedContentType',
+      Id: '0x0100AB',
+      Name: 'Item',
+    });
+    assert.equal(item['{VersionNumber}'], '2.0');
+  });
+
+  it('queries the system columns behind the synthetic fields', async () => {
+    await connector.invoke('GetItems', { dataset: SITE, table: LIST }, ctx);
+    const url = decodeURIComponent(requests.find((r) => r.url.includes('/items?'))!.url);
+    for (const col of ['FileRef', 'FileLeafRef', 'FileDirRef', 'FSObjType', 'owshiddenversion', 'ContentType/Id']) {
+      assert.ok(url.includes(col), `${col} not selected: ${url}`);
+    }
+    assert.ok(/\$expand=[^&]*ContentType/.test(url), url);
+  });
+
+  it('renames the paging link to @odata.nextLink', async () => {
+    (globalThis as any).fetch = async (url: string) =>
+      jsonResponse(url.includes('/fields?') ? fields : { value: [], 'odata.nextLink': 'https://next' });
+    const result: any = await connector.invoke('GetItems', { dataset: SITE, table: LIST, $top: 1 }, ctx);
+    assert.equal(result['@odata.nextLink'], 'https://next');
+    assert.ok(!('odata.nextLink' in result));
+  });
+
+  it('returns no body from DeleteItem', async () => {
+    const result = await connector.invoke('DeleteItem', { dataset: SITE, table: LIST, id: 1 }, ctx);
+    assert.equal(result, undefined);
+  });
+
+  it('reports 201 for an item create (cloud id or local name) and 200 otherwise', () => {
+    assert.equal(connector.successStatusCode('PostItem'), 201);
+    assert.equal(connector.successStatusCode('CreateItem'), 201);
+    assert.equal(connector.successStatusCode('GetItems'), 200);
+    assert.equal(connector.successStatusCode('DeleteItem'), 200);
+  });
+
+  it('rewrites REST errors into the cloud connector\'s { status, message } outputs', () => {
+    const restError = (status: number, code: string, value: string) =>
+      Object.assign(new Error('x'), { status, response: { 'odata.error': { code, message: { lang: 'en-US', value } } } });
+
+    assert.deepEqual(
+      connector.errorOutputs('GetItem', restError(404, '-2130575338, System.ArgumentException', 'Item does not exist. It may have been deleted by another user.')),
+      { statusCode: 404, body: { status: 404, message: 'Item Not Found' } },
+    );
+    assert.deepEqual(
+      connector.errorOutputs('GetItems', restError(404, '-1, System.ArgumentException', 'List does not exist.\n\nThe page you selected contains a list that does not exist.')),
+      { statusCode: 404, body: { status: 404, message: 'List not found' } },
+    );
+    assert.deepEqual(
+      connector.errorOutputs('GetItems', restError(500, '-2146232832, Microsoft.SharePoint.SPException', "Column 'Nope' does not exist. It may have been deleted by another user.")),
+      { statusCode: 400, body: { status: 400, message: "Column 'Nope' does not exist. It may have been deleted by another user." } },
+    );
+    assert.equal(connector.errorOutputs('GetItems', new Error('requires siteUrl')), undefined);
+  });
+});
+
+// Shapes verified against real cloud runs (conformance/flows/sp-library, sp-files-write, paging).
+describe('SharePointConnector cloud parity (document libraries)', () => {
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+  let requests: Array<{ url: string; method: string }>;
+  let respond: (url: string, method: string) => unknown;
+
+  const notes = {
+    Name: 'notes.txt',
+    ServerRelativeUrl: '/sites/test/Docs/notes.txt',
+    TimeLastModified: '2026-09-28T22:14:33Z',
+    Length: '19',
+    ETag: '"{0486A88A-70F9-4FE1-BB21-7828CC0C90A9},2"',
+    ListItemAllFields: { Id: 1 },
+  };
+  const libraryItem = (over: Record<string, unknown>) => ({
+    Id: 1,
+    ID: 1,
+    Title: null,
+    FileRef: '/sites/test/Docs/notes.txt',
+    FileLeafRef: 'notes.txt',
+    FileDirRef: '/sites/test/Docs',
+    FSObjType: '0',
+    owshiddenversion: 2,
+    UniqueId: '0486a88a-70f9-4fe1-bb21-7828cc0c90a9',
+    CheckoutUserId: null,
+    OData__DisplayName: '',
+    OData__UIVersionString: '1.0',
+    ContentType: { Id: { StringValue: '0x0101' }, Name: 'Document' },
+    ...over,
+  });
+
+  beforeEach(() => {
+    requests = [];
+    respond = () => ({});
+    (globalThis as any).fetch = async (url: string, opts: any) => {
+      const method = opts?.method || 'GET';
+      requests.push({ url: decodeURIComponent(url), method });
+      if (url.includes('BaseType')) return jsonResponse({ BaseType: 1 });
+      if (url.includes('/fields?')) return jsonResponse({ value: [] });
+      return jsonResponse(respond(decodeURIComponent(url), method));
+    };
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+  });
+
+  it('answers GetFileMetadata with the cloud BlobMetadata', async () => {
+    respond = () => notes;
+    const meta: any = await connector.invoke('GetFileMetadata', { dataset: SITE, id: '%252fDocs%252fnotes.txt' }, ctx);
+    assert.deepEqual(meta, {
+      ItemId: 1,
+      Id: '%252fDocs%252fnotes.txt',
+      Name: 'notes.txt',
+      DisplayName: 'notes.txt',
+      Path: '/Docs/notes.txt',
+      LastModified: '2026-09-28T22:14:33Z',
+      Size: 19,
+      MediaType: 'text/plain',
+      IsFolder: false,
+      ETag: '"{0486A88A-70F9-4FE1-BB21-7828CC0C90A9},2"',
+      FileLocator: `dataset=${btoa(SITE)},id=${btoa('%252fDocs%252fnotes.txt')}`,
+    });
+  });
+
+  it('lists a folder addressed by its identifier: subfolders, then files, ItemId 0', async () => {
+    respond = (url) =>
+      url.includes('/Folders')
+        ? { value: [{ Name: 'Sub', ServerRelativeUrl: '/sites/test/Docs/Folder A/Sub', TimeLastModified: 't1' }] }
+        : { value: [{ ...notes, ServerRelativeUrl: '/sites/test/Docs/Folder A/notes.txt' }] };
+    const entries: any = await connector.invoke('ListFolder', { dataset: SITE, id: '%252fDocs%252fFolder%2bA' }, ctx);
+    assert.ok(requests.some((r) => r.url.includes("GetFolderByServerRelativeUrl('/sites/test/Docs/Folder A')/Folders")));
+    assert.deepEqual(
+      entries.map((e: any) => [e.Id, e.IsFolder, e.ItemId, 'MediaType' in e]),
+      [
+        ['%252fDocs%252fFolder%2bA%252fSub', true, 0, false],
+        ['%252fDocs%252fFolder%2bA%252fnotes.txt', false, 0, true],
+      ],
+    );
+  });
+
+  it('answers CreateFile and UpdateFile with BlobMetadata, DeleteFile with no body', async () => {
+    respond = (url, method) => (method === 'POST' && url.includes('/Files/add') ? { UniqueId: 'u-1' } : notes);
+    const created: any = await connector.invoke('CreateFile', { dataset: SITE, folderPath: '/Docs', name: 'notes.txt', body: 'x' }, ctx);
+    assert.equal(created.Id, '%252fDocs%252fnotes.txt');
+    assert.equal(created.ItemId, 1);
+    assert.ok(requests.some((r) => r.url.includes("GetFileById('u-1')")));
+    const updated: any = await connector.invoke('UpdateFile', { dataset: SITE, id: created.Id, body: 'y' }, ctx);
+    assert.equal(updated.Path, '/Docs/notes.txt');
+    assert.equal(await connector.invoke('DeleteFile', { dataset: SITE, id: created.Id }, ctx), undefined);
+  });
+
+  it('gives library items the cloud synthetic fields', async () => {
+    respond = () => ({
+      value: [
+        // A folder before any file: its drive ids come from what the files teach.
+        libraryItem({ Id: 4, ID: 4, FileRef: '/sites/test/Docs/Folder A', FileLeafRef: 'Folder A', FSObjType: '1', UniqueId: '783897fe-9955-4abc-acf1-0d4365fffc1f' }),
+        libraryItem({ File: { VroomDriveID: 'b!drive', VroomItemID: '01OBY4LTEKVCDAJ6LQ4FH3WILYFDGAZEFJ' } }),
+        libraryItem({ Id: 6, ID: 6, FileRef: '/sites/test/Docs/data.csv', FileLeafRef: 'data.csv', CheckoutUserId: 7, UniqueId: 'bfc2b148-b9d5-4563-96c9-9790793f9091' }),
+      ],
+    });
+    const result: any = await connector.invoke('GetFileItems', { dataset: SITE, table: LIST }, ctx);
+    const [folder, file, csv] = result.value;
+
+    assert.equal(file['{Name}'], 'notes');
+    assert.equal(file['{FilenameWithExtension}'], 'notes.txt');
+    assert.equal(file['{Link}'], 'https://tenant.sharepoint.com/sites/test/Docs/notes.txt');
+    assert.equal(csv['{Link}'], 'https://tenant.sharepoint.com/sites/test/Docs/data.csv?d=wbfc2b148b9d5456396c99790793f9091');
+    assert.equal(file['{IsCheckedOut}'], false);
+    assert.equal(csv['{IsCheckedOut}'], true);
+    assert.deepEqual(file['{Thumbnail}'], { Full: null, Large: null, Medium: null, Small: null });
+    assert.equal(file['{DriveId}'], 'b!drive');
+    assert.equal(file['{DriveItemId}'], '01OBY4LTEKVCDAJ6LQ4FH3WILYFDGAZEFJ');
+    assert.equal(folder['{DriveId}'], 'b!drive');
+    assert.equal(folder['{DriveItemId}'], '01OBY4LTH6S44HQVMZXRFKZ4ININS777A7'); // verified against the cloud
+    assert.equal(folder['{Name}'], 'Folder A');
+    assert.equal(file.OData__DisplayName, '');
+    for (const item of result.value) assert.ok(!('File' in item) && !('UniqueId' in item) && !('CheckoutUserId' in item));
+  });
+
+  it('shapes a continuation page like the first (nextPage)', async () => {
+    respond = () => ({ value: [libraryItem({})], 'odata.nextLink': 'https://next/2' });
+    const page: any = await connector.nextPage('GetFileItems', { dataset: SITE, table: LIST }, 'https://next/1', ctx);
+    assert.equal(page.value[0]['{Name}'], 'notes');
+    assert.equal(page['@odata.nextLink'], 'https://next/2');
+    assert.ok(requests.some((r) => r.url === 'https://next/1'));
+  });
+});
+
 describe('SharePointConnector file identifiers', () => {
   let connector: SharePointConnector;
   let ctx: RunContext;
@@ -571,6 +1036,9 @@ describe('SharePointConnector file identifiers', () => {
   });
 
   const lastUrl = () => decodeURIComponent(fetchCalls[fetchCalls.length - 1].url);
+  /** Some request addressed this resource (query string ignored). */
+  const called = (suffix: string) => fetchCalls.some((c) => decodeURIComponent(c.url).split('?')[0].endsWith(suffix));
+  const calls = () => fetchCalls.map((c) => decodeURIComponent(c.url)).join(', ');
 
   it('addresses a trigger {Identifier} (double-encoded site-relative path) by server-relative URL', async () => {
     // Exactly what "When a file is created" hands out: library name, then
@@ -589,12 +1057,12 @@ describe('SharePointConnector file identifiers', () => {
     // "Create file" returns ids like this: leading %252f, site path included, spaces as %2b.
     const id = '%252fsites%252ftest%252fShared%2bDocuments%252fMy%2bReport.docx';
     await connector.invoke('GetFileMetadata', { dataset: SITE, id }, ctx);
-    assert.ok(lastUrl().endsWith(`/_api/web/GetFileByServerRelativeUrl('/sites/test/Shared Documents/My Report.docx')`), lastUrl());
+    assert.ok(called(`/_api/web/GetFileByServerRelativeUrl('/sites/test/Shared Documents/My Report.docx')`), calls());
   });
 
   it('keeps a literal + in a file name (arrives as %252b)', async () => {
     await connector.invoke('GetFileMetadata', { dataset: SITE, id: 'Lib%252fa%252bb.txt' }, ctx);
-    assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/a+b.txt')`), lastUrl());
+    assert.ok(called(`GetFileByServerRelativeUrl('/sites/test/Lib/a+b.txt')`), calls());
   });
 
   it('still uses GetFileById for a real GUID (with or without braces)', async () => {
@@ -609,7 +1077,7 @@ describe('SharePointConnector file identifiers', () => {
     await connector.invoke('CheckOutFile', { dataset: SITE, id }, ctx);
     assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/doc.docx')/CheckOut()`), lastUrl());
     await connector.invoke('UpdateFile', { dataset: SITE, id, body: 'hello' }, ctx);
-    assert.ok(lastUrl().endsWith(`GetFileByServerRelativeUrl('/sites/test/Lib/doc.docx')/$value`), lastUrl());
+    assert.ok(called(`GetFileByServerRelativeUrl('/sites/test/Lib/doc.docx')/$value`), calls());
   });
 });
 
@@ -639,7 +1107,8 @@ describe('SharePointConnector GetFilesPropertiesOnly folder scoping', () => {
   it('posts a folder-scoped GetItems instead of a FileDirRef $filter', async () => {
     routes = [
       { match: '/fields?', body: fieldsResponse },
-      { match: '/GetItems', body: { value: [{ Id: 1, Author: janeRaw, File: { Name: 'a.docx' } }] } },
+      { match: '/GetItems', body: { value: [{ Id: 1 }, { Id: 2 }] } },
+      { match: '/items?', body: { value: [{ Id: 1, ID: 1, Author: janeRaw, AuthorId: 3 }, { Id: 2, ID: 2 }] } },
     ];
 
     const result: any = await connector.invoke(
@@ -653,15 +1122,19 @@ describe('SharePointConnector GetFilesPropertiesOnly folder scoping', () => {
     assert.equal(call.method, 'POST');
     assert.ok(call.url.startsWith(`${SITE}/_api/web/lists(guid'${LIST}')/GetItems?`));
     const decoded = decodeURIComponent(call.url);
-    assert.ok(decoded.includes('$expand=File,Folder,Author'), decoded);
-    assert.ok(decoded.includes('$select=*,File,Folder,'), decoded);
-    assert.ok(!decoded.includes('FileDirRef'), decoded);
+    // CAML GetItems rejects $expand, so it only finds the ids...
+    assert.ok(decoded.includes('$select=Id'), decoded);
+    assert.ok(!decoded.includes('$expand'), decoded);
+    assert.ok(!decoded.includes('FileDirRef eq'), decoded);
     assert.equal(call.body.query.FolderServerRelativeUrl, '/sites/test/Shared Documents/Projects');
     assert.equal(call.body.query.ViewXml, "<View Scope='RecursiveAll'><RowLimit>5000</RowLimit></View>");
-    assert.ok(!calls.some((c) => c.url.includes('/items?')), 'must not fall back to the items GET');
-    // Cloud-shape wrapping still applies to the GetItems rows.
+    // ...and the items are read like GetItems reads them, by ID (indexed: threshold-safe).
+    const read = calls.find((c) => c.url.includes('/items?'));
+    assert.ok(read, 'items were not read by ID');
+    const readUrl = decodeURIComponent(read.url);
+    assert.ok(readUrl.includes('$filter=ID eq 1 or ID eq 2'), readUrl);
+    assert.ok(readUrl.includes('Author'), readUrl);
     assert.equal(result.value[0].Author.Email, 'jane@contoso.com');
-    assert.deepEqual(result.value[0].File, { Name: 'a.docx' });
   });
 
   it('prefixes a site-relative folder path with the site server-relative path', async () => {
@@ -799,5 +1272,64 @@ describe('SharePointConnector file content (cloud body shape)', () => {
     serveBytes('application/octet-stream', 'xyz');
     const result = await connector.invoke('GetFileContent', { dataset: SITE, id: 'Lib%252fdata.weird' }, ctx);
     assert.deepEqual(result, { '$content-type': 'application/octet-stream', $content: btoa('xyz') });
+  });
+});
+
+describe('SharePointConnector HttpRequest (cloud response shape)', () => {
+  // Measured against the cloud by conformance/flows/sp-http.ff.ts.
+  let connector: SharePointConnector;
+  let ctx: RunContext;
+  let sent: { url: string; headers: Record<string, string> } | undefined;
+
+  function serve(status: number, contentType: string, text: string, extraHeaders: Array<[string, string]> = []) {
+    (globalThis as any).fetch = async (url: string, init: any) => {
+      sent = { url, headers: init.headers };
+      return {
+        ok: status < 400,
+        status,
+        headers: new Map([...(contentType ? [['content-type', contentType] as [string, string]] : []), ...extraHeaders]),
+        arrayBuffer: async () => new TextEncoder().encode(text).buffer,
+      };
+    };
+  }
+  const request = (params: Record<string, unknown>) =>
+    connector.invoke('HttpRequest', { dataset: SITE, 'parameters/method': 'GET', ...params }, ctx) as Promise<any>;
+
+  beforeEach(() => {
+    connector = new SharePointConnector({ token: 'test-token' });
+    ctx = makeCtx();
+    sent = undefined;
+  });
+
+  it('asks for OData verbose by default and drops top-level nulls only', async () => {
+    serve(200, 'application/json;odata=verbose;charset=utf-8', JSON.stringify({ Title: 'x', Notes: null, d: { Amount: null } }));
+    const r = await request({ 'parameters/uri': '_api/web' });
+    assert.equal(sent!.headers.Accept, 'application/json;odata=verbose');
+    assert.deepEqual(r.body, { Title: 'x', d: { Amount: null } });
+    assert.equal(r.headers['content-type'], 'application/json; odata=verbose; charset=utf-8');
+  });
+
+  it('returns other content as the base64 envelope, and no body for an empty response', async () => {
+    serve(200, 'application/octet-stream', 'Hello notes\n');
+    const file = await request({ 'parameters/uri': "_api/web/GetFileByServerRelativeUrl('/a.txt')/$value" });
+    assert.deepEqual(file.body, { '$content-type': 'application/octet-stream', $content: btoa('Hello notes\n') });
+
+    serve(204, '', '');
+    const merged = await request({ 'parameters/method': 'POST', 'parameters/uri': '_api/web/lists/items(1)' });
+    assert.equal(merged.statusCode, 204);
+    assert.equal('body' in merged, false);
+  });
+
+  it("fails with the cloud's { status, message, source, errors } body", async () => {
+    serve(404, 'application/json;odata=verbose', JSON.stringify({
+      error: { code: '-1, System.ArgumentException', message: { lang: 'en-US', value: "List 'Nope' does not exist." } },
+    }), [['sprequestguid', 'svc-1']]);
+    const err = await request({ 'parameters/uri': "_api/web/lists/getbytitle('No Such')" }).catch((e) => e);
+    const out = connector.errorOutputs('HttpRequest', err) as any;
+    assert.equal(out.statusCode, 404);
+    assert.equal(out.body.status, 404);
+    assert.match(out.body.message, /^List 'Nope' does not exist\.\r\nclientRequestId: [0-9a-f-]{36}\r\nserviceRequestId: svc-1$/);
+    assert.equal(out.body.source, `${SITE}/_api/web/lists/getbytitle('No%20Such')`);
+    assert.deepEqual(out.body.errors, ['-1', 'System.ArgumentException']);
   });
 });

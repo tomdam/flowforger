@@ -205,8 +205,8 @@ control_flow_stmt =
      - @action names the node; if absent an auto-name is derived (Condition /
        ForEach_<loopVar> / Switch / DoUntil / Case_<value>). Recommended anyway,
        since auto-names are generic and collide (rule R1 / R4).
-     - @type is advisory here — it documents intent and aids round-trip parity, but
-       it is NOT what triggers lowering.
+     - @type is accepted but ignored here — it is NOT what triggers lowering, so
+       omit it (the DSL generator does not emit it on these constructs).
    The ONE exception is scope_stmt (5e): a bare block is lowered to a Scope ONLY when
    it carries `@type scope`. *)
 
@@ -234,8 +234,8 @@ dountil_stmt     = [ control_jsdoc ],
                    ( "do", block, "while", "(", condition_expr, ")", ";"
                    | "while", "(", condition_expr, ")", block ) ;
 
-control_jsdoc    = (* an OPTIONAL <JSDOC> that may carry @action <name> and/or
-                      @type <kw>; neither is required for these constructs *)
+control_jsdoc    = (* an OPTIONAL <JSDOC> that may carry @action <name>; a
+                      @type <kw> is tolerated but ignored for these constructs *)
                    <JSDOC> ;
 
 jsdoc_with_type  = (* a <JSDOC> containing `@type <kw>`; REQUIRED only where it is

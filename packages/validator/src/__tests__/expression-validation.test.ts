@@ -98,7 +98,10 @@ describe('expression validation in validateLogicApps', () => {
   it('clean definitions stay clean', () => {
     const r = validateLogicApps(def(
       { manual: { type: 'Request' } },
-      { Compose: { type: 'Compose', inputs: `@concat('a', variables('x'))` } },
+      {
+        Init: { type: 'InitializeVariable', inputs: { variables: [{ name: 'x', type: 'string', value: '' }] } },
+        Compose: { type: 'Compose', inputs: `@concat('a', variables('x'))`, runAfter: { Init: ['Succeeded'] } },
+      },
     ));
     assert.equal(r.issues.filter(i => i.code.startsWith('EXPR_')).length, 0);
     assert.equal(r.ok, true);

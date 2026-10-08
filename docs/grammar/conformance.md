@@ -104,15 +104,15 @@ let counter: number = 0;                         // ✅ valid — auto-named "In
 let counter2: number = 0;                        // ✅ valid — @action overrides the default name
 
 if (cond) { /* ... */ }                          // ✅ valid — auto-named "Condition"
-/** @action CheckStatus @type if */
+/** @action CheckStatus */
 if (cond) { /* ... */ }                          // ✅ recommended — explicit, unique name
 ```
 
 **`@type` follows a different rule:** it is **required only for `scope`** (a bare `{ }` block
 becomes a Scope only with `@type scope`; without it the block is flattened and its actions
 inlined). `if` / `foreach` / `switch` / `until` are recognized **structurally** by their
-TypeScript statement kind, so `@type` there is optional/advisory (still recommended for clarity
-and round-trip parity).
+TypeScript statement kind, so omit `@type` on them — it is accepted but ignored, and the DSL
+generator no longer emits it.
 
 *Origin:* `action-collector.ts` (named actions) vs `variable-tracker.ts` /
 `control-flow-analyzer.ts` (auto-named fallbacks); `transformer/index.ts` dispatches control flow
@@ -129,7 +129,7 @@ by statement kind and gates Scope on `@type scope`.
 if (cond) { return; }
 
 // ✅
-/** @action Stop @type if */
+/** @action Stop */
 if (cond) { await ctx.terminate('Stop', 'Cancelled'); }
 ```
 
@@ -386,7 +386,7 @@ Logic Apps JSON.
 
 ---
 
-## R16 — `ctx.response()` / `ctx.terminate()` never inside a loop; `ctx.response()` needs a request trigger 🔴
+## R16 — `ctx.response()` / `ctx.terminate()` never inside a loop; no `ctx.response()` with a recurring trigger 🔴
 
 The workflow service validates action *placement* on save and rejects the flow with
 `InvalidWorkflowRunAction` ("The workflow run action 'X' has type 'Response' that could not be
@@ -395,13 +395,13 @@ nested under an action of type 'foreach'"):
 - `Response` and `Terminate` cannot be nested under a `Foreach` or `Until` action at any depth —
   the DSL's `for...of`, `while` and `do...while` bodies, including `if`/`switch`/scope blocks
   inside them. Outside a loop, `if`/`switch`/scope placement is fine.
-- `Response` is only valid when the workflow starts with a Request-type trigger
-  (`@HttpTrigger`, `@ManualTrigger`). `@RecurrenceTrigger` / `@ConnectorTrigger` flows have no
-  caller to answer.
-- `Response` must not sit in a parallel branch (a sibling with the same explicit `@runAfter`
-  predecessor *and* an overlapping status). Two responses after one scope on disjoint statuses
-  (`Succeeded` / `Failed`) are the try/catch pattern and are fine.
-- Actions nest at most 8 levels deep.
+- `Response` is rejected when the trigger has a recurrence ("The workflow with 'Response' action
+  type should not have triggers with 'recurrence' property defined"): `@RecurrenceTrigger`, or a
+  polling `@ConnectorTrigger` (one with a `recurrence` option). `@HttpTrigger`, `@ManualTrigger`
+  and webhook connector triggers are fine.
+- `InitializeVariable` only at the top level.
+- Actions nest at most 8 levels, counting a top-level action as level 0.
+- A `Response` in a parallel branch is accepted on save, although the Logic Apps docs forbid it.
 
 ```ts
 // ❌ WRONG — rejected on save
@@ -423,23 +423,23 @@ if (!ctx.empty(missingFile)) {
 }
 ```
 
-*Origin:* Logic Apps workflow validation
-([Response](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#response-action),
-[Terminate](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#terminate-action),
-[nesting limit](https://learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#definition-limits)).
+*Origin:* Logic Apps workflow validation, measured against the cloud by
+`node conformance/harness/save-rules.mjs placement` (cases in `conformance/save-rules/placement.mjs`,
+verdicts in `placement.cloud.json`, replayed by the validator's tests).
 *Enforced by:* `DSL037` (loop) / `DSL038` (trigger) in `@flowforger/dsl-language-service`
 (`flowforger validate <file.ff.ts>`, Monaco, VS Code), and `RESPONSE_NESTED` / `TERMINATE_NESTED` /
-`RESPONSE_TRIGGER` (errors), `RESPONSE_PARALLEL` / `NESTING_DEPTH` (warnings) in
-`@flowforger/validator` for IR and Logic Apps JSON. `flowforger validate <file.ff.ts>` also runs
-the IR validator after a clean DSL pass, so the two warnings reach DSL authors as well.
+`RESPONSE_TRIGGER` / `VAR_INIT_NESTED` / `NESTING_DEPTH` in `@flowforger/validator` for IR and
+Logic Apps JSON. `flowforger validate <file.ff.ts>` also runs the IR validator after a clean DSL
+pass, so `NESTING_DEPTH` reaches DSL authors as well.
 
 ---
 
 ## R17 — Stay inside the Power Automate definition limits 🔴
 
-The workflow service rejects a flow on save when a definition limit is exceeded
-([Power Automate limits](https://learn.microsoft.com/power-automate/limits-and-config),
-[Logic Apps schema reference](https://learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers)):
+The workflow service rejects a flow on save when a definition limit is exceeded. Every row is
+measured against the cloud by `node conformance/harness/save-rules.mjs structure` (cases in
+`conformance/save-rules/structure.mjs`); several differ from the
+[published limits](https://learn.microsoft.com/power-automate/limits-and-config):
 
 | Limit | Value |
 |-------|-------|
@@ -449,22 +449,68 @@ The workflow service rejects a flow on save when a definition limit is exceeded
 | Variables per flow | 250 |
 | Foreach `concurrency.repetitions` (`@runtimeConfig`) | 1–50 |
 | `@retryPolicy` | `type` none/fixed/exponential, `count` 1–90, `interval` PT5S–P1D |
-| `@limit` on until loops | `count` 1–5000, `timeout` an ISO 8601 duration |
-| `@RecurrenceTrigger` interval | Month 1–16, Day 1–500, Hour 1–12,000, Minute 1–72,000, Second 1–9,999,999 |
-| `@RecurrenceTrigger` schedule | `hours`/`minutes` only for Day/Week, `weekDays` only for Week, `monthDays` only for Month |
+| Trigger `concurrency.runs` | 1–100 |
+| Parameters per flow | 50, counting `$connections` and `$authentication` |
+| Characters per expression | 8192 without the leading `@`; each `@{...}` counts on its own |
+| `@RecurrenceTrigger` interval | a period of at most 500 days: Year 1, Month 16, Week 71, Day 500, Hour 12,000, Minute 720,000, Second 43,200,000 |
+| `@RecurrenceTrigger` schedule | only with frequency Day, Week or Month; `weekDays` only for Week, `monthDays` only for Month; next run within 18 months; any start at most 49 years ahead |
+| Nesting | level 8 (a top-level action is level 0) |
 
-A `ctx.response(..., 'PowerApp')` response pairs with `@ManualTrigger`; a `'VirtualAgent'` response
-pairs with `@HttpTrigger({ triggerKind: 'VirtualAgent' })`.
+Also rejected on save: a `switch` on a literal rather than an expression, a variable written or
+read without an `InitializeVariable` anywhere in the flow, a variable initialized twice (names are
+case-insensitive), a `runAfter` entry with no statuses, an `Until` without a `limit` property,
+`runError` with a status other than `Failed`.
 
-*Enforced by:* `DSL039`–`DSL043`, `DSL045` (errors), `DSL040`, `DSL044`, `DSL046` (warnings) in
-`@flowforger/dsl-language-service`; `ACTION_NAME_LENGTH`, `ACTION_COUNT`, `SWITCH_CASES`,
-`VARIABLE_COUNT`, `FOREACH_CONCURRENCY`, `RETRY_POLICY`, `UNTIL_COUNT`, `UNTIL_TIMEOUT`, `RECURRENCE`,
-`RECURRENCE_SCHEDULE`, `RESPONSE_KIND` in `@flowforger/validator`. The JSON validators also enforce
-what the DSL diagnostics already guarantee for `.ff.ts` files: `ACTION_NAME_DUPLICATE`,
-`EXPR_UNKNOWN_ACTION`, `EXPR_LOOP_REFERENCE`, `EXPR_UNKNOWN_PARAMETER`, `VARIABLE_UNDEFINED`,
-`RUNAFTER_UNKNOWN` / `RUNAFTER_STATUS` / `RUNAFTER_SELF` / `RUNAFTER_CYCLE`, `UNTIL_EMPTY` /
-`UNTIL_LIMIT`, `TERMINATE_STATUS` / `TERMINATE_RUNERROR`, `TRIGGER_COUNT`, `TRIGGER_CONCURRENCY`,
-`CONNECTION_REF_MISSING`, `EXPR_LENGTH`, `PARAMETER_COUNT`.
+Saved by the cloud, so only warnings: an `Until` `count` outside 1–5000, a malformed `timeout`, or
+an empty body; `parameters('x')` for an undefined parameter; `item()` outside a loop; several
+triggers; and a `ctx.response(..., 'PowerApp')` / `'VirtualAgent'` response with a trigger the maker
+portal would not pair it with.
+
+*Enforced by:* `DSL039`–`DSL042`, `DSL043` (except `@limit`), `DSL045`, `DSL046` (errors), `DSL043`
+on `@limit`, `DSL044` (warnings) in `@flowforger/dsl-language-service`; `ACTION_NAME_LENGTH`,
+`ACTION_COUNT`, `SWITCH_CASES`, `SWITCH_EXPRESSION`, `VARIABLE_COUNT`, `FOREACH_CONCURRENCY`,
+`TRIGGER_CONCURRENCY`, `RETRY_POLICY`, `PARAMETER_COUNT`, `EXPR_LENGTH`, `RECURRENCE`,
+`RECURRENCE_SCHEDULE`, `VARIABLE_UNINITIALIZED`, `VARIABLE_UNDEFINED`, `VAR_INIT_DUPLICATE`,
+`ACTION_NAME_DUPLICATE`, `EXPR_UNKNOWN_ACTION`, `EXPR_LOOP_REFERENCE` (for `items()`),
+`RUNAFTER_UNKNOWN` / `RUNAFTER_STATUS` / `RUNAFTER_SELF` / `RUNAFTER_CYCLE`, `UNTIL_LIMIT`,
+`TERMINATE_STATUS` / `TERMINATE_RUNERROR`, `CONNECTION_REF_MISSING` (errors) and `UNTIL_COUNT`,
+`UNTIL_TIMEOUT`, `UNTIL_EMPTY`, `EXPR_UNKNOWN_PARAMETER`, `TRIGGER_COUNT`, `RESPONSE_KIND`
+(warnings) in `@flowforger/validator`.
+
+---
+
+## R18 — Don't change variables inside a parallel `for...of` 🟠
+
+A `for...of` without `@runtimeConfig {"concurrency":{"repetitions":1}}` is an Apply to each with
+the default concurrency: Power Automate runs up to 20 iterations at once, while the local engine
+runs them one at a time. `.push()` and string `+=` inside it append in completion order, and
+`=` (Set variable) races with the reads of other iterations, so the deployed flow can produce a
+different result than the local run. Make the loop sequential, or build the result with
+`ctx.select()` / `ctx.filterArray()`. `++`, `--`, numeric `+=` and `x = x ± n` compile to
+Increment/Decrement variable, which the cloud applies atomically, and are fine. A `do...while`
+(Until) is always sequential.
+
+*Origin:* [Apply to each concurrency](https://learn.microsoft.com/power-automate/guidance/coding-guidelines/implement-parallel-execution);
+local-vs-cloud difference observed in `conformance/flows/loops.ff.ts`.
+*Enforced by:* `DSL047` (warning) in `@flowforger/dsl-language-service`.
+
+---
+
+## R19 — Read only actions on the `@runAfter` path 🔴
+
+An expression may reference (`body()`, `outputs()`, `actions()`, `result()`, or a `const` bound to
+an action) only an action that is a transitive `@runAfter` predecessor of the reading action, or of
+a block enclosing it, or that is nested inside such a predecessor. Everything else is rejected on
+save: parallel branches, a join that doesn't list the branch it reads, forward references, the
+other branch of an `if`/`switch`, the enclosing block itself, and an `if`/`switch`/`for...of`
+header reading its own body. A `do...while` condition may read its body. An action reading itself
+gets its own error ("The action cannot reference itself"). Without `@runAfter` every statement runs
+after the previous one, so only flows with explicit `@runAfter` can break this rule.
+
+*Origin:* measured in the cloud with `node conformance/harness/save-rules.mjs` (cases in
+`conformance/save-rules/runafter-path.mjs`, verdicts in `runafter-path.cloud.json`).
+*Enforced by:* `DSL048` (error) in `@flowforger/dsl-language-service`; `EXPR_RUNAFTER_PATH` /
+`EXPR_SELF_REFERENCE` (errors) in `@flowforger/validator` for IR and Logic Apps JSON.
 
 ---
 
@@ -487,5 +533,7 @@ what the DSL diagnostics already guarantee for `.ff.ts` files: `ACTION_NAME_DUPL
 | R13 | `@ManualTrigger` inputs need `"x-ms-dynamically-added": true` | 🔴 |
 | R14 | `ctx.response` PowerApp/VirtualAgent schema needs `"x-ms-dynamically-added": true` | 🔴 |
 | R15 | No `@{…}` in comments; comments must not start with `@` | 🔴 |
-| R16 | No `ctx.response()`/`ctx.terminate()` inside loops; `ctx.response()` needs a request trigger | 🔴 |
-| R17 | Stay inside the definition limits (80-char names, 500 actions, 25 cases, 250 variables, concurrency/retry/until/recurrence ranges) | 🔴 |
+| R16 | No `ctx.response()`/`ctx.terminate()` inside loops; no `ctx.response()` with a recurring trigger | 🔴 |
+| R17 | Stay inside the definition limits (80-char names, 500 actions, 25 cases, 250 variables, 50 parameters, 8192-char expressions, concurrency/retry/recurrence ranges) | 🔴 |
+| R18 | No `.push()` / `=` / string `+=` on variables inside a parallel `for...of` (add `repetitions: 1`) | 🟠 |
+| R19 | Read only actions on the `@runAfter` path (no parallel branch, other `if` branch or enclosing block) | 🔴 |

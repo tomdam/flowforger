@@ -29,7 +29,8 @@ export {
   parseConfigFromJson,
 } from './config.js';
 
-export type StepResultStatus = 'Succeeded' | 'Failed' | 'Skipped' | 'TimedOut';
+/** `Cancelled`: a run ended by Terminate, and the blocks the Terminate sat in. */
+export type StepResultStatus = 'Succeeded' | 'Failed' | 'Skipped' | 'TimedOut' | 'Cancelled';
 
 export interface StepResult {
   status: StepResultStatus;

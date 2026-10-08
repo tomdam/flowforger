@@ -32,12 +32,13 @@ describe('encoding / URI / binary / XML functions', () => {
     assert.deepEqual(ok(`@binary('hi')`), { '$content-type': 'application/octet-stream', '$content': 'aGk=' });
     assert.deepEqual(ok(`@base64ToBinary('aGk=')`), { '$content-type': 'application/octet-stream', '$content': 'aGk=' });
     assert.deepEqual(ok(`@dataUriToBinary('data:text/plain;base64,aGk=')`), { '$content-type': 'text/plain', '$content': 'aGk=' });
-    assert.deepEqual(ok(`@decodeDataUri('data:text/plain;base64,aGk=')`), { '$content-type': 'text/plain', '$content': 'aGk=' });
+    assert.equal(ok(`@decodeDataUri('data:text/plain;base64,aGk=')`), 'hi');
     assert.deepEqual(ok(`@uriComponentToBinary('a%20b')`), { '$content-type': 'application/octet-stream', '$content': 'YSBi' });
   });
-  it('xml canonicalizes; non-string input stringified', () => {
+  it('xml canonicalizes strings; converts JSON objects to XML', () => {
     assert.equal(ok(`@xml('<r><a>1</a></r>')`), '<r><a>1</a></r>');
-    assert.equal(ok(`@xml(json('{"a":1}'))`), '{"a":1}');
+    assert.equal(ok(`@xml(json('{"a":1}'))`), '<a>1</a>');
+    assert.equal(ok(`@xml(json('{"root":{"a":"1"}}'))`), '<root><a>1</a></root>');
   });
   it('xpath node sets and primitives', () => {
     assert.deepEqual(ok(`@xpath(xml('<r><a>1</a><a>2</a></r>'), '//a/text()')`), ['1', '2']);

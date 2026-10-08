@@ -25,7 +25,11 @@ describe('tryEvaluate core', () => {
     assert.equal(ok(`@variables('COUNT')`), 5);
     assert.equal(ok(`@variables('obj')['a'].b[2]`), 3);
     assert.equal(ok(`@variables('obj')?['missing']?['x']`), undefined);
-    assert.equal(ok(`@variables('obj').missing.x`), undefined); // non-optional is safe too
+  });
+  it('non-null-safe selection of a missing property fails like the cloud', () => {
+    const r = tryEvaluate(`@variables('obj').missing.x`, ctx);
+    assert.equal(r.ok, false);
+    assert.match(String((r as any).reason), /property 'missing' doesn't exist, available properties are 'a'/);
   });
   it('slash convention in bracket keys', () => {
     assert.equal(ok(`@variables('obj')['a/b']`)[0], 1);
@@ -46,12 +50,17 @@ describe('tryEvaluate core', () => {
   it('plain text without @ is not handled (falls back)', () => {
     assert.equal(tryEvaluate('no template here', ctx).ok, false);
   });
-  it('unknown fn inside a template degrades to raw @ text', () => {
-    assert.equal(ok(`x @{noSuchFn(1)} y`), 'x @noSuchFn(1) y');
-    assert.equal(ok(`a @{variables('count')} b @{nope()} c`), 'a 5 b @nope() c');
+  it('unknown fn inside a template fails with the cloud error', () => {
+    for (const e of [`x @{noSuchFn(1)} y`, `a @{variables('count')} b @{nope()} c`]) {
+      const r = tryEvaluate(e, ctx);
+      assert.equal(r.ok, false, e);
+      assert.match(String(((r as any).error as Error)?.message), /The template function '(noSuchFn|nope)' is not defined or not valid\./);
+    }
   });
   it('unknown function and parse garbage are not ok', () => {
-    assert.equal(tryEvaluate(`@noSuchFn('x')`, ctx).ok, false);
+    const unknown = tryEvaluate(`@noSuchFn('x')`, ctx);
+    assert.equal(unknown.ok, false);
+    assert.match(String(((unknown as any).error as Error)?.message), /The template function 'noSuchFn' is not defined or not valid\./);
     assert.equal(tryEvaluate(`@concat(noSuchFn('x'))`, ctx).ok, false); // nested unknown
     assert.equal(tryEvaluate(`@concat('a'`, ctx).ok, false); // parse error
   });

@@ -6,7 +6,7 @@
  */
 
 import type { BaseConnector, RunContext } from '@flowforger/engine';
-import { BaseHttpClient, extractItemFields, getParam, HttpError } from '@flowforger/connectors-shared';
+import { BaseHttpClient, connectorResponse, extractItemFields, getParam, HttpError } from '@flowforger/connectors-shared';
 
 export interface DataverseConnectorOptions {
   baseUrl: string; // https://org.crm.dynamics.com
@@ -21,6 +21,31 @@ const ODATA_HEADERS = {
 
 // Re-export HttpError for consumers
 export { HttpError };
+
+const INCLUDE_ANNOTATIONS = 'odata.include-annotations="*"';
+
+/**
+ * Rows as the cloud connector returns them (conformance/flows/dv-read, dv-expand): columns whose
+ * value is null are left out of the row itself — a null lookup's expanded `fft_Account` too — but
+ * kept inside expanded related rows. A collection-valued expand's `<nav>@odata.nextLink` names
+ * the v9.1 endpoint the connector calls. Applies to a single row or a { value: [...] } page.
+ */
+export function toCloudRecords<T>(data: T): T {
+  const row = (r: unknown): unknown => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return r;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(r as Record<string, unknown>)) {
+      if (v === null) continue;
+      out[k] = k.endsWith('@odata.nextLink') && typeof v === 'string' ? v.replace('/api/data/v9.2/', '/api/data/v9.1/') : v;
+    }
+    return out;
+  };
+  const page = data as { value?: unknown };
+  if (page && typeof page === 'object' && Array.isArray(page.value)) {
+    return { ...page, value: page.value.map(row) } as T;
+  }
+  return row(data) as T;
+}
 
 // Cross-platform base64 encode/decode helpers. Node uses Buffer (fast),
 // browsers use btoa/atob (Buffer does not exist there).
@@ -49,6 +74,19 @@ function base64ToUint8(base64: string): Uint8Array {
   return bytes;
 }
 
+const LIST_OPTIONS = ['$select', '$filter', '$orderby', '$expand', '$top'];
+const GET_OPTIONS = ['$select', '$expand'];
+
+/**
+ * OData options the flow passed as null or "" (an expression that found nothing). The cloud
+ * connector sends them as empty values (`$filter=`), which Dataverse rejects with a 400 ("The
+ * value for OData query '$filter' cannot be empty."), so they are sent the same way.
+ */
+function emptyODataOptions(inputs: Record<string, unknown>, keys: string[]): string {
+  const empty = keys.filter((k) => k in inputs && (inputs[k] === null || inputs[k] === ''));
+  return empty.length ? `?${empty.map((k) => `${k}=`).join('&')}` : '';
+}
+
 export class DataverseConnector extends BaseHttpClient implements BaseConnector {
   constructor(opts: DataverseConnectorOptions) {
     super(
@@ -70,9 +108,13 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       case 'CreateRecord':
         return this.createRow(inputs as Record<string, unknown>, ctx);
       case 'UpdateRow':
-      case 'UpdateRecord':
       case 'UpdateOnlyRecord':
         return this.updateRow(inputs as Record<string, unknown>, ctx);
+      // The cloud's "Upsert a row" is UpdateRecord: a PATCH without If-Match.
+      case 'UpdateRecord':
+      case 'UpsertRow':
+      case 'UpsertRecord':
+        return this.upsertRow(inputs as Record<string, unknown>, ctx);
       case 'DeleteRow':
       case 'DeleteRecord':
         return this.deleteRow(inputs as Record<string, unknown>, ctx);
@@ -87,9 +129,6 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       case 'DisassociateEntities':
       case 'DisassociateRecords':
         return this.disassociateEntities(inputs as Record<string, unknown>, ctx);
-      case 'UpsertRow':
-      case 'UpsertRecord':
-        return this.upsertRow(inputs as Record<string, unknown>, ctx);
       case 'PerformBoundAction':
         return this.performBoundAction(inputs as Record<string, unknown>, ctx);
       case 'PerformUnboundAction':
@@ -109,6 +148,34 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       default:
         throw new Error(`DataverseConnector: unknown operation '${operation}'`);
     }
+  }
+
+  // The cloud answers a create with 201; a delete, (un)relate and file upload with 204 and no
+  // body (conformance/flows/dv-*.ff.ts). Upserts, actions and downloads report their status per
+  // call (connectorResponse). Failed calls need no errorOutputs(): the Web API's
+  // { error: { code, message } } is already the cloud's body.
+  successStatusCode(operation: string): number {
+    switch (operation) {
+      case 'CreateRow':
+      case 'CreateRecord':
+        return 201;
+      case 'DeleteRow':
+      case 'DeleteRecord':
+      case 'AssociateEntities':
+      case 'AssociateRecords':
+      case 'DisassociateEntities':
+      case 'DisassociateRecords':
+      case 'UpdateEntityFileImageFieldContent':
+      case 'UploadFileContent':
+        return 204;
+      default:
+        return 200;
+    }
+  }
+
+  /** A ListRecords continuation page (the engine follows these for a pagination policy). */
+  async nextPage(_operation: string, _inputs: unknown, nextLink: string, ctx: RunContext): Promise<unknown> {
+    return toCloudRecords(await this.get(nextLink, ctx.log, { headers: { Prefer: INCLUDE_ANNOTATIONS } }));
   }
 
   // ============= Helper Methods =============
@@ -156,13 +223,12 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
     if (count) query['$count'] = true;
     if (fetchXml) query['fetchXml'] = fetchXml;
 
-    return this.get(`/${entityName}`, ctx.log, {
-      query,
-      headers: {
-        Accept: 'application/json; odata.metadata=full',
-        Prefer: 'odata.include-annotations="*"',
-      },
-    });
+    return toCloudRecords(
+      await this.get(`/${entityName}${emptyODataOptions(inputs, LIST_OPTIONS)}`, ctx.log, {
+        query,
+        headers: { Prefer: INCLUDE_ANNOTATIONS },
+      })
+    );
   }
 
   private async createRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -171,7 +237,7 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
 
     const response = await this.post<Record<string, unknown> | string>(`/${entityName}`, ctx.log, {
       body,
-      headers: { Prefer: 'return=representation' },
+      headers: { Prefer: `return=representation,${INCLUDE_ANNOTATIONS}` },
     });
 
     // Handle response - if no body returned, try to extract ID from OData-EntityId header
@@ -183,30 +249,33 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       result = {};
     }
 
-    // Return raw result — the engine wraps connector outputs in { body: ... }
-    return result;
+    // The engine wraps connector outputs in { body: ... }
+    return toCloudRecords(result);
   }
 
-  private async updateRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean }> {
+  // "Update a row" (UpdateOnlyRecord): If-Match: * makes a missing row fail with 404 instead of
+  // creating it. Answers with the updated row, as the cloud does.
+  private async updateRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
     if (!recordId) throw new Error('updateRow requires recordId or id');
 
     const body = this.getBody(inputs);
 
-    await this.patch(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
+    const updated = await this.patch(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
       body,
-      headers: { 'If-Match': '*' },
+      headers: { 'If-Match': '*', Prefer: `return=representation,${INCLUDE_ANNOTATIONS}` },
     });
 
-    return { ok: true };
+    return updated && typeof updated === 'object' ? toCloudRecords(updated) : { ok: true };
   }
 
-  private async deleteRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean }> {
+  // The cloud's DeleteRecord has no body.
+  private async deleteRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
     if (!recordId) throw new Error('deleteRow requires recordId or id');
 
     await this.delete(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log);
-    return { ok: true };
+    return undefined;
   }
 
   private async retrieveRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
@@ -219,247 +288,198 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
     if (select) query['$select'] = select;
     if (expand) query['$expand'] = expand;
 
-    return this.get(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
-      query,
-      headers: {
-        Accept: 'application/json; odata.metadata=full',
-        Prefer: 'odata.include-annotations="*"',
-      },
-    });
+    return toCloudRecords(
+      await this.get(`/${entityName}(${encodeURIComponent(recordId)})${emptyODataOptions(inputs, GET_OPTIONS)}`, ctx.log, {
+        query,
+        headers: { Prefer: INCLUDE_ANNOTATIONS },
+      })
+    );
   }
 
   // ============= Relationship Operations =============
 
-  private async associateEntities(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean }> {
-    const { entityName, recordId } = this.getEntityAndId(inputs);
-    if (!recordId) throw new Error('AssociateEntities requires recordId');
-
-    const relationshipName = getParam<string>(inputs, ['relationshipName', 'navigationProperty']);
+  /**
+   * The row a relate/unrelate call points at: the cloud's `item/@odata.id` (relate) or `$id`
+   * (unrelate) — a row URL such as https://org.crm.dynamics.com/api/data/v9.1/accounts(<id>) —
+   * or the local relatedEntityName + relatedRecordId pair.
+   */
+  private relatedRowUrl(inputs: Record<string, unknown>, odataId: unknown): string | undefined {
+    // The cloud connector calls v9.1, so flows carry v9.1 row URLs; the Web API rejects a URL
+    // "not based on" the version it is called with, so rebase them onto this client's.
+    if (typeof odataId === 'string' && odataId) return odataId.replace(/^https?:\/\/[^/]+\/api\/data\/v[\d.]+(?=\/)/i, this.baseUrl);
     const relatedEntityName = getParam<string>(inputs, ['relatedEntityName', 'relatedEntitySetName']);
     const relatedRecordId = getParam<string>(inputs, ['relatedRecordId', 'relatedId']);
+    return relatedEntityName && relatedRecordId
+      ? `${this.baseUrl}/${relatedEntityName}(${encodeURIComponent(relatedRecordId)})`
+      : undefined;
+  }
 
-    if (!relationshipName || !relatedEntityName || !relatedRecordId) {
-      throw new Error('AssociateEntities requires relationshipName, relatedEntityName, and relatedRecordId');
+  private relationshipName(inputs: Record<string, unknown>): string | undefined {
+    return getParam<string>(inputs, ['associationEntityRelationship', 'relationshipName', 'navigationProperty']);
+  }
+
+  // "Relate rows": 204 and no body.
+  private async associateEntities(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
+    const { entityName, recordId } = this.getEntityAndId(inputs);
+    const relationshipName = this.relationshipName(inputs);
+    const related = this.relatedRowUrl(inputs, extractItemFields(inputs)['@odata.id'] ?? (inputs.item as Record<string, unknown> | undefined)?.['@odata.id']);
+    if (!recordId || !relationshipName || !related) {
+      throw new Error('AssociateEntities requires recordId, associationEntityRelationship and item/@odata.id');
     }
 
     await this.post(`/${entityName}(${encodeURIComponent(recordId)})/${relationshipName}/$ref`, ctx.log, {
-      body: {
-        '@odata.id': `${this.baseUrl}/${relatedEntityName}(${encodeURIComponent(relatedRecordId)})`,
-      },
+      body: { '@odata.id': related },
     });
-
-    return { ok: true };
+    return undefined;
   }
 
-  private async disassociateEntities(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean }> {
+  // "Unrelate rows": DELETE .../<relationship>/$ref?$id=<row URL>; 204 and no body.
+  private async disassociateEntities(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
-    if (!recordId) throw new Error('DisassociateEntities requires recordId');
+    const relationshipName = this.relationshipName(inputs);
+    if (!recordId || !relationshipName) throw new Error('DisassociateEntities requires recordId and associationEntityRelationship');
 
-    const relationshipName = getParam<string>(inputs, ['relationshipName', 'navigationProperty']);
-    if (!relationshipName) throw new Error('DisassociateEntities requires relationshipName');
-
-    const relatedRecordId = getParam<string>(inputs, ['relatedRecordId', 'relatedId']);
-
-    // If relatedRecordId is provided, it's a collection-valued navigation property
-    const endpoint = relatedRecordId
-      ? `/${entityName}(${encodeURIComponent(recordId)})/${relationshipName}(${encodeURIComponent(relatedRecordId)})/$ref`
-      : `/${entityName}(${encodeURIComponent(recordId)})/${relationshipName}/$ref`;
-
-    await this.delete(endpoint, ctx.log);
-    return { ok: true };
+    const related = this.relatedRowUrl(inputs, inputs['$id']);
+    const query = related ? `?$id=${encodeURIComponent(related)}` : '';
+    await this.delete(`/${entityName}(${encodeURIComponent(recordId)})/${relationshipName}/$ref${query}`, ctx.log);
+    return undefined;
   }
 
   // ============= Upsert =============
 
+  /**
+   * "Upsert a row" (the cloud's UpdateRecord): a PATCH without If-Match, which creates the row
+   * when the id is new. Answers with the row and 201 when it created it, 200 when it updated it.
+   * Measured quirk: the created row keeps its null columns, the updated one leaves them out.
+   */
   private async upsertRow(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
     if (!recordId) throw new Error('upsertRow requires recordId or id');
 
-    const body = this.getBody(inputs);
-
-    // Note: No If-Match header enables upsert behavior
-    const result = await this.patch<Record<string, unknown>>(`/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
-      body,
-      headers: { Prefer: 'return=representation' },
+    const { status, data } = await this.requestWithStatus('PATCH', `/${entityName}(${encodeURIComponent(recordId)})`, ctx.log, {
+      body: this.getBody(inputs),
+      headers: { Prefer: `return=representation,${INCLUDE_ANNOTATIONS}` },
     });
-
-    // Return raw result — the engine wraps connector outputs in { body: ... }
-    return result || {};
+    return connectorResponse(status === 201 ? data : toCloudRecords(data), status);
   }
 
   // ============= Actions =============
 
+  /** An action's parameters: the designer's `item/*` keys, a nested `item`, or (local) the remaining inputs. */
+  private actionParams(inputs: Record<string, unknown>, known: string[]): Record<string, unknown> {
+    const itemFields = extractItemFields(inputs);
+    if (Object.keys(itemFields).length > 0) return itemFields;
+    if (inputs.item && typeof inputs.item === 'object' && !Array.isArray(inputs.item)) {
+      return inputs.item as Record<string, unknown>;
+    }
+    return Object.fromEntries(Object.entries(inputs).filter(([k]) => !known.includes(k)));
+  }
+
+  /**
+   * POST an action the way the cloud connector does: `actionName` goes into the URL as given
+   * (a bound action needs its namespace, `Microsoft.Dynamics.CRM.<name>`; the cloud fails the
+   * plain name with 404, and refuses to save a namespaced unbound action). Answers with the
+   * response's properties (nulls left out), or with 204 and no body for an action without a response.
+   * Without parameters it sends no body at all, as the cloud does (so a missing required parameter
+   * fails with Dataverse's "Required field 'X' is missing", not an OData payload error).
+   */
+  private async performAction(path: string, params: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
+    // No `Prefer: odata.include-annotations`: the cloud's error bodies for actions carry no
+    // @Microsoft.PowerApps.CDS.* annotations.
+    const { status, data } = await this.requestWithStatus('POST', path, ctx.log, {
+      body: Object.keys(params).length > 0 ? params : undefined,
+    });
+    return connectorResponse(status === 204 || data === '' ? undefined : toCloudRecords(data), status);
+  }
+
   private async performBoundAction(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
     if (!recordId) throw new Error('PerformBoundAction requires recordId');
-
     const actionName = inputs.actionName as string;
     if (!actionName) throw new Error('PerformBoundAction requires actionName');
 
-    // Extract action parameters
-    // Power Automate sends parameters in multiple formats:
-    // 1. Nested 'item' object: { item: { Param1: '...' } }
-    // 2. Flattened 'item/*' keys: { 'item/Param1': '...' }
-    // 3. Direct parameters (fallback)
-    let actionParams: Record<string, unknown> = {};
-
-    // First, try to extract from 'item/*' flattened format (most common in Power Automate)
-    const itemFields = extractItemFields(inputs);
-    if (Object.keys(itemFields).length > 0) {
-      actionParams = itemFields;
-    } else if (inputs.item && typeof inputs.item === 'object' && !Array.isArray(inputs.item)) {
-      // Second, try nested 'item' object
-      actionParams = inputs.item as Record<string, unknown>;
-    } else {
-      // Fallback: extract all params except known ones
-      const knownParams = ['entityName', 'entitySetName', 'recordId', 'id', 'actionName'];
-      for (const key in inputs) {
-        if (!knownParams.includes(key)) {
-          actionParams[key] = inputs[key];
-        }
-      }
-    }
-
-    // Custom actions (with publisher prefix like brk_, new_, etc.) are called directly
-    // Standard OData actions use the Microsoft.Dynamics.CRM namespace
-    const isCustomAction = actionName.includes('_');
-    const hasParams = Object.keys(actionParams).length > 0;
-    const entityPath = `/${entityName}(${encodeURIComponent(recordId)})`;
-
-    // Dataverse distinguishes between Functions (GET) and Actions (POST).
-    // Try POST first (action), fall back to GET (function) on 404.
-    try {
-      const actionSuffix = isCustomAction ? actionName : `Microsoft.Dynamics.CRM.${actionName}`;
-      const result = await this.post<Record<string, unknown>>(
-        `${entityPath}/${actionSuffix}`,
-        ctx.log,
-        { body: hasParams ? actionParams : undefined }
-      );
-      return result || {};
-    } catch (err: any) {
-      if (err?.status === 404 && !isCustomAction) {
-        // Likely a bound Function — retry as GET without namespace
-        const result = await this.get<Record<string, unknown>>(`${entityPath}/${actionName}`, ctx.log);
-        return result || {};
-      }
-      throw err;
-    }
+    const params = this.actionParams(inputs, ['entityName', 'entitySetName', 'recordId', 'id', 'actionName']);
+    return this.performAction(`/${entityName}(${encodeURIComponent(recordId)})/${actionName}`, params, ctx);
   }
 
   private async performUnboundAction(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const actionName = inputs.actionName as string;
     if (!actionName) throw new Error('PerformUnboundAction requires actionName');
 
-    // Extract action parameters
-    // Power Automate sends parameters in multiple formats:
-    // 1. Nested 'item' object: { item: { RegardingId: '...' } }
-    // 2. Flattened 'item/*' keys: { 'item/RegardingId': '...' }
-    // 3. Direct parameters (fallback)
-    let actionParams: Record<string, unknown> = {};
-
-    // First, try to extract from 'item/*' flattened format (most common in Power Automate)
-    const itemFields = extractItemFields(inputs);
-    if (Object.keys(itemFields).length > 0) {
-      actionParams = itemFields;
-    } else if (inputs.item && typeof inputs.item === 'object' && !Array.isArray(inputs.item)) {
-      // Second, try nested 'item' object
-      actionParams = inputs.item as Record<string, unknown>;
-    } else {
-      // Fallback: extract all params except actionName
-      for (const key in inputs) {
-        if (key !== 'actionName') {
-          actionParams[key] = inputs[key];
-        }
-      }
-    }
-
-    // Custom actions (with publisher prefix like brk_, new_, etc.) are called directly
-    // Standard OData actions use the Microsoft.Dynamics.CRM namespace
-    const isCustomAction = actionName.includes('_');
-    const hasParams = Object.keys(actionParams).length > 0;
-
-    // Dataverse distinguishes between Functions (GET) and Actions (POST).
-    // Since we can't know upfront which one the caller means, try POST first
-    // (action), and fall back to GET (function) on 404.
-    try {
-      const actionPath = isCustomAction ? `/${actionName}` : `/Microsoft.Dynamics.CRM.${actionName}`;
-      const result = await this.post<Record<string, unknown>>(
-        actionPath,
-        ctx.log,
-        { body: hasParams ? actionParams : undefined }
-      );
-      return result || {};
-    } catch (err: any) {
-      if (err?.status === 404 && !isCustomAction) {
-        // Likely a Function (e.g. WhoAmI) — retry as GET without namespace
-        const result = await this.get<Record<string, unknown>>(`/${actionName}`, ctx.log);
-        return result || {};
-      }
-      throw err;
-    }
+    return this.performAction(`/${actionName}`, this.actionParams(inputs, ['actionName']), ctx);
   }
 
   // ============= File Operations =============
 
-  private async getFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ $content: string; $contentType: string }> {
+  private fileFieldName(inputs: Record<string, unknown>): string | undefined {
+    return getParam<string>(inputs, ['fileImageFieldName', 'fieldName', 'attributeName']);
+  }
+
+  /**
+   * "Download a file or an image": the cloud asks for the first 4 MB (Range: bytes=0-4194303),
+   * so a file answers 206 — recorded without outputs.statusCode — while an image answers 200, and
+   * a full-size image that was never stored 204. The body is { $content-type, $content }.
+   */
+  private async getFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<unknown> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
-    if (!recordId) throw new Error('GetFileContent requires recordId');
+    const fieldName = this.fileFieldName(inputs);
+    if (!recordId || !fieldName) throw new Error('GetEntityFileImageFieldContent requires recordId and fileImageFieldName');
 
-    const fieldName = getParam<string>(inputs, ['fieldName', 'attributeName']);
-    if (!fieldName) throw new Error('GetFileContent requires fieldName');
-
-    // We need direct fetch for binary content since BaseHttpClient assumes JSON
-    const url = `${this.baseUrl}/${entityName}(${encodeURIComponent(recordId)})/${fieldName}/$value`;
+    const size = getParam<string>(inputs, ['size']);
+    const url = `${this.baseUrl}/${entityName}(${encodeURIComponent(recordId)})/${fieldName}/$value${size ? `?size=${encodeURIComponent(size)}` : ''}`;
     ctx.log?.({ type: 'dataverse.request', method: 'GET', url });
 
     const res = await fetch(url, {
       headers: {
         Authorization: `Bearer ${this.token}`,
         Accept: 'application/octet-stream',
+        Range: 'bytes=0-4194303',
         ...ODATA_HEADERS,
       },
     });
 
     if (!res.ok) {
       const out = await res.text();
-      throw new HttpError(`Dataverse GetFileContent ${res.status}: ${out}`, res.status, out);
+      let body: unknown = out;
+      try {
+        body = JSON.parse(out);
+      } catch {
+        // not JSON: keep the text
+      }
+      throw new HttpError(`Dataverse GetEntityFileImageFieldContent ${res.status}: ${out}`, res.status, body);
     }
 
-    const buffer = await res.arrayBuffer();
-    const base64 = uint8ToBase64(new Uint8Array(buffer));
-
-    // Return raw result — the engine wraps connector outputs in { body: ... }
-    return {
-      $content: base64,
-      $contentType: res.headers.get('Content-Type') || 'application/octet-stream',
-    };
+    if (res.status === 204) return connectorResponse(undefined, 204);
+    const base64 = uint8ToBase64(new Uint8Array(await res.arrayBuffer()));
+    const body = { '$content-type': res.headers.get('Content-Type') || 'application/octet-stream', '$content': base64 };
+    return connectorResponse(body, res.status, { omitStatusCode: res.status === 206 });
   }
 
-  private async uploadFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<{ ok: boolean }> {
+  /**
+   * File/image upload content: text is sent as its UTF-8 bytes (as the cloud sends a string body),
+   * binary content ({ $content } from base64ToBinary() or another action) as the decoded bytes.
+   */
+  private uploadBytes(content: unknown): Uint8Array {
+    if (typeof content === 'string') return new TextEncoder().encode(content);
+    if (content instanceof Uint8Array) return content;
+    if (content instanceof ArrayBuffer) return new Uint8Array(content);
+    if (content && typeof content === 'object' && typeof (content as Record<string, unknown>)['$content'] === 'string') {
+      return base64ToUint8((content as Record<string, string>)['$content']);
+    }
+    throw new Error('File content must be text, binary content ({ $content }), ArrayBuffer or Uint8Array');
+  }
+
+  // "Upload a file or an image": 204 and no body.
+  private async uploadFileContent(inputs: Record<string, unknown>, ctx: RunContext): Promise<undefined> {
     const { entityName, recordId } = this.getEntityAndId(inputs);
-    if (!recordId) throw new Error('UploadFileContent requires recordId');
-
-    const fieldName = getParam<string>(inputs, ['fieldName', 'attributeName']);
-    const content = getParam<string | ArrayBuffer | Uint8Array>(inputs, ['content', 'body', '$content']);
-
-    if (!fieldName || !content) {
-      throw new Error('UploadFileContent requires fieldName and content');
+    const fieldName = this.fileFieldName(inputs);
+    const content = getParam<unknown>(inputs, ['item', 'content', 'body', '$content']);
+    if (!recordId || !fieldName || content === undefined || content === null) {
+      throw new Error('UpdateEntityFileImageFieldContent requires recordId, fileImageFieldName and item');
     }
 
-    // Normalize content to a Uint8Array. Node's Buffer is a subclass of
-    // Uint8Array, so an input Buffer also satisfies the instanceof check.
-    let binary: Uint8Array;
-    if (typeof content === 'string') {
-      binary = base64ToUint8(content);
-    } else if (content instanceof Uint8Array) {
-      binary = content;
-    } else if (content instanceof ArrayBuffer) {
-      binary = new Uint8Array(content);
-    } else {
-      throw new Error('Content must be a base64 string, ArrayBuffer, or Uint8Array');
-    }
-
-    // Direct fetch for binary upload
+    const binary = this.uploadBytes(content);
+    const fileName = getParam<string>(inputs, ['x-ms-file-name', 'fileName']) ?? 'Untitled';
     const url = `${this.baseUrl}/${entityName}(${encodeURIComponent(recordId)})/${fieldName}`;
     ctx.log?.({ type: 'dataverse.request', method: 'PATCH', url, contentLength: binary.byteLength });
 
@@ -474,6 +494,7 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       headers: {
         Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/octet-stream',
+        'x-ms-file-name': fileName,
         ...ODATA_HEADERS,
       },
       body: bodyBuf,
@@ -481,10 +502,15 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
 
     if (!res.ok) {
       const out = await res.text();
-      throw new HttpError(`Dataverse UploadFileContent ${res.status}: ${out}`, res.status, out);
+      let body: unknown = out;
+      try {
+        body = JSON.parse(out);
+      } catch {
+        // not JSON: keep the text
+      }
+      throw new HttpError(`Dataverse UpdateEntityFileImageFieldContent ${res.status}: ${out}`, res.status, body);
     }
-
-    return { ok: true };
+    return undefined;
   }
 
   // ============= Batch Operations =============

@@ -80,12 +80,12 @@ describe('structure rules in validateFlowIR', () => {
     assert.equal(codes(validateFlowIR(makeIR([compose('A')], {}, trig)), 'TRIGGER_CONCURRENCY').length, 1);
   });
 
-  it('until: empty body → UNTIL_EMPTY, count > 5000 → UNTIL_COUNT, bad timeout → UNTIL_TIMEOUT', () => {
+  it('until: empty body → UNTIL_EMPTY, count > 5000 → UNTIL_COUNT, bad timeout → UNTIL_TIMEOUT, all warnings (the cloud saves them)', () => {
     const r = validateFlowIR(makeIR([dountil('Poll', [], { limit: 6000, timeout: '1 hour' })]));
     assert.equal(codes(r, 'UNTIL_EMPTY').length, 1);
     assert.equal(codes(r, 'UNTIL_COUNT').length, 1);
     assert.equal(codes(r, 'UNTIL_TIMEOUT').length, 1);
-    assert.equal(codes(r, 'UNTIL_TIMEOUT')[0].level, 'warning');
+    assert.deepEqual(r.issues.filter((i) => i.code.startsWith('UNTIL_')).map((i) => i.level), ['warning', 'warning', 'warning']);
     const ok = validateFlowIR(makeIR([dountil('Poll', [compose('A')], { limit: 100, timeout: 'PT2H' })]));
     assert.deepEqual(ok.issues.filter((i) => i.code.startsWith('UNTIL_')), []);
   });
@@ -162,9 +162,13 @@ describe('structure rules in validateFlowIR', () => {
     assert.deepEqual(loops.map((i) => i.path), ['nodes.B.value', 'nodes.C.value']);
     assert.match(loops[0].message, /does not enclose/);
     assert.match(loops[1].message, /no such loop/);
+    // Measured in conformance/save-rules/structure.mjs: the cloud saves an undefined parameter and
+    // item() outside a loop, and rejects an undefined variable.
     assert.equal(codes(r, 'EXPR_UNKNOWN_PARAMETER').length, 1);
+    assert.equal(codes(r, 'EXPR_UNKNOWN_PARAMETER')[0].level, 'warning');
+    assert.equal(loops.find((i) => i.message.includes('item()')), undefined);
     assert.equal(codes(r, 'VARIABLE_UNDEFINED').length, 1);
-    assert.equal(codes(r, 'VARIABLE_UNDEFINED')[0].level, 'warning');
+    assert.equal(codes(r, 'VARIABLE_UNDEFINED')[0].level, 'error');
   });
 
   it('item() outside a foreach → EXPR_LOOP_REFERENCE; parameters are not checked when the IR has none', () => {
@@ -173,14 +177,24 @@ describe('structure rules in validateFlowIR', () => {
     assert.equal(codes(r, 'EXPR_UNKNOWN_PARAMETER').length, 0);
   });
 
-  it('Set variable on an uninitialized variable → VARIABLE_UNINITIALIZED warning', () => {
+  it('Set variable on an uninitialized variable → VARIABLE_UNINITIALIZED error', () => {
     const r = validateFlowIR(makeIR([setVar('ghost')]));
     assert.equal(codes(r, 'VARIABLE_UNINITIALIZED').length, 1);
+    assert.equal(codes(r, 'VARIABLE_UNINITIALIZED')[0].level, 'error');
   });
 
-  it('expression longer than 8192 characters → EXPR_LENGTH warning', () => {
-    const r = validateFlowIR(makeIR([compose('A', `@concat('${'x'.repeat(LIMITS.expressionLength)}')`)]));
-    assert.equal(codes(r, 'EXPR_LENGTH').length, 1);
+  it("expression longer than 8192 characters (without the '@') → EXPR_LENGTH error", () => {
+    const exact = `@concat('${'x'.repeat(LIMITS.expressionLength - 10)}')`; // 8192 after the '@'
+    assert.equal(codes(validateFlowIR(makeIR([compose('A', exact)])), 'EXPR_LENGTH').length, 0);
+    const over = `@concat('${'x'.repeat(LIMITS.expressionLength - 9)}')`;
+    const e = codes(validateFlowIR(makeIR([compose('A', over)])), 'EXPR_LENGTH');
+    assert.equal(e.length, 1);
+    assert.equal(e[0].level, 'error');
+  });
+
+  it('a variable initialized twice (case-insensitively) → VAR_INIT_DUPLICATE', () => {
+    const r = validateFlowIR(makeIR([initVar('n'), initVar('N')]));
+    assert.equal(codes(r, 'VAR_INIT_DUPLICATE').length, 1);
   });
 });
 
@@ -260,7 +274,10 @@ describe('structure rules in validateLogicApps', () => {
   });
 
   it('recurrence trigger ranges are checked on trigger.recurrence', () => {
-    const r = validateLogicApps(makeLA({ A: laCompose() }, { trigger: { type: 'Recurrence', recurrence: { frequency: 'Minute', interval: 72001 } } }));
+    // The cap is a 500-day period: Minute 720000 is the last accepted interval.
+    const ok = validateLogicApps(makeLA({ A: laCompose() }, { trigger: { type: 'Recurrence', recurrence: { frequency: 'Minute', interval: 720000 } } }));
+    assert.equal(codes(ok, 'RECURRENCE').length, 0);
+    const r = validateLogicApps(makeLA({ A: laCompose() }, { trigger: { type: 'Recurrence', recurrence: { frequency: 'Minute', interval: 720001 } } }));
     assert.equal(codes(r, 'RECURRENCE').length, 1);
   });
 

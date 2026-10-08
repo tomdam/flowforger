@@ -25,7 +25,7 @@ class ProcessSharePointItems {
       '$top': 50
     }, 'shared_sharepointonline');
 
-    /** @action ProcessEachTask @type foreach */
+    /** @action ProcessEachTask */
     for (const item of ctx.body('GetPendingTasks')?.['value'] ?? []) {
       await ctx.connectors.sharepoint.UpdateItem('MarkTaskProcessing', {
         dataset: ctx.parameters('Site URL (cr_SiteUrl)'),
@@ -85,7 +85,7 @@ async run(ctx: FlowContext) {
   /** @action Initialize_orderCategory */
   let orderCategory: string = '';
 
-  /** @action EvaluateOrderAmount @type if */
+  /** @action EvaluateOrderAmount */
   if (ctx.triggerBody()?.['amount'] > 1000) {
     /** @action SetHighValue */
     orderCategory = 'high-value';
@@ -136,7 +136,7 @@ async run(ctx: FlowContext) {
   // and HandleFailure is skipped when TryProcess succeeds)
   /** @action Finalize @type scope @runAfter TryProcess: Succeeded, Failed, Skipped */
   {
-    /** @action CheckResult @type if */
+    /** @action CheckResult */
     if (ctx.variables('success') === true) {
       await ctx.response('SuccessResponse', 200, { status: 'success' });
     } else {
@@ -150,7 +150,7 @@ async run(ctx: FlowContext) {
 
 ```typescript
 async run(ctx: FlowContext) {
-  /** @action RouteByRegion @type switch */
+  /** @action RouteByRegion */
   switch (ctx.triggerBody()?.['region']) {
     /** @action HandleUS @type case */
     case 'US':
@@ -259,7 +259,7 @@ async run(ctx: FlowContext) {
   });
 
   // Poll until the job completes
-  /** @action PollJobStatus @type until */
+  /** @action PollJobStatus */
   do {
     await ctx.http('CheckJobStatus', {
       method: 'GET',
@@ -301,7 +301,7 @@ async run(ctx: FlowContext) {
   // ❌ WRONG: ctx.braced() would convert the array to a string:
   // await ctx.compose('AllItems', ctx.braced(ctx.union(...)));
 
-  /** @action ProcessAllItems @type foreach */
+  /** @action ProcessAllItems */
   for (const item of (ctx.outputs('AllItems') ?? [])) {
     await ctx.connectors.sharepoint.UpdateItem('UpdateItemStatus', {
       dataset: ctx.parameters('Site URL (cr_SiteUrl)'),
@@ -409,7 +409,7 @@ async run(ctx: FlowContext) {
     connectionReferenceName: 'shared_approvals'
   });
 
-  /** @action CheckApprovalOutcome @type if */
+  /** @action CheckApprovalOutcome */
   if (ctx.body('WaitForManagerApproval')?.['outcome'] === 'Approve') {
     await ctx.connectors.office365.SendEmailV2('SendApprovalConfirmation', {
       'emailMessage/To': ctx.triggerBody()?.['email'],
@@ -439,9 +439,9 @@ This entire pattern collapses to **a single Compose action** using `xpath` to fl
 /** @action Initialize_userEmails */
 let userEmails: string[] = [];
 
-/** @action ProcessRows @type foreach */
+/** @action ProcessRows */
 for (const row of (ctx.outputs('PermissionRows') ?? [])) {
-  /** @action ProcessUsers @type foreach */
+  /** @action ProcessUsers */
   for (const user of (row?.['Permissions'] ?? [])) {
     /** @action Append_email */
     userEmails.push(user?.['Email']);
@@ -459,7 +459,7 @@ await ctx.compose('DistinctUserEmails', ctx.eval(
 ));
 
 // Downstream consumers read it as a normal array
-/** @action GrantPermissions @type foreach @runtimeConfig {"concurrency":{"repetitions":20}} */
+/** @action GrantPermissions @runtimeConfig {"concurrency":{"repetitions":20}} */
 for (const email of (ctx.outputs('DistinctUserEmails') ?? [])) {
   // ...
 }

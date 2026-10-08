@@ -64,7 +64,7 @@ Every action MUST have a different name. Use descriptive names: `GetPendingOrder
 
 ```typescript
 // ❌ WRONG — same action name 'Set_Config' in multiple cases:
-/** @action RouteByType @type switch */
+/** @action RouteByType */
 switch (ctx.triggerBody()?.['type']) {
   case 'A':
     await ctx.compose('Set_Config', 'ConfigA');
@@ -75,7 +75,7 @@ switch (ctx.triggerBody()?.['type']) {
 }
 
 // ✅ CORRECT — unique names per case (suffix with case value or descriptor):
-/** @action RouteByType @type switch */
+/** @action RouteByType */
 switch (ctx.triggerBody()?.['type']) {
   /** @action Case_TypeA @type case */
   case 'A':
@@ -147,7 +147,7 @@ await ctx.compose('Get_Data', { value: 1 });
 // ✅ CORRECT - @action names a variable/control-flow node (optional; auto-named otherwise, but recommended):
 /** @action Initialize_counter */
 let counter: number = 0;
-/** @action CheckStatus @type if */
+/** @action CheckStatus */
 if (condition) { ... }
 
 // ✅ ALSO VALID - no @action; auto-named "Initialize_counter" / "Condition":
@@ -163,7 +163,7 @@ Use `ctx.terminate()` instead of `return` to exit a flow early:
 if (condition) { return; }
 
 // ✅ CORRECT:
-/** @action CheckCondition @type if */
+/** @action CheckCondition */
 if (condition) {
   await ctx.terminate('TerminateFlow', 'Cancelled');
 }
@@ -366,13 +366,36 @@ Multiple `@runAfter` tags are the right tool for a **fan-in** — joining genuin
 
 **The rule applies to ALL actions with conditional @runAfter**, not just try/catch. Any time an action uses `@runAfter X: Failed` (or any non-default status), actions after it will be skipped on the success path unless you add a finally scope or point them at that action with a status list covering every path.
 
+**Reading the failure inside the catch.** `ctx.result('TryBlock')` lists the try scope's direct children as `{ name, inputs, outputs, startTime, endTime, code, status, error }`. Filter it for `status` `Failed`. What a failed item carries depends on what failed (measured in the cloud, `conformance/flows/control.ff.ts`):
+
+- **Connector or HTTP call:** `code` is the HTTP status name (`NotFound`, `BadRequest`, ...) and there is **no `error`**. Read `outputs.statusCode` and `outputs.body.message` (SharePoint) / `outputs.body.error.message` (Dataverse).
+- **Expression failure** (a Compose dividing by zero, a bad `['x']` on null): `code` is `BadRequest`, `error.code` is `InvalidTemplate`, `error.message` has the text, and there are no `inputs`/`outputs`.
+- **A nested scope that failed:** `code` `ActionFailed` and the generic message "An action failed. No dependent actions succeeded." Look inside it with another `result()`.
+
+```typescript
+/** @action CatchBlock @type scope @runAfter TryBlock: Failed */
+{
+  await ctx.filterArray('Failed_actions', ctx.result('TryBlock'), "@equals(item()?['status'], 'Failed')");
+  await ctx.compose('Failure_text', ctx.eval(
+    `@coalesce(first(body('Failed_actions'))?['error']?['message'], first(body('Failed_actions'))?['outputs']?['body']?['message'], 'unknown error')`));
+}
+```
+
+`result()` of a foreach lists each child **once**, with every iteration's record in its `outputs` array. `result()` of an Until holds only the last iteration. `ctx.workflow()?.['tags']?.['flowDisplayName']` gives the flow's display name for error mails.
+
+Control-flow behaviour the local engine reproduces from the cloud:
+- A foreach runs all its items even when one fails, and ends Failed.
+- An Until continues past a failed iteration and takes the status of its last iteration. Reaching its `@limit` count ends it as Succeeded, not as a failure.
+- A `switch` fails when the value is not a string or integer (e.g. null), and when a case has another type than the value (`case '2'` for a number). Case matching is case-sensitive.
+- `ctx.terminate()` itself succeeds. The scopes around it end Cancelled, everything after it is Skipped, and the run ends with its status.
+
 ### 7. Use `&&`/`||` operators instead of `ctx.and()`/`ctx.or()` in if conditions
 
 The transformer correctly handles JavaScript `&&` and `||` operators, converting them to Power Automate `and()` and `or()` functions. However, `ctx.and()` and `ctx.or()` as **top-level if-condition expressions** can fail to transform, producing raw TypeScript code in the compiled output.
 
 ```typescript
 // ❌ WRONG — ctx.and() as if-condition may produce broken output:
-/** @action ValidateOrder @type if */
+/** @action ValidateOrder */
 if (ctx.and(
   ctx.not(ctx.empty(order?.['productId'])),
   ctx.greater(order?.['quantity'], 0)
@@ -382,14 +405,14 @@ if (ctx.and(
 // Compiled: "@ctx.and(\n  ctx.not(..." ← raw TypeScript dumped, BROKEN
 
 // ✅ CORRECT — use && operator instead:
-/** @action ValidateOrder @type if */
+/** @action ValidateOrder */
 if (ctx.not(ctx.empty(order?.['productId'])) && ctx.greater(order?.['quantity'], 0)) {
   // ...
 }
 // Compiled: @and(not(empty(items('...')?['productId'])), greater(items('...')?['quantity'], 0))
 ```
 
-**The rule:** Always use `&&` for AND conditions and `||` for OR conditions in `@type if` annotations. Individual ctx methods like `ctx.not()`, `ctx.empty()`, `ctx.greater()`, `ctx.equals()`, etc. work fine as arguments — it's only `ctx.and()`/`ctx.or()` as the **outermost expression** in an if condition that break.
+**The rule:** Always use `&&` for AND conditions and `||` for OR conditions in `if` statements. Individual ctx methods like `ctx.not()`, `ctx.empty()`, `ctx.greater()`, `ctx.equals()`, etc. work fine as arguments — it's only `ctx.and()`/`ctx.or()` as the **outermost expression** in an if condition that break.
 
 ```typescript
 // ✅ These all work correctly:
@@ -438,7 +461,7 @@ userEmails.push(user?.['Email']);
 /** @action Initialize_userEmails */
 let userEmails: string[] = [];
 
-/** @action ForEachUser @type foreach */
+/** @action ForEachUser */
 for (const user of ctx.body('GetUsers')?.['value'] ?? []) {
   /** @action Append_email */
   userEmails.push(ctx.items('ForEachUser')?.['Email']);
@@ -480,25 +503,26 @@ This applies to `//` comments, `/* */` comments, `@description` text, and the cl
 
 **What becomes the description:**
 - Only the **descriptive prose** — plain comments and `@description` text.
-- Structural JSDoc tags are **stripped** and are NOT part of it: `@action`, `@type`, `@runAfter`, `@limit`, `@retryPolicy`, `@metadata`, etc. So `/** @action Foo @type if */` contributes nothing to the description.
+- Structural JSDoc tags are **stripped** and are NOT part of it: `@action`, `@type`, `@runAfter`, `@limit`, `@retryPolicy`, `@metadata`, etc. So `/** @action Foo */` contributes nothing to the description.
 - A plain comment placed **above** a `/** @action … */` JSDoc block is also folded into the description.
 
 **Notes:**
 - Only the 255-char excerpt is visible as the action's note in the Power Automate designer; the full text reappears whenever the flow is opened in FlowForger (CLI, web app, or VS Code).
 - **Exception — the flow-level description** (the class-level JSDoc on the `@Flow` class): it maps to `definition.description`, which has NO overflow handling. Keep the flow-level description at 255 characters or fewer.
 
-### 10. NEVER call `ctx.response()` or `ctx.terminate()` inside a loop — and `ctx.response()` needs a request trigger
+### 10. NEVER call `ctx.response()` or `ctx.terminate()` inside a loop — and never `ctx.response()` with a recurring trigger
 
 Power Automate validates *where* an action sits when the flow is saved/activated, and rejects the whole flow with `InvalidWorkflowRunAction`:
 
 > The workflow run action 'Respond_FileNotFound' has type 'Response' that could not be nested under an action of type 'foreach'.
 
-The rules (from the Logic Apps schema reference):
+The rules (each measured against the cloud in `conformance/save-rules/placement.mjs`):
 
 - **`Response` and `Terminate` cannot be nested under a `foreach` or `until` loop at any depth** — a `for...of`, `while` or `do...while` body, including inside an `if`/`switch`/scope block within that loop. `if`, `switch` and scope blocks *outside* a loop are fine.
-- **`Response` requires a request trigger** — `@HttpTrigger` or `@ManualTrigger`. A flow with `@RecurrenceTrigger` or `@ConnectorTrigger` has no caller to respond to; the cloud rejects a Response action there.
-- **`Response` must not sit in a parallel branch** (two actions with the same explicit `@runAfter` predecessor and status). Join the branches first, then respond. Two responses after the same scope on *disjoint* statuses (`Succeeded` vs `Failed`) are fine — that is the try/catch pattern.
-- Actions nest at most **8 levels deep** (Logic Apps limit).
+- **`Response` cannot be used with a trigger that runs on a recurrence**: `@RecurrenceTrigger`, or a polling `@ConnectorTrigger` (one with a `recurrence` option, e.g. SharePoint "When an item is created"). The cloud says "The workflow with 'Response' action type should not have triggers with 'recurrence' property defined". `@HttpTrigger`, `@ManualTrigger` and webhook connector triggers (e.g. Dataverse "When a row is added") are fine.
+- **`InitializeVariable` only at the top level** — never inside a scope, condition, switch or loop.
+- **Actions nest at most 8 levels**: a top-level action is level 0, so an action inside 9 blocks is rejected ("nested at level '9' which exceeds the maximum nesting limit of '8'").
+- A Response in a parallel branch, or two Responses, are accepted on save.
 
 ```typescript
 // ❌ WRONG — rejected on save: Response nested under foreach
@@ -531,36 +555,92 @@ if (!ctx.empty(missingFile)) {
 
 Alternatives that keep the decision inside the loop: use `Filter array` (`ctx.filterArray`) before the loop so the failing case never enters it, or move the loop body into a child flow and respond/terminate in the parent.
 
-`flowforger validate <file.ff.ts>` reports these as **DSL037** (error — `ctx.response()`/`ctx.terminate()` inside a loop) and **DSL038** (error — `ctx.response()` without a request trigger); the IR / Logic Apps JSON validators report `RESPONSE_NESTED`, `TERMINATE_NESTED`, `RESPONSE_TRIGGER`, `RESPONSE_PARALLEL` (warning) and `NESTING_DEPTH` (warning). Fix them before pushing.
+`flowforger validate <file.ff.ts>` reports these as **DSL037** (error — `ctx.response()`/`ctx.terminate()` inside a loop) and **DSL038** (error — `ctx.response()` with a recurring trigger); the IR / Logic Apps JSON validators report `RESPONSE_NESTED`, `TERMINATE_NESTED`, `RESPONSE_TRIGGER`, `VAR_INIT_NESTED` and `NESTING_DEPTH`. Fix them before pushing.
 
 ### 11. Stay inside the Power Automate definition limits
 
-The workflow service rejects a flow on save when it exceeds these limits. All of them are checked by `flowforger validate` (DSL codes in the editors and CLI, IR / JSON codes in the CLI and web app):
+The workflow service rejects a flow on save when it exceeds these limits (measured in `conformance/save-rules/structure.mjs`). All of them are checked by `flowforger validate` (DSL codes in the editors and CLI, IR / JSON codes in the CLI and web app):
 
 | Limit | Value | DSL code | IR / JSON code |
 |-------|-------|----------|----------------|
 | Action or trigger name length | 80 characters | DSL039 | `ACTION_NAME_LENGTH` |
-| Actions per flow | 500 | DSL040 (warning) | `ACTION_COUNT` |
+| Actions per flow | 500 | DSL040 | `ACTION_COUNT` |
 | Cases per `switch` | 25 | DSL041 | `SWITCH_CASES` |
 | Variables per flow (`let` declarations) | 250 | DSL042 | `VARIABLE_COUNT` |
 | `@runtimeConfig` foreach `concurrency.repetitions` | 1–50 | DSL043 | `FOREACH_CONCURRENCY` |
 | `@retryPolicy` | `type` none/fixed/exponential, `count` 1–90, `interval` PT5S–P1D | DSL043 | `RETRY_POLICY` |
-| `@limit` on until loops | `count` 1–5000, `timeout` ISO 8601 (`PT1H`) | DSL043 | `UNTIL_COUNT`, `UNTIL_TIMEOUT` |
-| `@RecurrenceTrigger` interval | Month 1–16, Day 1–500, Hour 1–12,000, Minute 1–72,000 | DSL045 | `RECURRENCE` |
-| `@RecurrenceTrigger` schedule | `hours`/`minutes` only for Day/Week, `weekDays` only for Week | DSL046 (warning) | `RECURRENCE_SCHEDULE` |
-| Nesting depth | 8 | — | `NESTING_DEPTH` (warning) |
+| Parameters per flow | 50, counting `$connections` and `$authentication` | — | `PARAMETER_COUNT` |
+| Characters per expression | 8192, without the leading `@` (each `@{...}` counts on its own) | — | `EXPR_LENGTH` |
+| `@RecurrenceTrigger` interval | a period of at most 500 days: Year 1, Month 16, Week 71, Day 500, Hour 12,000, Minute 720,000 | DSL045 | `RECURRENCE` |
+| `@RecurrenceTrigger` schedule | only with frequency Day, Week or Month; `weekDays` only for Week, `monthDays` only for Month; the next run within 18 months of now (`startTime`); any `startTime` at most 49 years ahead | DSL046, DSL045 | `RECURRENCE_SCHEDULE`, `RECURRENCE` |
+| `@runtimeConfig` trigger `concurrency.runs` | 1–100 | DSL043 | `TRIGGER_CONCURRENCY` |
+| Nesting | level 8 (top level is 0) | — | `NESTING_DEPTH` |
 
-Two more pairings the portal enforces: a `ctx.response(..., 'PowerApp')` response belongs with `@ManualTrigger`, and a `'VirtualAgent'` response with `@HttpTrigger({ triggerKind: 'VirtualAgent' })` — **DSL044** / `RESPONSE_KIND` (warnings). The JSON validators additionally check what the DSL diagnostics already guarantee for `.ff.ts` files: unique action names across scopes (case-insensitive), `outputs()`/`body()`/`items()`/`parameters()` references that resolve, `runAfter` targets that are siblings with valid statuses and no cycles, `Until` loops with a body and a limit, `runError` only with `Failed`, and OpenApiConnection `connectionName`s that exist in `connectionReferences`.
+Also rejected on save: a `switch` on a literal instead of an expression (`SWITCH_EXPRESSION`), a variable written or read (`variables('x')`) without an `InitializeVariable` for it anywhere in the flow (`VARIABLE_UNINITIALIZED`, `VARIABLE_UNDEFINED`), a variable initialized twice (names are case-insensitive, `VAR_INIT_DUPLICATE`), and a `runAfter` entry with no statuses. An `Until` needs a `limit` property, but the cloud saves any `count`/`timeout` in it and an empty body, so `@limit` values outside `count` 1–5000 are only warnings (DSL043, `UNTIL_COUNT`, `UNTIL_TIMEOUT`, `UNTIL_EMPTY`). Also only warnings, because the cloud saves them: `parameters('x')` for an undefined parameter (DSL015, `EXPR_UNKNOWN_PARAMETER`), `item()` outside a loop (DSL012), and a definition with several triggers (`TRIGGER_COUNT`).
+
+Two pairings the maker portal expects, though the cloud saves either way: a `ctx.response(..., 'PowerApp')` response belongs with `@ManualTrigger`, and a `'VirtualAgent'` response with `@HttpTrigger({ triggerKind: 'VirtualAgent' })` — **DSL044** / `RESPONSE_KIND` (warnings). The JSON validators additionally check what the DSL diagnostics already guarantee for `.ff.ts` files: unique action names across scopes (case-insensitive), `outputs()`/`body()`/`items()` references that resolve, `runAfter` targets that are siblings with valid statuses and no cycles, `Until` loops with a limit, `runError` only with `Failed`, and OpenApiConnection `connectionName`s that exist in `connectionReferences`.
+
+### 12. A `for...of` runs in parallel in the cloud: don't change variables in it unless it is sequential
+
+An Apply to each without a concurrency setting runs up to 20 items **at the same time** in Power Automate. The local engine runs them one at a time, so a loop that appends to or sets a variable can work locally and give a different result after deploy. Appended items arrive in whatever order the iterations finish, and a Set variable races with the reads of other iterations.
+
+```typescript
+// ❌ Order of `names` differs in the cloud; `last` can be any item
+let names: string[] = [];
+let last: string = '';
+/** @action Each_row */
+for (const row of ctx.body('Get_items')?.['value']) {
+  names.push(row?.['Title']);
+  last = row?.['Title'];
+}
+
+// ✅ Sequential loop, one item at a time, like the local run
+/** @action Each_row @runtimeConfig {"concurrency":{"repetitions":1}} */
+for (const row of ctx.body('Get_items')?.['value']) {
+  names.push(row?.['Title']);
+}
+
+// ✅ Better when you only need a projection: no loop, no variable
+await ctx.select('Titles', ctx.body('Get_items')?.['value'], { title: ctx.item()?.['Title'] });
+```
+
+Counters are fine: `x++`, `x--`, `x += 1` and `x = x + 1` on numbers compile to Increment/Decrement variable, which the cloud applies atomically. A `do...while` (Until) always runs one iteration at a time. `flowforger validate` reports the risky cases as **DSL047** (warning).
+
+### 13. An action can only read actions on its `@runAfter` path
+
+Power Automate rejects a flow on save when an action reads (`ctx.body()`, `ctx.outputs()`, `ctx.actions()`, `ctx.result()`, the same functions in `ctx.eval()`, or a `const` bound to an action) an action that doesn't finish before it: "Action 'X' must either be in 'runAfter' path or within a scope action on the 'runAfter' path". Without `@runAfter`, every statement runs after the previous one, so this only bites once you write `@runAfter`. It applies to parallel branches, joins and blocks:
+
+```typescript
+await ctx.compose("A", 1);
+/** @runAfter trigger */            // B starts a parallel branch
+await ctx.compose("B", 2);
+
+// ❌ C runs after A only, so B is not on its path
+/** @runAfter A: Succeeded */
+await ctx.compose("C", ctx.outputs('B'));
+
+// ✅ The join lists both branches
+/** @runAfter A: Succeeded @runAfter B: Succeeded */
+await ctx.compose("C", ctx.eval(`@concat(string(outputs('A')), string(outputs('B')))`));
+```
+
+What the cloud accepts (measured in `conformance/save-rules/runafter-path.mjs`):
+- An action reads the actions its `@runAfter` chain reaches (transitively, whatever the statuses), plus everything nested inside them, so an action after a scope, `if`, `switch` or loop can read actions inside it.
+- The same applies to every block enclosing the action. A statement inside a scope can read what the scope runs after.
+- The `if` branches and `switch` cases can't read each other. An action can't read its own enclosing block (`ctx.result('Scope')` inside `Scope`), and it can't read itself.
+- An `if`/`switch`/`for...of` header can't read actions inside its own body. A `do...while` condition can, because it is evaluated after each iteration.
+
+`flowforger validate` reports it as **DSL048** (error); the IR / JSON validators report `EXPR_RUNAFTER_PATH` and `EXPR_SELF_REFERENCE`.
 
 ## Control Flow Summary
 
 | Pattern | JSDoc Annotation | JS Syntax |
 |---------|-----------------|-----------|
-| If/Else | `@action Name @type if` | `if (...) { } else { }` |
-| Switch | `@action Name @type switch` | `switch (...) { case: ... }` |
-| For Each | `@action Name @type foreach` | `for (const x of ...) { }` |
-| Do-Until | `@action Name @type until` | `do { } while (...)` |
-| Scope | `@action Name @type scope` | `{ ... }` (bare block) |
+| If/Else | `@action Name` | `if (...) { } else { }` |
+| Switch | `@action Name` | `switch (...) { case: ... }` |
+| For Each | `@action Name` | `for (const x of ...) { }` |
+| Do-Until | `@action Name` | `do { } while (...)` |
+| Scope | `@action Name @type scope` (`@type scope` required) | `{ ... }` (bare block) |
 | Try/Catch | Scope + `@runAfter` + **Finally scope** | See [Critical Rule 6](#6-trycatch-must-have-a-finally-scope-or-an-explicit-runafter-covering-both-paths) |
 
 See [DSL Syntax Reference](dsl-syntax.md) for detailed syntax.

@@ -23,6 +23,7 @@ class OptimizerTest {
 
     // This is the append-to-array pattern - should become select
     let results: any[] = [];
+    /** @runtimeConfig {"concurrency":{"repetitions":1}} */
     for (const item of ctx.body('GetItems')) {
       results.push({
         id: ctx.item().id,

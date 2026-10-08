@@ -84,6 +84,16 @@ export class BaseHttpClient {
     log?: LogFunction,
     options?: HttpRequestOptions
   ): Promise<T> {
+    return (await this.requestWithStatus<T>(method, path, log, options)).data;
+  }
+
+  /** Like request, also giving the response status (e.g. 201 vs 200 for an upsert, 204 for no content). */
+  protected async requestWithStatus<T = unknown>(
+    method: string,
+    path: string,
+    log?: LogFunction,
+    options?: HttpRequestOptions
+  ): Promise<{ status: number; data: T }> {
     const url = this.buildUrl(path, options?.query);
 
     log?.({ type: `${this.constructor.name}.request`, method, url });
@@ -116,7 +126,7 @@ export class BaseHttpClient {
     }
 
     log?.({ type: `${this.constructor.name}.response`, status: response.status });
-    return data as T;
+    return { status: response.status, data: data as T };
   }
 
   /**
@@ -199,6 +209,25 @@ export class BaseHttpClient {
 // ============= Utility Functions =============
 
 /**
+ * A connector result that sets the action's `outputs.statusCode` for this call (the engine's
+ * ConnectorResponse): for operations whose cloud status differs per call, such as an upsert
+ * (201 created / 200 updated). `omitStatusCode` records no statusCode at all, as the cloud does
+ * for a 206 Partial Content download. A body of undefined leaves `outputs.body` out (a 204).
+ */
+export function connectorResponse(
+  body: unknown,
+  statusCode: number,
+  options?: { omitStatusCode?: boolean }
+): { $connectorResponse: true; statusCode: number; body?: unknown; omitStatusCode?: boolean } {
+  return {
+    $connectorResponse: true,
+    statusCode,
+    ...(body === undefined ? {} : { body }),
+    ...(options?.omitStatusCode ? { omitStatusCode: true } : {}),
+  };
+}
+
+/**
  * Extract fields from Power Automate's item/* parameter format
  *
  * Power Automate sends field values as `item/FieldName` keys.
@@ -235,7 +264,7 @@ export function getParam<T>(
   defaultValue?: T
 ): T | undefined {
   for (const key of keys) {
-    if (params[key] !== undefined) {
+    if (params[key] != null) {
       return params[key] as T;
     }
   }
@@ -261,8 +290,8 @@ export function buildODataQuery(params: {
   const query: string[] = [];
 
   if (params.filter) query.push(`$filter=${encodeURIComponent(params.filter)}`);
-  if (params.top !== undefined) query.push(`$top=${params.top}`);
-  if (params.skip !== undefined) query.push(`$skip=${params.skip}`);
+  if (params.top != null) query.push(`$top=${params.top}`);
+  if (params.skip != null) query.push(`$skip=${params.skip}`);
   if (params.orderby) query.push(`$orderby=${encodeURIComponent(params.orderby)}`);
   if (params.select) query.push(`$select=${encodeURIComponent(params.select)}`);
   if (params.expand) query.push(`$expand=${encodeURIComponent(params.expand)}`);

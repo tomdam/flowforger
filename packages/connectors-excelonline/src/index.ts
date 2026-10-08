@@ -206,7 +206,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
     if (inputs.values && !inputs.rangeValues) normalized.rangeValues = inputs.values;
 
     // Handle column index
-    if (inputs.index !== undefined && inputs.columnIndex === undefined) normalized.columnIndex = inputs.index;
+    if (inputs.index != null && inputs.columnIndex == null) normalized.columnIndex = inputs.index;
 
     // Handle column name for AddColumn
     if (inputs.name && !inputs.columnName) normalized.columnName = inputs.name;
@@ -350,7 +350,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
     const keyColumn = String(inputs.keyColumn);
     const keyValue = inputs.keyValue;
 
-    if (!fileId || !tableName || !keyColumn || keyValue === undefined) {
+    if (!fileId || !tableName || !keyColumn || keyValue == null) {
       throw new Error('GetRow requires fileId, tableName, keyColumn, and keyValue');
     }
 
@@ -560,7 +560,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
     const keyValue = inputs.keyValue;
     const rowData = inputs.rowData as Record<string, unknown>;
 
-    if (!fileId || !tableName || !keyColumn || keyValue === undefined || !rowData) {
+    if (!fileId || !tableName || !keyColumn || keyValue == null || !rowData) {
       throw new Error('UpdateRow requires fileId, tableName, keyColumn, keyValue, and rowData');
     }
 
@@ -632,7 +632,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
     const keyColumn = String(inputs.keyColumn);
     const keyValue = inputs.keyValue;
 
-    if (!fileId || !tableName || !keyColumn || keyValue === undefined) {
+    if (!fileId || !tableName || !keyColumn || keyValue == null) {
       throw new Error('DeleteRow requires fileId, tableName, keyColumn, and keyValue');
     }
 
@@ -829,7 +829,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
     const fileId = String(inputs.fileId);
     const tableName = String(inputs.tableName);
     const columnName = String(inputs.columnName);
-    const columnIndex = inputs.columnIndex !== undefined ? Number(inputs.columnIndex) : undefined;
+    const columnIndex = inputs.columnIndex != null ? Number(inputs.columnIndex) : undefined;
     const values = inputs.values as unknown[][] | undefined;
 
     if (!fileId || !tableName || !columnName) {

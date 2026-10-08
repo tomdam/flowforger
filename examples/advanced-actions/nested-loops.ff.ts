@@ -19,12 +19,12 @@ class NestedLoops {
     // Extract departments array from trigger
     await ctx.compose('Departments', ctx.triggerBody()?.['departments']);
 
-    /** @action LoopDepartments */
+    /** @action LoopDepartments @runtimeConfig {"concurrency":{"repetitions":1}} */
     for (const dept of ctx.outputs('Departments') ?? []) {
       // Compose department info for reference inside inner loop
       await ctx.compose('CurrentDept', dept?.['name']);
 
-      /** @action LoopEmployees */
+      /** @action LoopEmployees @runtimeConfig {"concurrency":{"repetitions":1}} */
       for (const emp of dept?.['employees'] ?? []) {
         // Build a summary entry for each employee
         await ctx.compose('EmployeeSummary', {

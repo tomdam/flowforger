@@ -168,6 +168,9 @@ flowforger run flow.ir.json
 # With trigger input payload
 flowforger run flow.ff.ts --in payload.json
 
+# With a raw request body (a form post or multipart data) for an HTTP-triggered flow
+flowforger run flow.ff.ts --in form.txt --in-content-type application/x-www-form-urlencoded
+
 # With variable and parameter overrides
 flowforger run flow.ff.ts --var name=value --param "My Param=value"
 

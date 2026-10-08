@@ -11,16 +11,24 @@ import { makeExprContext } from './expr-fixtures.js';
 
 const ctx = makeExprContext();
 (ctx as any).currentAction = { name: 'HttpCall', inputs: { u: 1 }, startTime: 't0' };
+// action() answers only where the debugger evaluates: a flow itself cannot use it (expr-errors.ff.ts).
+(ctx as any).debugEvaluation = true;
 (ctx as any).scopeResults.set('Scope1', [{ name: 'a' }]);
 (ctx as any).iterationStack = [{ loopName: 'L1', index: 3 }];
 (ctx as any).callbackUrl = 'http://cb';
+// Form data as the cloud stores it (formdata-expressions.test.ts): the Content-Type header says
+// form data, the body carries $formdata / $multipart.
+const part = (name: string, body: unknown) => ({ headers: { 'Content-Disposition': `form-data; name="${name}"` }, body });
 (ctx as any).actions.set('Form', {
   status: 'Succeeded',
-  outputs: { body: { single: 'v1', multi: ['a', 'b'], $multipart: [{ body: 'p0' }] } },
+  outputs: {
+    headers: { 'Content-Type': 'multipart/form-data; boundary=b' },
+    body: { '$content-type': 'multipart/form-data; boundary=b', '$content': '', $multipart: [part('single', 'v1'), part('multi', 'a'), part('multi', 'b')] },
+  },
 });
 (ctx as any).triggerData = {
-  body: { id: 'trg-1', nested: { deep: 'yes' }, k: 'v', m: ['1', '2'], $multipart: [{ body: 'tp0' }] },
-  headers: { h1: 'v1' },
+  body: { id: 'trg-1', nested: { deep: 'yes' }, $multipart: [part('k', 'v'), part('m', '1'), part('m', '2')] },
+  headers: { 'Content-Type': 'multipart/form-data; boundary=b' },
 };
 
 const T = '2026-01-15T10:30:00Z';
@@ -35,7 +43,7 @@ const rows: Array<[string, unknown]> = [
   [`@action().inputs.u`, 1],
   [`@item().current`, true],
   [`@items('Rows')[0].id`, 1],
-  [`@trigger().body.id`, 'trg-1'],
+  [`@trigger().outputs.body.id`, 'trg-1'],
   [`@triggerBody().id`, 'trg-1'],
   [`@triggerOutputs()['body/nested/deep']`, 'yes'],
   [`@workflow().name`, 'TestFlow'],
@@ -45,18 +53,18 @@ const rows: Array<[string, unknown]> = [
   [`@result('Scope1')`, [{ name: 'a' }]],
   [`@formDataValue('Form', 'single')`, 'v1'],
   [`@formDataMultiValues('Form', 'multi')`, ['a', 'b']],
-  [`@multipartBody('Form', 0)`, 'p0'],
+  [`@multipartBody('Form', 0)`, 'v1'],
   [`@triggerFormDataValue('k')`, 'v'],
   [`@triggerFormDataMultiValues('m')`, ['1', '2']],
-  [`@triggerMultipartBody(0)`, 'tp0'],
+  [`@triggerMultipartBody(0)`, 'v'],
   // logic
-  [`@equals(101, '101')`, true],
-  [`@greater('10', 9)`, true],
+  [`@equals(101, '101')`, false], // type-strict in the cloud
+  [`@equals(1, 1.0)`, true],
+  [`@greater(10, 9)`, true],
+  [`@greater('b', 'A')`, true], // strings compare case-insensitively
   [`@less(1, 2)`, true],
   [`@greaterOrEquals(2, 2)`, true],
-  [`@ge(3, 2)`, true],
   [`@lessOrEquals(2, 2)`, true],
-  [`@le(1, 2)`, true],
   [`@and(true, true, false)`, false],
   [`@or(false, true)`, true],
   [`@not(true)`, false],
@@ -100,7 +108,7 @@ const rows: Array<[string, unknown]> = [
   [`@intersection(createArray(1, 2), createArray(2, 3))`, [2]],
   [`@range(2, 3)`, [2, 3, 4]],
   [`@sort(createArray(3, 1, 2))`, [1, 2, 3]],
-  [`@reverse('abc')`, 'cba'],
+  [`@reverse(createArray('a', 'b', 'c'))`, ['c', 'b', 'a']],
   [`@addProperty(json('{"a":1}'), 'b', 2)`, { a: 1, b: 2 }],
   [`@setProperty(json('{"a":1}'), 'a', 9)`, { a: 9 }],
   [`@removeProperty(json('{"a":1,"b":2}'), 'b')`, { a: 1 }],
@@ -108,40 +116,37 @@ const rows: Array<[string, unknown]> = [
   [`@add(1, 2)`, 3],
   [`@sub(5, 3)`, 2],
   [`@mul(4, 3)`, 12],
-  [`@div(10, 4)`, 2.5],
+  [`@div(10, 4)`, 2], // int / int is integer division
+  [`@div(10.0, 4)`, 2.5],
   [`@mod(10, 3)`, 1],
   [`@min(3, 5)`, 3],
   [`@max(3, 5)`, 5],
   [`@int('42')`, 42],
   [`@float('1.5')`, 1.5],
-  [`@abs(-3)`, 3],
-  [`@ceil(1.1)`, 2],
-  [`@floor(1.9)`, 1],
-  [`@round(1.5)`, 2],
   [`@decimal('1.5')`, 1.5],
   // datetime (ctx.now pinned)
-  [`@utcNow()`, '2026-01-15T10:30:00.000Z'],
-  [`@parseDateTime('15.01.2026', 'de-DE')`, '2026-01-15T00:00:00.000Z'],
+  [`@utcNow()`, '2026-01-15T10:30:00.0000000Z'],
+  [`@parseDateTime('15.01.2026', 'de-DE')`, '2026-01-15T00:00:00.0000000'],
   [`@formatDateTime('${T}', 'yyyy-MM-dd')`, '2026-01-15'],
-  [`@addDays('${T}', 3)`, '2026-01-18T10:30:00.000Z'],
-  [`@addHours('${T}', 2)`, '2026-01-15T12:30:00.000Z'],
-  [`@addMinutes('${T}', 15)`, '2026-01-15T10:45:00.000Z'],
-  [`@addSeconds('${T}', 30)`, '2026-01-15T10:30:30.000Z'],
-  [`@addToTime('${T}', 1, 'Day')`, '2026-01-16T10:30:00.000Z'],
-  [`@subtractFromTime('${T}', 2, 'Hours')`, '2026-01-15T08:30:00.000Z'],
-  [`@getFutureTime(1, 'Day')`, '2026-01-16T10:30:00.000Z'],
-  [`@getPastTime(30, 'Minutes')`, '2026-01-15T10:00:00.000Z'],
+  [`@addDays('${T}', 3)`, '2026-01-18T10:30:00.0000000Z'],
+  [`@addHours('${T}', 2)`, '2026-01-15T12:30:00.0000000Z'],
+  [`@addMinutes('${T}', 15)`, '2026-01-15T10:45:00.0000000Z'],
+  [`@addSeconds('${T}', 30)`, '2026-01-15T10:30:30.0000000Z'],
+  [`@addToTime('${T}', 1, 'Day')`, '2026-01-16T10:30:00.0000000Z'],
+  [`@subtractFromTime('${T}', 2, 'Hours')`, '2026-01-15T08:30:00.0000000Z'],
+  [`@getFutureTime(1, 'Day')`, '2026-01-16T10:30:00.0000000Z'],
+  [`@getPastTime(30, 'Minutes')`, '2026-01-15T10:00:00.0000000Z'],
   [`@ticks('1970-01-01T00:00:00Z')`, 621355968000000000],
   [`@dayOfMonth('${T}')`, 15],
   [`@dayOfWeek('${T}')`, 4],
   [`@dayOfYear('${T}')`, 15],
-  [`@startOfDay('${T}')`, '2026-01-15T00:00:00.000Z'],
-  [`@startOfHour('${T}')`, '2026-01-15T10:00:00.000Z'],
-  [`@startOfMonth('${T}')`, '2026-01-01T00:00:00.000Z'],
+  [`@startOfDay('${T}')`, '2026-01-15T00:00:00.0000000Z'],
+  [`@startOfHour('${T}')`, '2026-01-15T10:00:00.0000000Z'],
+  [`@startOfMonth('${T}')`, '2026-01-01T00:00:00.0000000Z'],
   [`@dateDifference('2026-01-15T10:00:00Z', '2026-01-15T11:30:05Z')`, '01:30:05'],
-  [`@convertFromUtc('${T}', 'W. Europe Standard Time')`, '2026-01-15T11:30:00'],
-  [`@convertToUtc('2026-01-15T11:30:00', 'W. Europe Standard Time')`, '2026-01-15T10:30:00.000Z'],
-  [`@convertTimeZone('${T}', 'UTC', 'Tokyo Standard Time')`, '2026-01-15T19:30:00'],
+  [`@convertFromUtc('${T}', 'W. Europe Standard Time')`, '2026-01-15T11:30:00.0000000'],
+  [`@convertToUtc('2026-01-15T11:30:00', 'W. Europe Standard Time')`, '2026-01-15T10:30:00.0000000Z'],
+  [`@convertTimeZone('${T}', 'UTC', 'Tokyo Standard Time')`, '2026-01-15T19:30:00.0000000'],
   // encoding
   [`@base64('hi')`, 'aGk='],
   [`@base64ToString('aGk=')`, 'hi'],
@@ -155,7 +160,7 @@ const rows: Array<[string, unknown]> = [
   [`@base64ToBinary('aGk=')`, { '$content-type': 'application/octet-stream', '$content': 'aGk=' }],
   [`@binary('hi')`, { '$content-type': 'application/octet-stream', '$content': 'aGk=' }],
   [`@dataUriToBinary('data:text/plain;base64,aGk=')`, { '$content-type': 'text/plain', '$content': 'aGk=' }],
-  [`@decodeDataUri('data:text/plain;base64,aGk=')`, { '$content-type': 'text/plain', '$content': 'aGk=' }],
+  [`@decodeDataUri('data:text/plain;base64,aGk=')`, 'hi'],
   [`@uriComponentToBinary('a%20b')`, { '$content-type': 'application/octet-stream', '$content': 'YSBi' }],
   [`@xml('<r><a>1</a></r>')`, '<r><a>1</a></r>'],
   [`@xpath(xml('<r><a>1</a><a>2</a></r>'), '//a/text()')`, ['1', '2']],
@@ -172,6 +177,21 @@ const rows: Array<[string, unknown]> = [
   [`42`, 42],
 ];
 
+// Expressions the cloud rejects (verified in conformance/results/expressions/cloud.json).
+const failing: Array<[string, RegExp]> = [
+  [`@abs(-3)`, /The template function 'abs' is not defined or not valid/],
+  [`@ceil(1.1)`, /The template function 'ceil' is not defined or not valid/],
+  [`@floor(1.9)`, /The template function 'floor' is not defined or not valid/],
+  [`@round(1.5)`, /The template function 'round' is not defined or not valid/],
+  [`@greater('10', 9)`, /greater/],
+  // Measured by conformance/flows/expr-errors.ff.ts.
+  [`@ge(3, 2)`, /The template function 'ge' is not defined or not valid/],
+  [`@le(1, 2)`, /The template function 'le' is not defined or not valid/],
+  [`@appsetting('x')`, /The template function 'appsetting' is not expected at this location/],
+  [`@add(1)`, /the seccond summand as the second parameter\. The function was invoked with '1' parameter\(s\)/],
+  [`@trigger(1)`, /The template language function 'trigger' must not have any parameters\./],
+];
+
 const shapes: Array<[string, (v: any) => boolean]> = [
   ['@guid()', v => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)],
   ['@rand(1, 5)', v => Number.isInteger(v) && v >= 1 && v <= 5],
@@ -180,6 +200,9 @@ const shapes: Array<[string, (v: any) => boolean]> = [
 describe('expression corpus', () => {
   for (const [expr, expected] of rows) {
     it(expr, () => assert.deepEqual(evalExpression(expr, ctx), expected));
+  }
+  for (const [expr, message] of failing) {
+    it(`${expr} throws`, () => assert.throws(() => evalExpression(expr, ctx), message));
   }
   for (const [expr, check] of shapes) {
     it(expr, () => assert.ok(check(evalExpression(expr, ctx)), `shape failed for ${expr}`));
@@ -190,7 +213,7 @@ describe('expression corpus', () => {
   });
   it('corpus covers every registered function', () => {
     const covered = new Set(
-      [...rows.map(r => r[0]), ...shapes.map(s => s[0])]
+      [...rows.map(r => r[0]), ...shapes.map(s => s[0]), ...failing.map(f => f[0])]
         .flatMap(e => [...e.matchAll(/([A-Za-z_][\w]*)\s*\(/g)].map(m => m[1].toLowerCase())),
     );
     const missing = [...registry.keys()].filter(k => !covered.has(k));

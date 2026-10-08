@@ -7,75 +7,37 @@ import type { ValidationIssue } from './index.js';
  * These mirror checks the Logic Apps / Power Automate workflow service performs when a flow is
  * saved or activated; the cloud rejects the definition with `InvalidWorkflowRunAction` /
  * `InvalidTemplate`, so we surface them locally before push. Sources:
- *   - Response: "Your workflow can use the Response action only when the workflow starts with an
- *     HTTP request trigger" and "anywhere except inside Foreach loops, Until loops, including
- *     sequential loops, and parallel branches"
- *     (learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#response-action)
+ *   - Response: "anywhere except inside Foreach loops, Until loops"
+ *     (learn.microsoft.com/azure/logic-apps/logic-apps-workflow-actions-triggers#response-action).
+ *     The docs also ask for an HTTP request trigger, but what the cloud rejects is a trigger with a
+ *     `recurrence` ("The workflow with 'Response' action type should not have triggers with
+ *     'recurrence' property defined"): the Recurrence trigger and polling connector triggers. A
+ *     webhook connector trigger is accepted.
+ *     The same page also forbids parallel branches, but the cloud saves and activates a Response in
+ *     a parallel branch (conformance/save-rules/placement.mjs), so that is not checked.
  *   - Terminate: "can't appear inside Foreach and Until loops, including sequential loops"
  *     (same page, #terminate-action). Cloud error: "The workflow run action 'X' has type
  *     'Terminate' that could not be nested under an action of type 'foreach'."
  *   - InitializeVariable: must be top level (already covered by VAR_INIT_NESTED in the IR walk;
  *     the Logic Apps JSON walk adds the same code here).
- *   - Nesting depth: "Actions nesting depth: 8"
- *     (learn.microsoft.com/azure/logic-apps/logic-apps-limits-and-config#definition-limits).
+ *   - Nesting depth: "The template actions 'X' are nested at level '9' which exceeds the maximum
+ *     nesting limit of '8'", where top-level actions are level 0.
+ *   - Response schemas: Response actions with the same status code that both declare a schema
+ *     must declare the same one (key order aside): "The schema definition for action with status
+ *     code '200' is not valid. The schema definitions for actions with same status code must
+ *     match." A Response without a schema, or with another status code, is not compared.
+ *
+ * Each rule is measured against the cloud in conformance/save-rules/placement.mjs.
  */
 
-/** Logic Apps enforces at most 8 levels of action nesting. Root actions are depth 1. */
+/** The deepest nesting level the cloud accepts. Top-level actions are level 0. */
 export const MAX_ACTION_NESTING_DEPTH = 8;
-
-/** The only trigger types a Response action may be paired with. */
-const REQUEST_TRIGGER_TYPES = new Set(['request', 'manual']);
 
 type LoopKind = 'foreach' | 'until';
 
 interface LoopAncestor {
   kind: LoopKind;
   name: string;
-}
-
-/** Normalised runAfter: predecessor name → lower-cased statuses. */
-type RunAfterMap = Map<string, Set<string>>;
-
-function normaliseRunAfter(raw: unknown): RunAfterMap {
-  const map: RunAfterMap = new Map();
-  if (!raw || typeof raw !== 'object') return map;
-  for (const [pred, statuses] of Object.entries(raw as Record<string, unknown>)) {
-    const set = new Set<string>();
-    if (Array.isArray(statuses)) {
-      for (const s of statuses) if (typeof s === 'string') set.add(s.toLowerCase());
-    } else if (typeof statuses === 'string') {
-      set.add(statuses.toLowerCase());
-    }
-    map.set(pred, set);
-  }
-  return map;
-}
-
-/**
- * Find a sibling that fans out from the same predecessor with an overlapping status, i.e. a
- * sibling that runs *in parallel* with `name`. Two actions that both follow `Try` but on disjoint
- * statuses (`Succeeded` vs `Failed`) are mutually exclusive branches, not parallel ones, and are
- * not reported.
- */
-function findParallelSibling(
-  name: string,
-  siblings: Array<{ name: string; runAfter: RunAfterMap }>,
-): { sibling: string; predecessor: string; status: string } | undefined {
-  const self = siblings.find((s) => s.name === name);
-  if (!self || self.runAfter.size === 0) return undefined;
-  for (const other of siblings) {
-    if (other.name === name) continue;
-    for (const [pred, statuses] of self.runAfter) {
-      const otherStatuses = other.runAfter.get(pred);
-      if (!otherStatuses) continue;
-      for (const status of statuses) {
-        if (otherStatuses.has(status)) {
-          return { sibling: other.name, predecessor: pred, status };
-        }
-      }
-    }
-  }
-  return undefined;
 }
 
 function describeLoop(loop: LoopAncestor): string {
@@ -103,28 +65,13 @@ function nestedInLoopIssue(
   };
 }
 
-function parallelIssue(
-  name: string,
-  hit: { sibling: string; predecessor: string; status: string },
-  path: string,
-): ValidationIssue {
+function depthIssue(name: string, level: number, path: string): ValidationIssue {
   return {
-    level: 'warning',
-    code: 'RESPONSE_PARALLEL',
-    message:
-      `Response action '${name}' runs in a parallel branch: it and '${hit.sibling}' both run after '${hit.predecessor}' (${hit.status}). ` +
-      `Logic Apps does not allow a Response action inside parallel branches. ` +
-      `Join the branches first (an action whose @runAfter lists every branch) and respond after the join.`,
-    path,
-  };
-}
-
-function depthIssue(name: string, depth: number, path: string): ValidationIssue {
-  return {
-    level: 'warning',
+    level: 'error',
     code: 'NESTING_DEPTH',
     message:
-      `Action '${name}' is nested ${depth} levels deep; Logic Apps limits action nesting depth to ${MAX_ACTION_NESTING_DEPTH}. ` +
+      `Action '${name}' is nested at level ${level} (top-level actions are level 0, so it sits inside ${level} blocks). ` +
+      `Power Automate rejects the flow on save: "The template actions '${name}' are nested at level '${level}' which exceeds the maximum nesting limit of '${MAX_ACTION_NESTING_DEPTH}'". ` +
       `Flatten the control flow or move the inner part into a child flow.`,
     path,
   };
@@ -135,57 +82,84 @@ function triggerIssue(name: string, triggerLabel: string, path: string): Validat
     level: 'error',
     code: 'RESPONSE_TRIGGER',
     message:
-      `Response action '${name}' requires a request trigger (HTTP request, manual/button, Power Apps or Copilot trigger), but this flow starts with ${triggerLabel}. ` +
-      `Power Automate rejects the flow on save. Remove the Response (there is no caller to respond to) or change the trigger.`,
+      `Response action '${name}' cannot be used with ${triggerLabel}, which runs on a recurrence. ` +
+      `Power Automate rejects the flow on save ("The workflow with 'Response' action type should not have triggers with 'recurrence' property defined"). ` +
+      `Remove the Response (there is no caller to respond to) or use a request, manual or webhook trigger.`,
     path,
   };
+}
+
+interface ResponseSchema {
+  name: string;
+  statusCode: unknown;
+  schema: unknown;
+  path: string;
+}
+
+/** Deep equality of two JSON values, ignoring the order of object keys. */
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    return a.length === bb.length && a.every((v, i) => sameJson(v, bb[i]));
+  }
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  return ka.length === kb.length && ka.every((k) => k in (b as object) && sameJson((a as any)[k], (b as any)[k]));
+}
+
+/** RESPONSE_SCHEMA_MISMATCH for each Response whose schema differs from an earlier one with its status code. */
+function responseSchemaIssues(responses: ResponseSchema[]): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const firstByStatus = new Map<string, ResponseSchema>();
+  for (const r of responses) {
+    // An expression status code is only known at run time.
+    if (r.schema === undefined || r.schema === null || typeof r.statusCode === 'string' && r.statusCode.startsWith('@')) continue;
+    const status = String(r.statusCode ?? 200);
+    const first = firstByStatus.get(status);
+    if (!first) {
+      firstByStatus.set(status, r);
+      continue;
+    }
+    if (!sameJson(first.schema, r.schema)) {
+      issues.push({
+        level: 'error',
+        code: 'RESPONSE_SCHEMA_MISMATCH',
+        message:
+          `Response actions '${first.name}' and '${r.name}' both answer status ${status} with different schemas. ` +
+          `Power Automate rejects the flow on save: "The schema definition for action with status code '${status}' is not valid. The schema definitions for actions with same status code must match." ` +
+          `Give both the same schema (the same outputs with the same types), or answer with different status codes.`,
+        path: r.path,
+      });
+    }
+  }
+  return issues;
 }
 
 // ---------------------------------------------------------------------------------------------
 // Flow IR
 // ---------------------------------------------------------------------------------------------
 
-function irTriggerLabel(ir: FlowIR): { isRequest: boolean; label: string } | undefined {
+/** The trigger, when it has a recurrence (a Response is then rejected). */
+function irRecurringTrigger(ir: FlowIR): { label: string } | undefined {
   const trigger = ir.nodes.find((n) => n.type === 'trigger' || n.type === 'recurrence') as any;
   if (!trigger) return undefined;
-  if (trigger.type === 'recurrence') return { isRequest: false, label: `a recurrence trigger ('${trigger.name}')` };
-  if (trigger.kind === 'connector') {
-    const inputs = trigger.inputs || {};
-    return {
-      isRequest: false,
-      label: `a connector trigger ('${trigger.name}': ${inputs.connector ?? '?'} ${inputs.operation ?? ''}`.trim() + ')',
-    };
+  if (trigger.type === 'recurrence') return { label: `a recurrence trigger ('${trigger.name}')` };
+  const inputs = trigger.inputs || {};
+  if (trigger.kind === 'connector' && inputs.recurrence) {
+    return { label: `a polling connector trigger ('${trigger.name}': ${`${inputs.connector ?? '?'} ${inputs.operation ?? ''}`.trim()})` };
   }
-  return { isRequest: true, label: `a request trigger ('${trigger.name}')` };
-}
-
-/**
- * Effective runAfter of IR siblings. The emitter chains an action without an explicit runAfter
- * to the previous sibling (Succeeded); `{}` means "first action". Mirrors
- * packages/emitter-logicapps/src/index.ts.
- */
-function irSiblingRunAfter(nodes: Node[]): Array<{ name: string; runAfter: RunAfterMap }> {
-  const out: Array<{ name: string; runAfter: RunAfterMap }> = [];
-  let prev: string | undefined;
-  for (const n of nodes) {
-    if (n.type === 'trigger' || n.type === 'recurrence') continue;
-    const explicit = (n as any).runAfter;
-    const runAfter =
-      explicit !== undefined
-        ? normaliseRunAfter(explicit)
-        : normaliseRunAfter(prev ? { [prev]: ['Succeeded'] } : {});
-    out.push({ name: n.name, runAfter });
-    prev = n.name;
-  }
-  return out;
+  return undefined;
 }
 
 export function collectIrPlacementIssues(ir: FlowIR): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const trigger = irTriggerLabel(ir);
+  const recurring = irRecurringTrigger(ir);
+  const responses: ResponseSchema[] = [];
 
-  function walk(nodes: Node[], loops: LoopAncestor[], depth: number) {
-    const siblings = irSiblingRunAfter(nodes);
+  function walk(nodes: Node[], loops: LoopAncestor[], level: number) {
     for (const n of nodes) {
       if (n.type === 'trigger' || n.type === 'recurrence') continue;
       const path = `nodes.${n.name}`;
@@ -196,29 +170,34 @@ export function collectIrPlacementIssues(ir: FlowIR): ValidationIssue[] {
         if (innermostLoop) issues.push(nestedInLoopIssue(label, n.name, innermostLoop, path));
       }
       if (n.type === 'action' && n.kind === 'response') {
-        if (trigger && !trigger.isRequest) issues.push(triggerIssue(n.name, trigger.label, path));
-        const hit = findParallelSibling(n.name, siblings);
-        if (hit) issues.push(parallelIssue(n.name, hit, path));
+        if (recurring) issues.push(triggerIssue(n.name, recurring.label, path));
+        const inputs = (n as any).inputs ?? {};
+        responses.push({ name: n.name, statusCode: inputs.statusCode, schema: inputs.schema, path });
       }
-      if (depth > MAX_ACTION_NESTING_DEPTH) issues.push(depthIssue(n.name, depth, path));
+      if (level > MAX_ACTION_NESTING_DEPTH) {
+        // Like the cloud, name only the outermost action past the limit.
+        issues.push(depthIssue(n.name, level, path));
+        continue;
+      }
 
       const children = (n as any).actions as Node[] | undefined;
       if (n.type === 'foreach') {
-        walk(children || [], [...loops, { kind: 'foreach', name: n.name }], depth + 1);
+        walk(children || [], [...loops, { kind: 'foreach', name: n.name }], level + 1);
       } else if (n.type === 'dountil') {
-        walk(children || [], [...loops, { kind: 'until', name: n.name }], depth + 1);
+        walk(children || [], [...loops, { kind: 'until', name: n.name }], level + 1);
       } else if (n.type === 'scope') {
-        walk(children || [], loops, depth + 1);
+        walk(children || [], loops, level + 1);
       } else if (n.type === 'if') {
-        walk(children || [], loops, depth + 1);
-        walk(((n as any).elseActions as Node[]) || [], loops, depth + 1);
+        walk(children || [], loops, level + 1);
+        walk(((n as any).elseActions as Node[]) || [], loops, level + 1);
       } else if (n.type === 'switch') {
-        for (const c of (n as any).cases || []) walk(c.actions || [], loops, depth + 1);
-        walk(((n as any).defaultActions as Node[]) || [], loops, depth + 1);
+        for (const c of (n as any).cases || []) walk(c.actions || [], loops, level + 1);
+        walk(((n as any).defaultActions as Node[]) || [], loops, level + 1);
       }
     }
   }
-  walk(ir.nodes, [], 1);
+  walk(ir.nodes, [], 0);
+  issues.push(...responseSchemaIssues(responses));
   return issues;
 }
 
@@ -226,25 +205,25 @@ export function collectIrPlacementIssues(ir: FlowIR): ValidationIssue[] {
 // Logic Apps JSON
 // ---------------------------------------------------------------------------------------------
 
-function laTriggerLabel(triggers: Record<string, any>): { isRequest: boolean; label: string } | undefined {
+/** The first trigger, when it has a recurrence (a Response is then rejected). */
+function laRecurringTrigger(triggers: Record<string, any>): { label: string } | undefined {
   const entries = Object.entries(triggers || {});
   if (entries.length === 0) return undefined;
   const [name, trigger] = entries[0];
-  const type = String(trigger?.type ?? '');
-  if (REQUEST_TRIGGER_TYPES.has(type.toLowerCase())) return { isRequest: true, label: `a request trigger ("${name}")` };
-  const detail = trigger?.inputs?.host?.operationId ? `: ${trigger.inputs.host.operationId}` : '';
-  return { isRequest: false, label: `a '${type || 'unknown'}' trigger ("${name}"${detail})` };
+  if (!trigger || typeof trigger !== 'object' || trigger.recurrence === undefined) return undefined;
+  const type = String(trigger.type ?? '');
+  if (type.toLowerCase() === 'recurrence') return { label: `a recurrence trigger ("${name}")` };
+  const detail = trigger.inputs?.host?.operationId ? `: ${trigger.inputs.host.operationId}` : '';
+  return { label: `a polling '${type || 'unknown'}' trigger ("${name}"${detail})` };
 }
 
 export function collectLogicAppsPlacementIssues(definition: any): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const trigger = laTriggerLabel(definition?.triggers);
+  const recurring = laRecurringTrigger(definition?.triggers);
+  const responses: ResponseSchema[] = [];
 
-  function walk(actions: any, path: string, loops: LoopAncestor[], depth: number) {
+  function walk(actions: any, path: string, loops: LoopAncestor[], level: number) {
     if (!actions || typeof actions !== 'object') return;
-    const siblings = Object.entries<any>(actions)
-      .filter(([, a]) => a && typeof a === 'object')
-      .map(([name, a]) => ({ name, runAfter: normaliseRunAfter(a.runAfter) }));
 
     for (const [name, action] of Object.entries<any>(actions)) {
       if (!action || typeof action !== 'object') continue;
@@ -257,11 +236,10 @@ export function collectLogicAppsPlacementIssues(definition: any): ValidationIssu
         if (innermostLoop) issues.push(nestedInLoopIssue(label, name, innermostLoop, actionPath));
       }
       if (type === 'response') {
-        if (trigger && !trigger.isRequest) issues.push(triggerIssue(name, trigger.label, actionPath));
-        const hit = findParallelSibling(name, siblings);
-        if (hit) issues.push(parallelIssue(name, hit, actionPath));
+        if (recurring) issues.push(triggerIssue(name, recurring.label, actionPath));
+        responses.push({ name, statusCode: action.inputs?.statusCode, schema: action.inputs?.schema, path: actionPath });
       }
-      if (type === 'initializevariable' && depth > 1) {
+      if (type === 'initializevariable' && level > 0) {
         issues.push({
           level: 'error',
           code: 'VAR_INIT_NESTED',
@@ -269,22 +247,26 @@ export function collectLogicAppsPlacementIssues(definition: any): ValidationIssu
           path: actionPath,
         });
       }
-      if (depth > MAX_ACTION_NESTING_DEPTH) issues.push(depthIssue(name, depth, actionPath));
+      if (level > MAX_ACTION_NESTING_DEPTH) {
+        issues.push(depthIssue(name, level, actionPath));
+        continue;
+      }
 
       const childLoops: LoopAncestor[] =
         type === 'foreach' ? [...loops, { kind: 'foreach', name }]
         : type === 'until' ? [...loops, { kind: 'until', name }]
         : loops;
-      walk(action.actions, `${actionPath}.actions`, childLoops, depth + 1);
-      walk(action.else?.actions, `${actionPath}.else.actions`, childLoops, depth + 1);
-      walk(action.default?.actions, `${actionPath}.default.actions`, childLoops, depth + 1);
+      walk(action.actions, `${actionPath}.actions`, childLoops, level + 1);
+      walk(action.else?.actions, `${actionPath}.else.actions`, childLoops, level + 1);
+      walk(action.default?.actions, `${actionPath}.default.actions`, childLoops, level + 1);
       if (action.cases && typeof action.cases === 'object') {
         for (const [caseName, c] of Object.entries<any>(action.cases)) {
-          walk(c?.actions, `${actionPath}.cases.${caseName}.actions`, childLoops, depth + 1);
+          walk(c?.actions, `${actionPath}.cases.${caseName}.actions`, childLoops, level + 1);
         }
       }
     }
   }
-  walk(definition?.actions, 'definition.actions', [], 1);
+  walk(definition?.actions, 'definition.actions', [], 0);
+  issues.push(...responseSchemaIssues(responses));
   return issues;
 }

@@ -302,7 +302,7 @@ export class Office365UsersConnector extends BaseHttpClient implements BaseConne
     const userId = this.resolveUserId(inputs.id);
     const params: string[] = [];
     params.push(`$select=${encodeURIComponent(inputs.$select && inputs.$select.trim().length > 0 ? inputs.$select : LIST_SELECT_FIELDS)}`);
-    if (inputs.$top !== undefined) params.push(`$top=${inputs.$top}`);
+    if (inputs.$top != null) params.push(`$top=${inputs.$top}`);
     return this.get(`/users/${userId}/directReports?${params.join('&')}`, ctx.log);
   }
 

@@ -13,6 +13,7 @@
  */
 
 import type { ExprNode, PathSeg } from '@flowforger/expressions';
+import { argumentCountMessage } from '@flowforger/expressions';
 
 export interface EmitContext {
   /** Present for API symmetry; the legacy implementation threaded it but never read it. */
@@ -103,6 +104,16 @@ const DATETIME_FNS = new Set([
   'startofday', 'startofhour', 'startofmonth', 'ticks',
 ]);
 
+/**
+ * An argument emitted as the receiver of a method or property (`x.toUpperCase()`, `x.length`):
+ * a number literal or a negation gets parentheses, since `5.length` does not parse and
+ * `!a.length` would negate the length. Other emitted forms carry their own parentheses.
+ */
+function emitReceiver(node: ExprNode, ec: EmitContext): string {
+  const text = emitNode(node, ec);
+  return node.kind === 'num' && !node.at || text.startsWith('!') || text.startsWith('-') ? `(${text})` : text;
+}
+
 function emitComparison(op: string, args: ExprNode[], ec: EmitContext): string {
   const left = emitNode(args[0], ec);
   const right = emitNode(args[1], ec);
@@ -124,10 +135,17 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
   if (guard && funcName !== guard && !ec.relaxedFidelity) {
     throw new EmitBailout(`non-canonical casing: ${funcName}`);
   }
+  // A count the function does not take fails in the cloud; a typed helper would drop or reorder
+  // arguments and turn it into a working call, so keep the expression as written.
+  if (argumentCountMessage(funcName, args.length)) {
+    throw new EmitBailout(`argument count: ${funcName}(${args.length})`);
+  }
 
   switch (lower) {
     // Comparison operators (2 args; other arities fall through to the default ctx call)
     case 'equals':
+      // equals() compares arrays and objects by value; `[1] === [1]` would read as always false.
+      if (args.length === 2 && args.some(a => /^[[{]/.test(emitNode(a, ec)))) return ctxCall('equals', args, ec);
       if (args.length === 2) return emitComparison('===', args, ec);
       break;
     case 'greater':
@@ -225,38 +243,38 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
     // JS-method emissions
     case 'replace':
       if (args.length === 3) {
-        return `${emitNode(args[0], ec)}.replace(${emitNode(args[1], ec)}, ${emitNode(args[2], ec)})`;
+        return `${emitReceiver(args[0], ec)}.replace(${emitNode(args[1], ec)}, ${emitNode(args[2], ec)})`;
       }
       break;
     case 'tolower':
-      if (args.length === 1) return `${emitNode(args[0], ec)}.toLowerCase()`;
+      if (args.length === 1) return `${emitReceiver(args[0], ec)}.toLowerCase()`;
       break;
     case 'toupper':
-      if (args.length === 1) return `${emitNode(args[0], ec)}.toUpperCase()`;
+      if (args.length === 1) return `${emitReceiver(args[0], ec)}.toUpperCase()`;
       break;
     case 'trim':
-      if (args.length === 1) return `${emitNode(args[0], ec)}.trim()`;
+      if (args.length === 1) return `${emitReceiver(args[0], ec)}.trim()`;
       break;
     case 'split':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.split(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.split(${emitNode(args[1], ec)})`;
       break;
     case 'join':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.join(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.join(${emitNode(args[1], ec)})`;
       break;
     case 'indexof':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.indexOf(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.indexOf(${emitNode(args[1], ec)})`;
       break;
     case 'lastindexof':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.lastIndexOf(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.lastIndexOf(${emitNode(args[1], ec)})`;
       break;
     case 'startswith':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.startsWith(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.startsWith(${emitNode(args[1], ec)})`;
       break;
     case 'endswith':
-      if (args.length === 2) return `${emitNode(args[0], ec)}.endsWith(${emitNode(args[1], ec)})`;
+      if (args.length === 2) return `${emitReceiver(args[0], ec)}.endsWith(${emitNode(args[1], ec)})`;
       break;
     case 'length':
-      if (args.length === 1) return `${emitNode(args[0], ec)}.length`;
+      if (args.length === 1) return `${emitReceiver(args[0], ec)}.length`;
       break;
 
     case 'createarray':
@@ -264,6 +282,8 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
 
     // Math
     case 'add':
+      // `'1' + 2` would come back as concat(): keep add() when an operand is a string literal.
+      if (args.length === 2 && args.some(a => a.kind === 'str')) return ctxCall('add', args, ec);
       if (args.length === 2) return `(${emitNode(args[0], ec)} + ${emitNode(args[1], ec)})`;
       break;
     case 'sub':
@@ -278,13 +298,12 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
     case 'mod':
       if (args.length === 2) return `(${emitNode(args[0], ec)} % ${emitNode(args[1], ec)})`;
       break;
+    // min/max/abs are ctx passthroughs (the transformer maps ctx.max(...) back to max(...));
+    // Math.max(...) would come back as the invalid expression @Math.max(...).
     case 'abs':
-      if (args.length === 1) return `Math.abs(${emitNode(args[0], ec)})`;
-      break;
     case 'min':
-      return `Math.min(${args.map(a => emitNode(a, ec)).join(', ')})`;
     case 'max':
-      return `Math.max(${args.map(a => emitNode(a, ec)).join(', ')})`;
+      return ctxCall(funcName, args, ec);
 
     // Conditional
     case 'if':
@@ -297,7 +316,7 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
       return `(${args.map(a => emitNode(a, ec)).join(' ?? ')})`;
 
     case 'guid':
-      return 'ctx.guid()';
+      return ctxCall('guid', args, ec);
 
     // Base64 / URI — canonical ctx methods
     case 'base64':

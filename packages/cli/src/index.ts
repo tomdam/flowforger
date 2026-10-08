@@ -7,7 +7,7 @@ import { emitLogicAppsJson } from '@flowforger/emitter-logicapps';
 import { validateFlowIR, validateLogicApps } from '@flowforger/validator';
 import type { FlowIR, FlowForgerConfig, ChildFlowDefinition, ChildFlowParameter } from '@flowforger/ir';
 import { parseConfigFromJson, DEFAULT_CONFIG } from '@flowforger/ir';
-import { run as runEngine, flattenTrace, WorkflowLoader, type FileArtifact } from '@flowforger/engine';
+import { run as runEngine, flattenTrace, requestTriggerOutputs, WorkflowLoader, type FileArtifact } from '@flowforger/engine';
 import { DataverseClient } from '@flowforger/dataverse-sdk';
 import { buildConnectors } from '@flowforger/debug-node';
 import { parseLogicAppsToIR, generateNativeDslFromIR } from '@flowforger/dsl-native';
@@ -203,7 +203,8 @@ function help() {
 Usage:
   flowforger compile <input.ff.ts|input.ir.json> --out <output> [--emit logicapps] [--config flowforger.config.json] [--config-env <envName>]
   flowforger validate <file.json|file.ff.ts>
-  flowforger run <input.ir.json|input.ff.ts> [--in payload.json]
+  flowforger run <input.ir.json|input.ff.ts> [--in payload.json [--in-content-type <type>]]
+                    (--in-content-type: --in is the raw request body, e.g. a form post or multipart data)
                     [--pretty | --json]  (default: pretty on a terminal, JSON when piped)
                     [--verbose]  (also print sign-in progress, and in pretty mode connector request/response logs)
                     [--vars vars.json] [--var k=v] [--param k=v]
@@ -616,7 +617,7 @@ async function main() {
         }
 
         // When the DSL itself is clean enough to transform, also run the IR validator: some
-        // placement rules (Response in a parallel branch, nesting depth, connector params) are
+        // rules (nesting depth, expression length, parameter count, connector params) are
         // only checked on the IR. Codes with a DSL twin are skipped so nothing is reported twice.
         let irIssueCount = 0;
         if (!hasErrors) {
@@ -630,6 +631,10 @@ async function main() {
             'ACTION_NAME_LENGTH', 'ACTION_COUNT', 'SWITCH_CASES', 'VARIABLE_COUNT', // DSL039-DSL042
             'FOREACH_CONCURRENCY', 'RETRY_POLICY', 'UNTIL_COUNT', 'UNTIL_TIMEOUT', // DSL043
             'RESPONSE_KIND', 'RECURRENCE', 'RECURRENCE_SCHEDULE', // DSL044, DSL045
+            // Not EXPR_ARG_COUNT / EXPR_ARG_TYPE: DSL049 sees only ctx.eval literals, not
+            // expressions written as plain parameter strings.
+            // Not EXPR_RUNAFTER_PATH / EXPR_SELF_REFERENCE: DSL048 skips what it can't resolve, and an
+            // error from it stops this pass anyway, so the IR check only reports what DSL048 missed.
           ]);
           try {
             const { transformFile } = await import('@flowforger/dsl-native');
@@ -679,7 +684,15 @@ async function main() {
       } else {
         ir = JSON.parse(readFileSync(resolve(input), 'utf-8'));
       }
-      const payload = args.in ? JSON.parse(readFileSync(resolve(args.in as string), 'utf-8')) : {};
+      // --in-content-type: --in is a raw request body (a form post, multipart data), stored the
+      // way the cloud's Request trigger stores it.
+      const inContentType = args['in-content-type'] ? requireStringFlag(args, 'in-content-type') : undefined;
+      if (inContentType && !args.in) throw new ArgError('--in-content-type needs --in <body file>');
+      const payload = !args.in
+        ? {}
+        : inContentType
+          ? requestTriggerOutputs(inContentType, readFileSync(resolve(args.in as string)))
+          : JSON.parse(readFileSync(resolve(args.in as string), 'utf-8'));
       // --auth: automatic token acquisition via MSAL
       if (args['auth']) {
         const authConfig = loadAuthConfig(args);
@@ -880,6 +893,7 @@ async function main() {
         loadChildFlow,
         strictWorkflows: !!args['strict-workflows'],
         callbackUrl,
+        environmentName: args['environment-id'] as string | undefined,
       });
 
       // Materialize debug file artifacts (from ctx.saveFile / @@ff:saveFile compose)
@@ -1826,6 +1840,10 @@ then grant admin consent. The CLI requests only the subset a given flow needs at
 }
 
 main().catch((err) => {
+  if (err instanceof ArgError) {
+    console.error(err.message);
+    process.exit(2);
+  }
   console.error(err);
   process.exit(1);
 });

@@ -65,6 +65,7 @@ function traceStatusIcon(status: string, clr: Palette): string {
   if (status === 'Succeeded') return clr.green('✓');
   if (status === 'Failed') return clr.red('✗');
   if (status === 'Skipped') return clr.dim('↷');
+  if (status === 'Cancelled') return clr.yellow('⊘');
   return ' ';
 }
 
@@ -113,11 +114,12 @@ function formatTraceEntry(entry: any, indent: number, clr: Palette, out: string[
   for (const child of entry.children ?? []) formatTraceEntry(child, indent + 1, clr, out);
 }
 
+/** Actions that ran (Skipped ones did not), at every depth. */
 export function countTraceActions(entries: any[]): number {
   let n = 0;
   for (const e of entries ?? []) {
     if (typeof e.nodeId === 'string' && e.nodeId.startsWith('trg_')) continue;
-    n++;
+    if (e.status !== 'Skipped') n++;
     n += countTraceActions(e.children);
     for (const it of e.iterations ?? []) n += countTraceActions(it.actions);
   }
@@ -133,8 +135,12 @@ export function formatPrettyRunResult(flowName: string, result: any, options: { 
   const n = countTraceActions(result.trace ?? []);
   if (result.status === 'Succeeded') {
     out.push(`${clr.green(clr.bold('✓ Flow succeeded'))} ${clr.dim(`— ${n} action${n === 1 ? '' : 's'} executed`)}`);
+  } else if (result.status === 'Cancelled') {
+    out.push(`${clr.yellow(clr.bold('⊘ Flow cancelled'))} ${clr.dim('— by a Terminate action')}`);
   } else {
-    const msg = result.error instanceof Error ? result.error.message : result.error ? String(result.error) : '';
+    // A Terminate's runError is a plain { code, message } object.
+    const err = result.error;
+    const msg = err?.message ? String(err.message) : err ? String(err) : '';
     out.push(`${clr.red(clr.bold('✗ Flow failed'))}${msg ? ` ${clr.dim('— ' + msg)}` : ''}`);
   }
   out.push('');

@@ -201,6 +201,54 @@ describe('transformCode', () => {
     assert.strictEqual(httpNode.inputs.url, 'https://api.example.com/data');
   });
 
+  it('should take an HTTP retryPolicy from the inputs, a @retryPolicy tag winning', () => {
+    const code = `
+      @Flow('HttpRetry')
+      class HttpRetry {
+        @ManualTrigger()
+        trigger() {}
+
+        @Action()
+        async run(ctx: FlowContext) {
+          await ctx.http('A', { method: 'GET', url: 'https://x', retryPolicy: { type: 'none' } });
+          /** @retryPolicy {"type":"fixed","count":2,"interval":"PT5S"} */
+          await ctx.http('B', { method: 'GET', url: 'https://x', retryPolicy: { type: 'none' } });
+        }
+      }
+    `;
+    const ir = transformCode(code);
+    const [a, b] = ir.nodes.slice(1) as any[];
+    assert.deepStrictEqual(a.retryPolicy, { type: 'none' });
+    assert.strictEqual(a.inputs.retryPolicy, undefined);
+    assert.deepStrictEqual(b.retryPolicy, { type: 'fixed', count: 2, interval: 'PT5S' });
+  });
+
+  it('should keep expression status codes and headers of ctx.response', () => {
+    const code = `
+      @Flow('Resp')
+      class Resp {
+        @HttpTrigger({})
+        trigger() {}
+
+        @Action()
+        async run(ctx: FlowContext) {
+          await ctx.response('R', ctx.eval(\`@int('201')\`), { ok: true }, ctx.eval(\`@json('{}')\`));
+          await ctx.response('S', 404, undefined, { 'X-A': 'b' });
+        }
+      }
+    `;
+    const ir = transformCode(code);
+    const [r, s] = ir.nodes.slice(1) as any[];
+    assert.strictEqual(r.inputs.statusCode, "@int('201')");
+    assert.strictEqual(r.inputs.headers, "@json('{}')");
+    assert.strictEqual(s.inputs.statusCode, 404);
+    assert.deepStrictEqual(s.inputs.headers, { 'X-A': 'b' });
+    // DSL → IR → DSL → IR keeps both expressions.
+    const again = transformCode(generateNativeDslFromIR(ir)).nodes[1] as any;
+    assert.strictEqual(again.inputs.statusCode, "@int('201')");
+    assert.strictEqual(again.inputs.headers, "@json('{}')");
+  });
+
   it('should extract childFlows from constructor', () => {
     const code = `
       import { Flow, ManualTrigger, Action, FlowContext } from '@flowforger/dsl-native';
@@ -220,6 +268,7 @@ describe('transformCode', () => {
             MyChildFlow: {
               workflowId: 'fa05dee0-12d5-f011-8544-7c1e523655f2',
               description: 'A child flow',
+              dslPath: 'children/my-child.ff.ts',
               parameters: {
                 text: { title: 'Input Text', type: 'string', required: true },
               },
@@ -234,6 +283,7 @@ describe('transformCode', () => {
     assert.ok(ir.childFlows.MyChildFlow, 'MyChildFlow should be defined');
     assert.strictEqual(ir.childFlows.MyChildFlow.workflowId, 'fa05dee0-12d5-f011-8544-7c1e523655f2');
     assert.strictEqual(ir.childFlows.MyChildFlow.description, 'A child flow');
+    assert.strictEqual(ir.childFlows.MyChildFlow.dslPath, 'children/my-child.ff.ts');
     assert.ok(ir.childFlows.MyChildFlow.parameters?.text, 'text parameter should exist');
     assert.strictEqual(ir.childFlows.MyChildFlow.parameters!.text.title, 'Input Text');
     assert.strictEqual(ir.childFlows.MyChildFlow.parameters!.text.type, 'string');

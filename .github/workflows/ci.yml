@@ -49,9 +49,9 @@ jobs:
         shell: bash
         run: |
           node packages/cli/esbuild.config.mjs
-          count=$(grep -c "use setProperty" packages/cli/dist/bundle.cjs || true)
+          count=$(grep -c "expects the property to not exist in the object" packages/cli/dist/bundle.cjs || true)
           if [ "$count" != "1" ]; then
-            echo "::error::Expected 1 'use setProperty' marker in the CLI bundle, found $count — the expression registry was tree-shaken."
+            echo "::error::Expected 1 addProperty error-message marker in the CLI bundle, found $count — the expression registry was tree-shaken."
             exit 1
           fi
           cat > ci-smoke.ff.ts <<'EOF'

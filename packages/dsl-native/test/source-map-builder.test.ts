@@ -6,7 +6,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FlowIR } from '@flowforger/ir';
@@ -153,7 +153,8 @@ class T {
         else if (f.endsWith('.ff.ts')) files.push(p);
       }
     };
-    walk(join(REPO, 'conformance', 'flows'));
+    // The public mirror ships without the conformance folder; the examples alone are over 50.
+    if (existsSync(join(REPO, 'conformance', 'flows'))) walk(join(REPO, 'conformance', 'flows'));
     walk(join(REPO, 'examples'));
     assert.ok(files.length > 50, `expected the flow corpus, found ${files.length} files`);
 

@@ -40,9 +40,11 @@ function typeErrors(label: string, uri: string, text: string): string[] {
 }
 
 const files = flowFiles(FLOWS);
+// The public mirror ships without the conformance folder; these tests are skipped there.
+const skip = !existsSync(FLOWS) && 'conformance/flows is not in this checkout';
 const label = (file: string) => file.slice(FLOWS.length + 1).replace(/\\/g, '/');
 
-test('conformance flows type-check against the editor typings', () => {
+test('conformance flows type-check against the editor typings', { skip }, () => {
   assert.ok(files.length > 0, `no flows found under ${FLOWS}`);
   const errors = files.flatMap((file) => typeErrors(label(file), pathToFileURL(file).href, readFileSync(file, 'utf8')));
   assert.deepEqual(errors, []);
@@ -56,7 +58,7 @@ async function roundTrip(file: string) {
   return { dsl, before, after: emitLogicAppsJson(transformCode(dsl)) as any };
 }
 
-test('conformance flows generated from Logic Apps JSON parse as TypeScript', async () => {
+test('conformance flows generated from Logic Apps JSON parse as TypeScript', { skip }, async () => {
   // Syntax errors only (TS1xxx): the generator writes expressions with typed ctx helpers, so a
   // probe that feeds a function a wrong type on purpose (length(5)) is a type error by design.
   const errors: string[] = [];
@@ -79,7 +81,7 @@ function leaves(v: unknown, path = '', out: Record<string, unknown> = {}): Recor
 /** Whitespace outside string literals does not change an expression. */
 const normalize = (v: unknown) => (typeof v === 'string' ? v.replace(/'(?:[^']|'')*'|\s+/g, (m) => (m.startsWith("'") ? m : '')) : v);
 
-test('conformance flows keep every expression through the web app round trip', async () => {
+test('conformance flows keep every expression through the web app round trip', { skip }, async () => {
   const changed: string[] = [];
   for (const file of files) {
     const { before, after } = await roundTrip(file);

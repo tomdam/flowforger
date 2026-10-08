@@ -1,12 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { validateLogicApps } from '../index.js';
 
 // Cases and the cloud's verdicts from conformance/save-rules (node conformance/harness/save-rules.mjs
 // <set>). Loaded at runtime: the conformance folder is outside this package's rootDir. The
 // runafter-path set has its own test (runafter-path.test.ts), which also checks the messages.
+// The public mirror ships without the conformance folder; the cloud cases are skipped there.
 const saveRules = new URL('../../../../conformance/save-rules/', import.meta.url);
+const present = existsSync(saveRules);
 
 interface Case {
   id: string;
@@ -41,12 +43,14 @@ function logicApps(c: Case) {
 }
 
 for (const set of ['placement', 'structure', 'expressions']) {
-  const { cases } = (await import(new URL(`${set}.mjs`, saveRules).href)) as { cases: Case[] };
-  const cloud: Record<string, { accepted: boolean; error?: string }> = JSON.parse(
-    readFileSync(new URL(`${set}.cloud.json`, saveRules), 'utf8'),
-  );
+  const { cases } = present
+    ? ((await import(new URL(`${set}.mjs`, saveRules).href)) as { cases: Case[] })
+    : { cases: [] };
+  const cloud: Record<string, { accepted: boolean; error?: string }> = present
+    ? JSON.parse(readFileSync(new URL(`${set}.cloud.json`, saveRules), 'utf8'))
+    : {};
 
-  describe(`save rules match the cloud (conformance/save-rules/${set})`, () => {
+  describe(`save rules match the cloud (conformance/save-rules/${set})`, { skip: !present && 'conformance/save-rules is not in this checkout' }, () => {
     it('every case has a recorded cloud verdict', () => {
       assert.deepEqual(cases.map((c) => c.id).filter((id) => !cloud[id]), []);
     });

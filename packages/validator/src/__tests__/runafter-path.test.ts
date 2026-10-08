@@ -1,18 +1,22 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { validateFlowIR, validateLogicApps, type ValidationIssue } from '../index.js';
 import type { FlowIR } from '@flowforger/ir';
 
 // Cases and the cloud's verdicts from conformance/save-rules (node conformance/harness/save-rules.mjs).
-// Loaded at runtime: the conformance folder is outside this package's rootDir.
+// Loaded at runtime: the conformance folder is outside this package's rootDir. The public mirror
+// ships without it; the cloud cases are skipped there.
 const saveRules = new URL('../../../../conformance/save-rules/', import.meta.url);
-const { cases } = (await import(new URL('runafter-path.mjs', saveRules).href)) as {
-  cases: Array<{ id: string; note: string; actions: Record<string, unknown> }>;
-};
-const cloud: Record<string, { accepted: boolean; error?: string }> = JSON.parse(
-  readFileSync(new URL('runafter-path.cloud.json', saveRules), 'utf8'),
-);
+const present = existsSync(saveRules);
+const { cases } = present
+  ? ((await import(new URL('runafter-path.mjs', saveRules).href)) as {
+      cases: Array<{ id: string; note: string; actions: Record<string, unknown> }>;
+    })
+  : { cases: [] };
+const cloud: Record<string, { accepted: boolean; error?: string }> = present
+  ? JSON.parse(readFileSync(new URL('runafter-path.cloud.json', saveRules), 'utf8'))
+  : {};
 
 const REFERENCE_CODES = new Set(['EXPR_RUNAFTER_PATH', 'EXPR_SELF_REFERENCE', 'EXPR_UNKNOWN_ACTION']);
 const referenceIssues = (r: { issues: ValidationIssue[] }) => r.issues.filter((i) => REFERENCE_CODES.has(i.code));
@@ -32,7 +36,7 @@ function logicApps(actions: Record<string, unknown>) {
   };
 }
 
-describe('runAfter path rule matches the cloud (conformance/save-rules/runafter-path)', () => {
+describe('runAfter path rule matches the cloud (conformance/save-rules/runafter-path)', { skip: !present && 'conformance/save-rules is not in this checkout' }, () => {
   it('every case has a recorded cloud verdict', () => {
     assert.deepEqual(cases.map((c) => c.id).filter((id) => !cloud[id]), []);
   });

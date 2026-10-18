@@ -232,6 +232,22 @@ describe('structure rules in validateLogicApps', () => {
     assert.equal(codes(validateLogicApps(makeLA({ Post: action })), 'CONNECTION_REF_MISSING').length, 0);
   });
 
+  it("a 'not' with a string operand in an If condition → CONDITION_NOT_STRING (the cloud rejects it on save)", () => {
+    const cond = (expression: any) => ({ type: 'If', expression, actions: {}, else: { actions: {} }, runAfter: {} });
+    const bad = validateLogicApps(makeLA({ C: cond({ and: [{ not: "@empty(variables('v'))" }] }) }));
+    const e = codes(bad, 'CONDITION_NOT_STRING');
+    assert.equal(e.length, 1);
+    assert.equal(e[0].path, 'definition.actions.C.expression.and[0].not');
+    assert.match(e[0].message, /equals/);
+    const fine = validateLogicApps(makeLA({
+      A: cond({ and: [{ not: { equals: ["@variables('v')", 'x'] } }] }),
+      B: cond("@empty(variables('v'))"),
+      D: cond({ or: ["@empty(variables('v'))", { equals: ["@variables('v')", 'x'] }] }),
+      E: cond({ and: [{ equals: ["@not(empty(variables('v')))", true] }] }),
+    }));
+    assert.equal(codes(fine, 'CONDITION_NOT_STRING').length, 0);
+  });
+
   it('until without limit → UNTIL_LIMIT; terminate runError with Succeeded → TERMINATE_RUNERROR', () => {
     const r = validateLogicApps(makeLA({
       Poll: { type: 'Until', expression: '@true', actions: { X: laCompose() }, runAfter: {} },
@@ -315,5 +331,224 @@ describe('regressions found on the real-flow corpus', () => {
     const connector = { id: 'c1', type: 'connector', name: 'Get', connector: 'dataverse', operation: 'ListRows', params: { entityName: 'accounts' } };
     const r = validateFlowIR(ir([connector], recurrence));
     assert.deepEqual(r.issues.filter((i) => i.code === 'IR_TRIGGER' || i.code === 'IR_ACTIONS'), []);
+  });
+});
+
+describe('runAfter reachability (RUNAFTER_DEAD_STATUS / RUNAFTER_UNSATISFIABLE)', () => {
+  const tryCatch = () => [
+    scope('Try', [compose('Risky')]),
+    { ...scope('Catch', [compose('Error')]), runAfter: { Try: ['Failed'] } },
+  ];
+
+  it('a status that contradicts the other ANDed dependencies → RUNAFTER_DEAD_STATUS (warning)', () => {
+    const r = validateFlowIR(makeIR([
+      ...tryCatch(),
+      compose('Resolve', 1, { runAfter: { Catch: ['Succeeded', 'Skipped'], Try: ['Succeeded'] } }),
+    ]));
+    const dead = codes(r, 'RUNAFTER_DEAD_STATUS');
+    assert.equal(dead.length, 1);
+    assert.equal(dead[0].level, 'warning');
+    assert.equal(dead[0].path, 'nodes.Resolve');
+    assert.match(dead[0].message, /'Resolve' runs after 'Catch': Succeeded, but 'Catch' can never be Succeeded while/);
+    assert.match(dead[0].message, /'Try': Succeeded/);
+    assert.equal(codes(r, 'RUNAFTER_UNSATISFIABLE').length, 0);
+  });
+
+  it('no combination of statuses runs the action → RUNAFTER_UNSATISFIABLE, without per-status noise', () => {
+    const r = validateFlowIR(makeIR([
+      ...tryCatch(),
+      compose('Response', 1, { runAfter: { Try: ['Succeeded'], Catch: ['Succeeded'] } }),
+    ]));
+    const unsat = codes(r, 'RUNAFTER_UNSATISFIABLE');
+    assert.equal(unsat.length, 1);
+    assert.equal(unsat[0].level, 'warning');
+    assert.match(unsat[0].message, /'Response' can never run/);
+    assert.match(unsat[0].message, /ANDed/);
+    assert.equal(codes(r, 'RUNAFTER_DEAD_STATUS').length, 0);
+  });
+
+  it('a single dependency covering both paths, and a Finally scope, are clean', () => {
+    const r1 = validateFlowIR(makeIR([...tryCatch(), compose('Response', 1, { runAfter: { Catch: ['Succeeded', 'Skipped'] } })]));
+    assert.equal(codes(r1, 'RUNAFTER_DEAD_STATUS').length + codes(r1, 'RUNAFTER_UNSATISFIABLE').length, 0);
+    const r2 = validateFlowIR(makeIR([
+      ...tryCatch(),
+      { ...scope('Finally', [compose('Cleanup')]), runAfter: { Try: ['Succeeded', 'Failed', 'Skipped'] } },
+      compose('Response'),
+    ]));
+    // 'Skipped' can never hold for Try (it starts the flow) but that is harmless over-listing, not a contradiction.
+    assert.equal(codes(r2, 'RUNAFTER_DEAD_STATUS').length + codes(r2, 'RUNAFTER_UNSATISFIABLE').length, 0);
+  });
+
+  it('a fan-in of parallel branches is clean', () => {
+    const r = validateFlowIR(makeIR([
+      compose('A'),
+      compose('B', 1, { runAfter: {} }),
+      compose('Join', 1, { runAfter: { A: ['Succeeded'], B: ['Succeeded'] } }),
+    ]));
+    assert.equal(codes(r, 'RUNAFTER_DEAD_STATUS').length + codes(r, 'RUNAFTER_UNSATISFIABLE').length, 0);
+  });
+
+  it('a dead status is found through an implicit (sequential) predecessor and in nested groups', () => {
+    const r = validateFlowIR(makeIR([
+      scope('Outer', [
+        ...tryCatch(),
+        compose('Notify'), // implicit: after Catch Succeeded
+        compose('Resolve', 1, { runAfter: { Notify: ['Succeeded', 'Skipped'], Try: ['Succeeded'] } }),
+      ]),
+    ]));
+    const dead = codes(r, 'RUNAFTER_DEAD_STATUS');
+    assert.equal(dead.length, 1);
+    assert.match(dead[0].message, /'Notify': Succeeded/);
+  });
+
+  it('the same rule runs on Logic Apps JSON', () => {
+    const laCompose = (inputs: any = 1, runAfter: any = {}) => ({ type: 'Compose', inputs, runAfter });
+    const makeLA = (actions: Record<string, any>) => ({
+      properties: { definition: { $schema: 'x', contentVersion: '1.0.0.0', triggers: { manual: { type: 'Request', kind: 'Http', inputs: {} } }, actions } },
+    });
+    const r = validateLogicApps(makeLA({
+      Try: { type: 'Scope', actions: { Risky: laCompose() }, runAfter: {} },
+      Catch: { type: 'Scope', actions: { Error: laCompose() }, runAfter: { Try: ['Failed'] } },
+      Resolve: laCompose(1, { Catch: ['Succeeded', 'Skipped'], Try: ['Succeeded'] }),
+    }));
+    assert.equal(codes(r, 'RUNAFTER_DEAD_STATUS').length, 1);
+  });
+});
+
+
+describe('RUNAFTER_SKIPPED_ON_SUCCESS (no Response on the all-success path)', () => {
+  const response = (name: string, extra: any = {}) => ({ id: `act_${name}`, type: 'action', name, kind: 'response', inputs: { statusCode: 200, body: {} }, ...extra });
+  const tryCatch = (catchActions: any[] = [compose('Note_error')]) => [
+    scope('Try', [compose('Risky')]),
+    { ...scope('Catch', catchActions), runAfter: { Try: ['Failed'] } },
+  ];
+
+  it('a Response chained after a catch scope → warning', () => {
+    const r = validateFlowIR(makeIR([...tryCatch(), response('Respond')]));
+    const w = codes(r, 'RUNAFTER_SKIPPED_ON_SUCCESS');
+    assert.equal(w.length, 1);
+    assert.equal(w[0].level, 'warning');
+    assert.match(w[0].message, /'Respond' runs after 'Catch': Succeeded/);
+    assert.equal(w[0].path, 'nodes.Respond');
+  });
+
+  it('a Finally scope before the Response → no warning', () => {
+    const finallyScope = { ...scope('Finally', [compose('Cleanup')]), runAfter: { Try: ['Succeeded', 'Failed', 'Skipped'] } };
+    const r = validateFlowIR(makeIR([...tryCatch(), finallyScope, response('Respond')]));
+    assert.equal(codes(r, 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 0);
+  });
+
+  it('runAfter Catch: Succeeded, Skipped → no warning', () => {
+    const r = validateFlowIR(makeIR([...tryCatch(), response('Respond', { runAfter: { Catch: ['Succeeded', 'Skipped'] } })]));
+    assert.equal(codes(r, 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 0);
+  });
+
+  it('a Response in Try and another in Catch → no warning (one runs on success)', () => {
+    const nodes = [
+      scope('Try', [compose('Risky'), response('Respond_ok')]),
+      { ...scope('Catch', [response('Respond_error', { inputs: { statusCode: 500, body: {} } })]), runAfter: { Try: ['Failed'] } },
+    ];
+    assert.equal(codes(validateFlowIR(makeIR(nodes)), 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 0);
+  });
+
+  it('a Response inside an if branch may run → no warning', () => {
+    const ifNode = { id: 'if_1', type: 'if', name: 'Check', condition: "@equals(outputs('A'), 1)", actions: [response('Respond')], elseActions: [] };
+    assert.equal(codes(validateFlowIR(makeIR([compose('A'), ifNode])), 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 0);
+  });
+
+  it('a Response nested in a block chained after the catch → warning (the block is skipped on success)', () => {
+    const r = validateFlowIR(makeIR([...tryCatch(), scope('Answer', [response('Respond')])]));
+    assert.equal(codes(r, 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 1);
+  });
+
+  it('a flow without a Response → nothing', () => {
+    assert.equal(codes(validateFlowIR(makeIR([...tryCatch(), compose('Send_error_mail')])), 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 0);
+  });
+
+  it('Logic Apps JSON: a Response after the catch scope → warning', () => {
+    const def = {
+      triggers: { manual: { type: 'Request', kind: 'Http', inputs: {} } },
+      actions: {
+        Try: { type: 'Scope', runAfter: {}, actions: { Risky: { type: 'Compose', runAfter: {}, inputs: 1 } } },
+        Catch: { type: 'Scope', runAfter: { Try: ['Failed'] }, actions: { Note: { type: 'Compose', runAfter: {}, inputs: 1 } } },
+        Respond: { type: 'Response', kind: 'Http', runAfter: { Catch: ['Succeeded'] }, inputs: { statusCode: 200, body: {} } },
+      },
+    };
+    const r = validateLogicApps({ properties: { definition: def, connectionReferences: {} } });
+    assert.equal(codes(r, 'RUNAFTER_SKIPPED_ON_SUCCESS').length, 1);
+  });
+});
+
+describe('DV_LOOKUP_UNGUARDED (Dataverse Get a row by an optional lookup)', () => {
+  const dvGet = (name: string, recordId: string) => ({ id: `con_${name}`, type: 'connector', name, connector: 'dataverse', operation: 'GetItem', params: { entityName: 'cr_programs', recordId } });
+  const getPeriod = dvGet('Get_Period', "@triggerBody()?['periodId']");
+  const ifNode = (name: string, condition: string, actions: any[], elseActions: any[] = []) => ({ id: `if_${name}`, type: 'if', name, condition, actions, elseActions });
+
+  it('recordId from a lookup column of another action, unguarded → info', () => {
+    const r = validateFlowIR(makeIR([getPeriod, dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]));
+    const i = codes(r, 'DV_LOOKUP_UNGUARDED');
+    assert.equal(i.length, 1);
+    assert.equal(i[0].level, 'info');
+    assert.match(i[0].message, /'Get_Program' gets a row by the lookup column '_cr_program_value' of 'Get_Period'/);
+    assert.equal(i[0].path, 'nodes.Get_Program');
+    assert.equal(codes(r, 'DV_LOOKUP_UNGUARDED').some((x) => x.path === 'nodes.Get_Period'), false, 'a trigger value is not a lookup read');
+  });
+
+  it('inside an if whose condition mentions the same column of the same action → nothing (then or else branch)', () => {
+    const guarded = ifNode('Has_program', "@not(empty(body('Get_Period')?['_cr_program_value']))", [dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, guarded])), 'DV_LOOKUP_UNGUARDED').length, 0);
+    const inElse = ifNode('No_program', "@empty(body('Get_Period')?['_cr_program_value'])", [compose('None')], [dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, inElse])), 'DV_LOOKUP_UNGUARDED').length, 0);
+  });
+
+  it('an enclosing if on another column or another action does not count as the guard', () => {
+    const otherColumn = ifNode('Has_broker', "@empty(body('Get_Period')?['_cr_broker_value'])", [dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, otherColumn])), 'DV_LOOKUP_UNGUARDED').length, 1);
+    const otherAction = ifNode('Check', "@not(empty(outputs('Other')?['_cr_program_value']))", [dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, compose('Other'), otherAction])), 'DV_LOOKUP_UNGUARDED').length, 1);
+  });
+
+  it('a guard anywhere up the block chain counts, and the Customer lookuplogicalname check counts', () => {
+    const inner = scope('Work', [dvGet('Get_Program', "@body('Get_Period')?['_cr_program_value']")]);
+    const outer = ifNode('Has_program', "@not(empty(body('Get_Period')?['_cr_program_value']))", [inner]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, outer])), 'DV_LOOKUP_UNGUARDED').length, 0);
+    const customer = ifNode('Is_account', "@equals(body('Get_Period')?['_cr_customer_value@Microsoft.Dynamics.CRM.lookuplogicalname'], 'account')",
+      [dvGet('Get_Account', "@body('Get_Period')?['_cr_customer_value']")], [dvGet('Get_Contact', "@body('Get_Period')?['_cr_customer_value']")]);
+    assert.equal(codes(validateFlowIR(makeIR([getPeriod, customer])), 'DV_LOOKUP_UNGUARDED').length, 0);
+  });
+
+  it('a recordId that is not a lookup read, and other operations, are left alone', () => {
+    const nodes = [
+      getPeriod,
+      compose('Broker_id', "@body('Get_Period')?['_cr_broker_value']"),
+      dvGet('Get_Broker', "@outputs('Broker_id')"),
+      { id: 'con_List', type: 'connector', name: 'List', connector: 'dataverse', operation: 'ListRecords', params: { entityName: 'contacts', $filter: "_cr_program_value eq '@{body('Get_Period')?['_cr_program_value']}'" } },
+      { id: 'con_Sp', type: 'connector', name: 'Sp', connector: 'sharepoint', operation: 'GetItem', params: { dataset: 'x', table: 'y', id: "@body('Get_Period')?['_cr_program_value']" } },
+    ];
+    assert.equal(codes(validateFlowIR(makeIR(nodes)), 'DV_LOOKUP_UNGUARDED').length, 0);
+  });
+
+  it('Logic Apps JSON: the designer form outputs(...)?[body/_x_value] is recognised, guarded or not', () => {
+    const get = (recordId: string) => ({
+      type: 'OpenApiConnection', runAfter: {},
+      inputs: { host: { apiId: '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps', operationId: 'GetItem', connectionName: 'shared_commondataserviceforapps' }, parameters: { entityName: 'cr_programs', recordId } },
+    });
+    const period = get("@triggerBody()?['periodId']");
+    const unguarded = { triggers: { manual: { type: 'Request', kind: 'Http', inputs: {} } }, actions: { Get_Period: period, Get_Program: { ...get("@outputs('Get_Period')?['body/_cr_program_value']"), runAfter: { Get_Period: ['Succeeded'] } } } };
+    const r1 = validateLogicApps({ properties: { definition: unguarded, connectionReferences: { shared_commondataserviceforapps: {} } } });
+    assert.equal(codes(r1, 'DV_LOOKUP_UNGUARDED').length, 1);
+    const guarded = {
+      ...unguarded,
+      actions: {
+        Get_Period: period,
+        Has_program: {
+          type: 'If', runAfter: { Get_Period: ['Succeeded'] },
+          expression: { and: [{ not: { equals: ["@empty(outputs('Get_Period')?['body/_cr_program_value'])", true] } }] },
+          actions: { Get_Program: get("@outputs('Get_Period')?['body/_cr_program_value']") }, else: { actions: {} },
+        },
+      },
+    };
+    const r2 = validateLogicApps({ properties: { definition: guarded, connectionReferences: { shared_commondataserviceforapps: {} } } });
+    assert.equal(codes(r2, 'DV_LOOKUP_UNGUARDED').length, 0);
   });
 });

@@ -5,23 +5,23 @@
  * network. The client is described by the local `PushClient` interface rather
  * than imported from @flowforger/dataverse-sdk — DataverseClient satisfies it
  * structurally, and staying import-free keeps this module cheap to test.
+ * Which live flow is targeted is decided by `resolveFlowTarget`
+ * (./flow-target.ts), shared with `flowforger diff`.
  */
+import type { FlowForgerConfig } from '@flowforger/ir';
+import { resolveFlowTarget, PushError, type FlowLookupClient } from './flow-target.js';
+import { diffDefinitions, liveOnlyNames } from './definition-diff.js';
 
-/** A push failure that the CLI should report and exit 2 on, not a crash. */
-export class PushError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PushError';
-  }
-}
+export { PushError };
 
-export interface PushClient {
-  findFlowByName(name: string): Promise<{ match: { workflowid: string } | null; ambiguous: boolean }>;
+export interface PushClient extends FlowLookupClient {
   patchFlow(workflowId: string, payload: { clientdata: string }): Promise<unknown>;
   createFlow(
     payload: { name: string; clientdata: string; description?: string },
     opts?: { solutionUniqueName?: string },
   ): Promise<{ workflowid: string }>;
+  /** Only needed for --expect-clean (reads the live definition before patching). */
+  getFlow?(workflowId: string): Promise<{ clientdata?: string | null } | null>;
 }
 
 export interface PushInput {
@@ -38,6 +38,15 @@ export interface PushInput {
   solution?: string;
   /** True when --file was a .ts source; changes the wording of name errors. */
   isDsl: boolean;
+  /**
+   * Refuse to update a flow that has actions, triggers or parameters the
+   * local file lacks — the detectable half of "someone changed it in the
+   * designer since you pulled". A changed action cannot be told apart from
+   * a local edit, so it is not checked.
+   */
+  expectClean?: boolean;
+  /** Normalization config for --expect-clean's comparison. */
+  config?: FlowForgerConfig;
 }
 
 export type PushResult =
@@ -74,18 +83,7 @@ export async function runPush(
     );
   }
 
-  if (explicitId && decoratorWorkflowId && explicitId !== decoratorWorkflowId) {
-    log(`WARNING: --id ${explicitId} overrides decorator workflowId ${decoratorWorkflowId}`);
-  }
-
-  // 1 & 2: a known id — straight update
-  if (id) {
-    if (solution) log(SOLUTION_IGNORED);
-    await client.patchFlow(id, { clientdata });
-    return { action: 'patched', workflowId: id, matchedByName: false };
-  }
-
-  if (!flowName) {
+  if (!id && !flowName) {
     throw new PushError(
       input.isDsl
         ? 'Could not determine the flow name from the DSL. Add a name to @Flow({...}) or pass --id.'
@@ -94,30 +92,67 @@ export async function runPush(
     );
   }
 
-  // 3: resolve by name, unless --create says skip straight to creating
-  if (!input.create) {
-    const { match, ambiguous } = await client.findFlowByName(flowName);
-    if (ambiguous) {
-      throw new PushError(
-        `Multiple flows named '${flowName}' exist in this environment — pass --id to disambiguate which one to update`
-      );
-    }
-    if (match) {
-      if (solution) log(SOLUTION_IGNORED);
-      log(`Matched existing flow '${flowName}' (${match.workflowid})`);
-      await client.patchFlow(match.workflowid, { clientdata });
-      return { action: 'patched', workflowId: match.workflowid, matchedByName: true };
-    }
-    if (input.noCreate) {
-      throw new PushError(
-        `No flow named '${flowName}' found in this environment, and --no-create was passed`
-      );
-    }
+  // --create skips the lookup and goes straight to creating.
+  const target = input.create ? null : await resolveFlowTarget(client, input, log);
+
+  if (target) {
+    if (solution) log(SOLUTION_IGNORED);
+    if (input.expectClean) await assertLiveIsClean(client, target.workflowId, input);
+    await client.patchFlow(target.workflowId, { clientdata });
+    return { action: 'patched', workflowId: target.workflowId, matchedByName: target.matchedByName };
+  }
+
+  if (input.noCreate) {
+    throw new PushError(
+      `No flow named '${flowName}' found in this environment, and --no-create was passed`
+    );
   }
 
   const created = await client.createFlow(
-    { name: flowName, clientdata, ...(description ? { description } : {}) },
+    { name: flowName!, clientdata, ...(description ? { description } : {}) },
     { solutionUniqueName: solution },
   );
-  return { action: 'created', workflowId: created.workflowid, name: flowName, solution, lookedUp: !input.create };
+  return { action: 'created', workflowId: created.workflowid, name: flowName!, solution, lookedUp: !input.create };
+}
+
+/** `--expect-clean`: throw when the live flow holds something the local file lacks. */
+async function assertLiveIsClean(client: PushClient, workflowId: string, input: PushInput): Promise<void> {
+  if (!client.getFlow) throw new Error('--expect-clean needs a client that can read flows');
+  const live = await client.getFlow(workflowId);
+  if (!live?.clientdata) return; // nothing live to lose
+  let liveJson: unknown;
+  try {
+    liveJson = JSON.parse(live.clientdata);
+  } catch {
+    throw new PushError(`--expect-clean: the live flow's clientdata is not valid JSON; compare with flowforger diff`);
+  }
+  const report = diffDefinitions(liveJson, JSON.parse(input.clientdata), { config: input.config });
+  const missing = liveOnlyNames(report);
+  if (missing.length === 0) return;
+  throw new PushError(
+    `--expect-clean: the live flow has ${missing.length} item${missing.length === 1 ? '' : 's'} the local file lacks: ` +
+    `${missing.join(', ')}. Pull it first (flowforger pull --id ${workflowId} --auth) and merge, ` +
+    `run flowforger diff to see every difference, or push without --expect-clean to overwrite.`
+  );
+}
+
+/**
+ * One line describing a workflow record's state after a push, so a flow that
+ * is (still) Draft is never mistaken for a running one. statecode: 0 Draft,
+ * 1 Activated, 2 Suspended; statuscode: 1 Draft, 2 Activated, 3 Suspended.
+ */
+export function flowStateSummary(
+  statecode: number | undefined,
+  statuscode: number | undefined,
+  workflowId: string,
+): { active: boolean; text: string } {
+  const codes = `statecode ${statecode ?? '?'}, statuscode ${statuscode ?? '?'}`;
+  if (statecode === 1) return { active: true, text: `State: Activated (${codes})` };
+  if (statecode === 2) {
+    return { active: false, text: `State: Suspended (${codes}) — not running! Reactivate: flowforger activate --id ${workflowId} --auth --state 1 --status 2` };
+  }
+  if (statecode === 0) {
+    return { active: false, text: `State: Draft (${codes}) — not running! Activate: flowforger activate --id ${workflowId} --auth --state 1 --status 2` };
+  }
+  return { active: false, text: `State: unknown (${codes})` };
 }

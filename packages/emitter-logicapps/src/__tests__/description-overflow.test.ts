@@ -31,7 +31,25 @@ describe('description overflow emission', () => {
     assert.equal(def.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY], undefined);
   });
 
-  it('emits a >255-char description as a 255-char excerpt with full text in metadata', () => {
+  it('emits a description at the 256-char cloud limit verbatim', () => {
+    const atLimit = 'a'.repeat(256);
+    assert.equal(MAX_ACTION_DESCRIPTION_LENGTH, 256);
+    const flow = baseFlow([
+      { id: 'trg_1', type: 'trigger', kind: 'http', name: 'manual', inputs: { method: 'POST' } },
+      {
+        id: 'act_1', type: 'action', kind: 'http', name: 'CallApi',
+        inputs: { method: 'GET', url: 'https://api.example.com/data' },
+        description: atLimit,
+      },
+    ]);
+
+    const json: any = emitLogicAppsJson(flow);
+    const def = json.properties.definition.actions.CallApi;
+    assert.equal(def.description, atLimit);
+    assert.equal(def.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY], undefined);
+  });
+
+  it('emits a >256-char description as a 256-char excerpt with full text in metadata', () => {
     assert.ok(LONG_DESCRIPTION.length > MAX_ACTION_DESCRIPTION_LENGTH);
     const flow = baseFlow([
       { id: 'trg_1', type: 'trigger', kind: 'http', name: 'manual', inputs: { method: 'POST' } },

@@ -24,6 +24,17 @@ export interface WordOnlineConnectorOptions {
 
 type LogFunction = (entry: Record<string, unknown>) => void;
 
+/**
+ * Binary content as the cloud connector hands it to the next action: the Logic Apps
+ * envelope `{ "$content-type": "...", "$content": "<base64>" }` and nothing else. The
+ * engine's base64()/string()/dataUri() and the other connectors' file inputs recognise
+ * exactly this shape — a differently-cased key or an extra key would make
+ * `base64(body('Populate_a_Microsoft_Word_template'))` encode the text "[object Object]".
+ */
+type BinaryContent = { '$content-type': string; '$content': string };
+
+const DOCX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 // Cross-platform base64 encoder for binary data. Uses Node's Buffer when
 // available (faster, safe for large files); falls back to a chunked btoa()
 // path in browsers, where Buffer does not exist.
@@ -227,12 +238,12 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
    * @param inputs.documentLibrary - Document library ID
    * @param inputs.fileId - Template file ID or path
    * @param inputs.templateData - Object with field names and values to populate
-   * @returns Generated Word document as base64 content
+   * @returns The generated Word document as binary content (`{ $content-type, $content }`)
    */
   private async populateWordTemplate(
     inputs: Record<string, unknown>,
     ctx: RunContext
-  ): Promise<{ $content: string; $contentType: string; fileName?: string }> {
+  ): Promise<BinaryContent> {
     const location = String(inputs.location || 'me');
     const documentLibrary = inputs.documentLibrary ? String(inputs.documentLibrary) : undefined;
     const fileId = String(inputs.fileId);
@@ -275,11 +286,7 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
       ctx.log
     );
 
-    return {
-      $content: processedContent.content,
-      $contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      fileName: processedContent.fileName,
-    };
+    return { '$content-type': DOCX_CONTENT_TYPE, '$content': processedContent.content };
   }
 
   /**
@@ -432,12 +439,12 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
    * @param inputs.documentLibrary - Document library ID
    * @param inputs.fileId - File ID or path
    * @param inputs.extractSensitivityLabel - Whether to extract sensitivity label
-   * @returns PDF document as base64 content
+   * @returns The PDF as binary content (`{ $content-type, $content }`)
    */
   private async convertToPdf(
     inputs: Record<string, unknown>,
     ctx: RunContext
-  ): Promise<{ $content: string; $contentType: string; fileName?: string }> {
+  ): Promise<BinaryContent> {
     const location = String(inputs.location || 'me');
     const documentLibrary = inputs.documentLibrary ? String(inputs.documentLibrary) : undefined;
     const fileId = String(inputs.fileId);
@@ -477,30 +484,7 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
     const arrayBuffer = await response.arrayBuffer();
     const content = uint8ToBase64(new Uint8Array(arrayBuffer));
 
-    // Get original filename to generate PDF name
-    let fileName = 'document.pdf';
-    try {
-      // Try to get file metadata for the name
-      const metadataResponse = await fetch(`https://graph.microsoft.com/v1.0${itemPath}`, {
-        headers: {
-          Authorization: `Bearer ${this['token']}`,
-        },
-      });
-      if (metadataResponse.ok) {
-        const metadata = await metadataResponse.json();
-        if (metadata.name) {
-          fileName = metadata.name.replace(/\.[^/.]+$/, '.pdf');
-        }
-      }
-    } catch {
-      // Ignore metadata errors, use default filename
-    }
-
-    return {
-      $content: content,
-      $contentType: 'application/pdf',
-      fileName,
-    };
+    return { '$content-type': 'application/pdf', '$content': content };
   }
 }
 

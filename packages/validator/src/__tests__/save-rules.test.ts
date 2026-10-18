@@ -42,15 +42,19 @@ function logicApps(c: Case) {
   };
 }
 
-for (const set of ['placement', 'structure', 'expressions']) {
-  const { cases } = present
+for (const set of ['placement', 'structure', 'expressions', 'conditions', 'descriptions']) {
+  // A set whose verdicts have not been recorded yet (no <set>.cloud.json) is skipped, not failed:
+  // record them with `node conformance/harness/save-rules.mjs <set>`.
+  const measured = present && existsSync(new URL(`${set}.cloud.json`, saveRules));
+  const { cases } = measured
     ? ((await import(new URL(`${set}.mjs`, saveRules).href)) as { cases: Case[] })
     : { cases: [] };
-  const cloud: Record<string, { accepted: boolean; error?: string }> = present
+  const cloud: Record<string, { accepted: boolean; error?: string }> = measured
     ? JSON.parse(readFileSync(new URL(`${set}.cloud.json`, saveRules), 'utf8'))
     : {};
 
-  describe(`save rules match the cloud (conformance/save-rules/${set})`, { skip: !present && 'conformance/save-rules is not in this checkout' }, () => {
+  const skip = !present ? 'conformance/save-rules is not in this checkout' : !measured ? `${set}.cloud.json has not been recorded yet` : false;
+  describe(`save rules match the cloud (conformance/save-rules/${set})`, { skip }, () => {
     it('every case has a recorded cloud verdict', () => {
       assert.deepEqual(cases.map((c) => c.id).filter((id) => !cloud[id]), []);
     });

@@ -10,6 +10,7 @@ Build Power Automate and Logic Apps flows as TypeScript — with IntelliSense, l
 - **Hover Documentation**: Rich documentation for methods and decorators
 - **Snippets**: 20+ code snippets for common patterns
 - **Syntax Highlighting**: Special highlighting for FlowForger decorators and methods
+- **Conditional Breakpoints**: Right-click a breakpoint → Edit Condition and enter a DSL-style expression (`item.Status === 'Rejected'`); the debugger pauses only when it is `true`. A condition that fails to evaluate or is not a boolean pauses anyway and says why in the Debug Console, so a typo never silently disarms the breakpoint.
 - **Edit & Continue**: While paused, edit the flow and press Restart (Ctrl+Shift+F5) — the run restarts under the hood, replaying recorded connector/HTTP responses (unchanged calls are never re-sent) and fast-forwarding back to the paused position or the first divergence. Restarting while not paused does a normal clean run.
 - **Set Next Statement**: While paused, right-click a line and choose "Jump to Cursor" to move the execution point — backward to re-execute with live connector calls, forward to skip. From a loop-iteration or branch-child pause, a backward jump restarts and replays up to the target instead (console variable edits are not preserved).
 

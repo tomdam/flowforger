@@ -11,6 +11,7 @@ import {
   DataverseClient,
   fetchEnvVarResolution,
   type EnvVarFlowLike,
+  type ResolvedEnvVar,
 } from '@flowforger/dataverse-sdk';
 
 export interface ResolveRunOverridesOptions {
@@ -21,12 +22,28 @@ export interface ResolveRunOverridesOptions {
   explicitOverrides?: Record<string, unknown>;
   /** Diagnostics sink (the CLI passes console.error to keep stdout clean). */
   log?: (msg: string) => void;
+  /** Print secret-looking values in the log (`--verbose`); by default they are redacted. */
+  showSecrets?: boolean;
+}
+
+/** Dataverse environment variable type code for a Secret (Azure Key Vault reference). */
+const ENV_VAR_TYPE_SECRET = 100000005;
+const SECRET_NAME = /key|secret|password|passwd|pwd|token|credential/i;
+
+/**
+ * Whether an env var's value must stay out of logs: a Secret-typed definition,
+ * or a name that says it holds one (`brk_DocxCleanupFunctionKey`). Agents and
+ * CI capture stderr into files and transcripts, so the default errs on redacting.
+ */
+export function isSecretEnvVar(r: Pick<ResolvedEnvVar, 'schemaName' | 'displayName' | 'type'>): boolean {
+  if (r.type === ENV_VAR_TYPE_SECRET) return true;
+  return SECRET_NAME.test(r.schemaName) || SECRET_NAME.test(r.displayName ?? '');
 }
 
 export async function resolveRunParameterOverrides(
   opts: ResolveRunOverridesOptions
 ): Promise<Record<string, unknown> | undefined> {
-  const { ir, dvUrl, dvToken, explicitOverrides, log = () => {} } = opts;
+  const { ir, dvUrl, dvToken, explicitOverrides, log = () => {}, showSecrets = false } = opts;
   if (!dvUrl || !dvToken) return explicitOverrides;
 
   try {
@@ -40,10 +57,13 @@ export async function resolveRunParameterOverrides(
           `[WARN] Env var '${r.schemaName}' has no value or default in this environment — the flow definition default will be used.`
         );
       } else {
-        const display = typeof r.value === 'string' ? r.value : JSON.stringify(r.value);
-        log(
-          `[INFO] Env var '${r.schemaName}' = ${display} (${r.source === 'value' ? 'set value' : 'definition default'})`
-        );
+        const source = r.source === 'value' ? 'set value' : 'definition default';
+        if (!showSecrets && isSecretEnvVar(r)) {
+          log(`[INFO] Env var '${r.schemaName}' = [redacted] (${source}; --verbose shows it)`);
+        } else {
+          const display = typeof r.value === 'string' ? r.value : JSON.stringify(r.value);
+          log(`[INFO] Env var '${r.schemaName}' = ${display} (${source})`);
+        }
       }
     }
 

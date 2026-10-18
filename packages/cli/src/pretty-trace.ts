@@ -1,5 +1,7 @@
 // ── Pretty trace rendering for `run` ─────────────────────────────────────────
 
+import { loopItemLabel } from '@flowforger/cloud-run';
+
 type Paint = (s: string) => string;
 type Palette = Record<'green' | 'red' | 'yellow' | 'cyan' | 'dim' | 'bold', Paint>;
 
@@ -26,22 +28,6 @@ function summarizeValue(value: any, max = 100): string {
   if (s === '{}' || s === '[]') return '';
   if (s.length > max) s = s.slice(0, max - 1) + '…';
   return s;
-}
-
-/** Fields that name a record, in the order connectors tend to use them. */
-const LABEL_FIELDS = ['Title', 'title', 'DisplayName', 'displayName', 'Name', 'name', 'Subject', 'subject'];
-
-/**
- * A loop item's label. A connector record (SharePoint item, Dataverse row, Graph object)
- * serializes starting with metadata like `{"Author":{"@odata.type":…`, so name it by its
- * title-like field instead; anything else falls back to its JSON.
- */
-function iterationLabel(item: any): string {
-  if (item && typeof item === 'object' && !Array.isArray(item)) {
-    const field = LABEL_FIELDS.find((f) => typeof item[f] === 'string' || typeof item[f] === 'number');
-    if (field) return summarizeValue(item[field], 40);
-  }
-  return summarizeValue(item, 40);
 }
 
 /**
@@ -89,7 +75,7 @@ function formatTraceEntry(entry: any, indent: number, clr: Palette, out: string[
       `${pad}${traceStatusIcon(entry.status, clr)} ${clr.bold(entry.name)} ${clr.dim(`— ${n} iteration${n === 1 ? '' : 's'}`)}`
     );
     for (const it of entry.iterations) {
-      const label = it.item !== undefined ? iterationLabel(it.item) : `#${it.index}`;
+      const label = it.item !== undefined ? loopItemLabel(it.item) : `#${it.index + 1}`;
       out.push(`${pad}  ${clr.cyan(`[${it.index + 1}/${n}]`)} ${clr.dim(label)}`);
       for (const a of it.actions ?? []) formatTraceEntry(a, indent + 2, clr, out);
     }
@@ -97,7 +83,7 @@ function formatTraceEntry(entry: any, indent: number, clr: Palette, out: string[
   } else {
     const summary = summarizeOutputs(entry.outputs);
     out.push(
-      `${pad}${traceStatusIcon(entry.status, clr)} ${clr.bold(entry.name)}${summary ? ` ${clr.dim('→ ' + summary)}` : ''}`
+      `${pad}${traceStatusIcon(entry.status, clr)} ${clr.bold(entry.name)}${summary ? ` ${clr.dim('→ ' + summary)}` : ''}${entry.mocked ? ` ${clr.cyan('(mocked)')}` : ''}`
     );
     if (entry.status === 'Failed' && entry.error) {
       const msg =
@@ -136,7 +122,9 @@ export function formatPrettyRunResult(flowName: string, result: any, options: { 
   if (result.status === 'Succeeded') {
     out.push(`${clr.green(clr.bold('✓ Flow succeeded'))} ${clr.dim(`— ${n} action${n === 1 ? '' : 's'} executed`)}`);
   } else if (result.status === 'Cancelled') {
-    out.push(`${clr.yellow(clr.bold('⊘ Flow cancelled'))} ${clr.dim('— by a Terminate action')}`);
+    const flag = result.stoppedBefore?.reason === 'live' ? '--live' : '--stop-before';
+    const why = result.stopped ? `— stopped before '${result.stoppedBefore?.name ?? '?'}' (${flag})` : '— by a Terminate action';
+    out.push(`${clr.yellow(clr.bold('⊘ Flow cancelled'))} ${clr.dim(why)}`);
   } else {
     // A Terminate's runError is a plain { code, message } object.
     const err = result.error;

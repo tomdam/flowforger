@@ -268,10 +268,18 @@ Name resolution is a convenience, not a substitute for an id. It refuses to act 
 Change flow state in Dataverse.
 
 ```bash
+# With a token
 flowforger activate --id <workflow-id> \
   --url https://org.crm.dynamics.com --token <AAD_TOKEN> \
   --state 1 --status 2
+
+# With --auth (URL and credentials from flowforger.config.json)
+flowforger activate --id <workflow-id> --auth --state 1 --status 2
 ```
+
+Activate = `--state 1 --status 2`, Draft = `--state 0 --status 1`. `push` never changes a flow's state,
+and a trigger change pushed to an active flow may need a deactivate + activate afterwards so the
+trigger's webhook is re-registered.
 
 ### `optimize`
 

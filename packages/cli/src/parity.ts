@@ -30,31 +30,37 @@ export interface ParityResult {
   differences?: ParityDifference[];
 }
 
-interface SemanticDiff {
+export interface SemanticDiff {
   path: string;
   type: 'missing_in_output' | 'extra_in_output' | 'value_mismatch' | 'type_mismatch';
   originalValue?: any;
   outputValue?: any;
 }
 
+const NO_KEYS: ReadonlySet<string> = new Set();
+/** Marker passed as `parentType` while inside a `metadata` object. */
+const METADATA_PARENT = '@@metadata';
+
 /**
  * Remove fields that are expected to differ (metadata IDs, etc.) and normalize
  * empty runAfter, default do-until limits, increment/decrement values, and
  * description whitespace so they compare equal across a round-trip.
  */
-function removeIgnoredFields(o: any, parentType?: string): any {
-  if (Array.isArray(o)) return o.map(item => removeIgnoredFields(item, parentType));
+function removeIgnoredFields(o: any, parentType?: string, skipMetadataKeys: ReadonlySet<string> = NO_KEYS): any {
+  if (Array.isArray(o)) return o.map(item => removeIgnoredFields(item, parentType, skipMetadataKeys));
   if (o && typeof o === 'object') {
     const result: any = {};
     const currentType = o.type;
     for (const key of Object.keys(o)) {
       // Skip operationMetadataId as it's regenerated each time
       if (key === 'operationMetadataId') continue;
+      // The config's parser.skipMetadataFields (what the parser drops on pull)
+      if (parentType === METADATA_PARENT && skipMetadataKeys.has(key)) continue;
       // The default connector authentication is dropped by the parser and
       // re-injected by the emitter, so its presence/absence is not meaningful.
       // Older portal exports omit it entirely; only non-default values compare.
       if (key === 'authentication' && o[key] === "@parameters('$authentication')") continue;
-      const cleaned = removeIgnoredFields(o[key], currentType);
+      const cleaned = removeIgnoredFields(o[key], key === 'metadata' ? METADATA_PARENT : currentType, skipMetadataKeys);
       // Skip undefined/null values - they're semantically equivalent to absent
       if (cleaned === undefined || cleaned === null) {
         continue;
@@ -91,6 +97,7 @@ function removeIgnoredFields(o: any, parentType?: string): any {
       // of each embedded line — DSL JSDoc format can't preserve trailing spaces
       if (key === 'description' && typeof cleaned === 'string') {
         result[key] = cleaned
+          .replace(/\r\n/g, '\n')
           .split('\n')
           .map((line: string) => line.replace(/[ \t]+$/, ''))
           .join('\n')
@@ -506,7 +513,7 @@ function unflattenParameterKeys(obj: any): any {
   return obj;
 }
 
-function findSemanticDiffs(original: any, output: any, path: string = ''): SemanticDiff[] {
+export function findSemanticDiffs(original: any, output: any, path: string = ''): SemanticDiff[] {
   const diffs: SemanticDiff[] = [];
 
   // Handle null/undefined
@@ -608,6 +615,39 @@ function categorizeByPath(diffs: SemanticDiff[]): string {
 }
 
 /**
+ * Bring a Logic Apps definition into the comparable form `parity` and `diff`
+ * share: ignored fields dropped (operationMetadataId, the config's
+ * `parser.skipMetadataFields`, the default `$authentication`/`$connections`,
+ * empty runAfter), numbers and type names normalized, expression whitespace,
+ * function case and `items('x')`/`item()` normalized per `config.parity`, and
+ * `item/field` parameter keys unflattened. Key order never matters: the result
+ * is compared structurally.
+ */
+export function normalizeDefinition(definition: any, config: FlowForgerConfig): any {
+  const skipMetadataKeys = new Set(config.parser?.skipMetadataFields ?? []);
+  let normalized = removeIgnoredFields(definition, undefined, skipMetadataKeys);
+
+  const parityConfig: Required<ParityConfig> = {
+    ...DEFAULT_PARITY_CONFIG,
+    ...config.parity,
+  };
+
+  // Apply number normalization (converts 100.00 -> 100, etc.)
+  if (parityConfig.normalizeNumbers) {
+    normalized = normalizeNumbers(normalized);
+  }
+
+  // Normalize type names (String -> string, Boolean -> boolean, etc.)
+  normalized = normalizeTypeCase(normalized);
+
+  // Normalize expression whitespace and function case for comparison (in-memory only)
+  normalized = normalizeExpressionsInObject(normalized, parityConfig);
+
+  // Normalize parameter flattening (item/field: val <-> item: { field: val })
+  return unflattenParameterKeys(normalized);
+}
+
+/**
  * Run the parity round-trip on Logic Apps JSON and report semantic differences.
  *
  * Pipeline: Logic Apps JSON → IR → DSL → IR → Logic Apps JSON, then normalize
@@ -649,33 +689,8 @@ export function checkParity(json: any, opts: { flowName?: string; config: FlowFo
   const emitted = emitLogicAppsJson(ir);
   const outputDefinition = emitted.properties.definition;
 
-  // Remove ignored fields before comparison
-  let actualNormalized = removeIgnoredFields(inputDefinition);
-  let expectedNormalized = removeIgnoredFields(outputDefinition);
-
-  // Get parity config with defaults
-  const parityConfig: Required<ParityConfig> = {
-    ...DEFAULT_PARITY_CONFIG,
-    ...config.parity,
-  };
-
-  // Apply number normalization (converts 100.00 -> 100, etc.)
-  if (parityConfig.normalizeNumbers) {
-    actualNormalized = normalizeNumbers(actualNormalized);
-    expectedNormalized = normalizeNumbers(expectedNormalized);
-  }
-
-  // Normalize type names (String -> string, Boolean -> boolean, etc.)
-  actualNormalized = normalizeTypeCase(actualNormalized);
-  expectedNormalized = normalizeTypeCase(expectedNormalized);
-
-  // Normalize expression whitespace and function case for comparison (in-memory only)
-  actualNormalized = normalizeExpressionsInObject(actualNormalized, parityConfig);
-  expectedNormalized = normalizeExpressionsInObject(expectedNormalized, parityConfig);
-
-  // Normalize parameter flattening (item/field: val ↔ item: { field: val })
-  actualNormalized = unflattenParameterKeys(actualNormalized);
-  expectedNormalized = unflattenParameterKeys(expectedNormalized);
+  const actualNormalized = normalizeDefinition(inputDefinition, config);
+  const expectedNormalized = normalizeDefinition(outputDefinition, config);
 
   // Find semantic differences
   const semanticDiffs = findSemanticDiffs(actualNormalized, expectedNormalized);

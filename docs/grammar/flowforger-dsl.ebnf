@@ -113,7 +113,7 @@ flow_statement   =
       | scope_stmt ) ;
       (* Any other TypeScript statement is not lowered to IR. A leading plain
          (non-JSDoc) comment above a statement is captured as the action's
-         `description` — any length; over 255 chars it is emitted as an excerpt
+         `description` — any length; over 256 chars it is emitted as an excerpt
          with the full text preserved in action metadata (conformance.md R9). *)
 
 

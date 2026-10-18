@@ -40,6 +40,14 @@ export interface TransformContext {
    * to track per-step execution, so collisions would silently skip steps.
    */
   usedActionNames: Set<string>;
+  /**
+   * `const x = <expression>` bindings (no await, no action call): the identifier is an alias and
+   * every read of it is replaced by the transformed initializer, so
+   * `const name = ctx.triggerBody()?.['name']; if (!ctx.empty(name))` compiles to
+   * `not(empty(triggerBody()?['name']))` instead of a bare `@name` the cloud cannot resolve.
+   * Values are expressions without the leading `@`.
+   */
+  constAliases?: Map<string, string>;
 }
 
 export function createTransformContext(): TransformContext {
@@ -48,6 +56,7 @@ export function createTransformContext(): TransformContext {
     referencedParameters: new Set(),
     variableOriginalNames: new Map(),
     usedActionNames: new Set(),
+    constAliases: new Map(),
   };
 }
 
@@ -977,6 +986,12 @@ function transformIdentifier(node: Identifier, ctx: TransformContext, isRoot = t
   // Check if this is a tracked variable
   if (ctx.trackedVariables.has(name)) {
     return maybePrefix(`variables('${name}')`);
+  }
+
+  // A `const x = <expression>` alias: inline the expression it was bound to
+  const alias = ctx.constAliases?.get(name);
+  if (alias !== undefined) {
+    return maybePrefix(alias);
   }
 
   // Return as-is (might be a parameter or external reference)

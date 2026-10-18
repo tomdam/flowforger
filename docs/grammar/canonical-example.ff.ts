@@ -22,7 +22,7 @@
  * external status, and responds — with a try/catch/finally around the risky call.
  */
 
-// File-level JSDoc above the class becomes the flow description (<= 255 chars, rule R9).
+// File-level JSDoc above the class becomes the flow description (any length, rule R9).
 /**
  * Validate an incoming order, enrich it from SharePoint, process each line item,
  * and respond with the result. Demonstrates the full recognized subset.
@@ -134,8 +134,7 @@ class CanonicalOrderFlow {
     // ---- Array merge: NO brace-interpolation wrapping (rule R10) -------------
     // ctx.union(...) emits a bare union(...) expression which PRESERVES the array type.
     // Wrapping it in ctx.braced() (brace interpolation) would stringify it and break any
-    // downstream array use. This comment becomes the action's description, which is why
-    // it spells the syntax out in words instead of writing it literally (rule R15).
+    // downstream array use.
     await ctx.compose('All_skus', ctx.union(skuList, ctx.outputs('Normalize_order')?.['extraSkus'] ?? []));
 
     // ---- Try / Catch / Finally (rule R6) ------------------------------------

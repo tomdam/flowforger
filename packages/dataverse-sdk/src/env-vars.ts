@@ -53,6 +53,8 @@ export interface ResolvedEnvVar {
   displayName?: string;
   /** Coerced runtime value; undefined when unresolved. */
   value?: unknown;
+  /** The definition's type code (100000005 = Secret), when the definition was found. */
+  type?: number;
   /**
    * 'value' = a current value record exists; 'default' = definition's current
    * default; 'unresolved' = neither found (the engine keeps the IR snapshot).
@@ -140,6 +142,7 @@ export function resolveEnvVarValues(
       parameterName,
       schemaName,
       displayName: def.displayname,
+      type: def.type,
       value: coerceValue(raw, def.type),
       source: hasValue ? ('value' as const) : ('default' as const),
     };

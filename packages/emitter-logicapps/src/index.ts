@@ -378,10 +378,14 @@ function expressionToCondition(expr: string, topLevel = true): any {
     return { [funcName]: convertedArgs };
   }
 
-  // Handle not - requires object format
+  // Handle not - requires object format. The cloud rejects a string operand on save
+  // ("The object expression property name 'not' ... has a parameter of type 'String' which is
+  // not supported. Only object and array are supported." — conformance/save-rules/conditions.mjs),
+  // so `not(empty(x))` becomes { not: { equals: ['@empty(x)', true] } }, the designer's own shape.
   if (funcName === 'not') {
     if (args.length === 1) {
-      return { not: expressionToCondition(args[0], false) };
+      const operand = expressionToCondition(args[0], false);
+      return { not: typeof operand === 'string' ? { equals: [operand, true] } : operand };
     }
   }
 
@@ -843,8 +847,8 @@ function generateMetadataId(): string {
  * - If the node has existing metadata, use it
  * - If includeMetadata is true and there's no existing metadata, generate new
  *
- * Power Automate rejects descriptions longer than 255 characters, so a longer
- * description (e.g. commented-out DSL code) is emitted as a 255-char excerpt with
+ * Power Automate rejects descriptions longer than 256 characters, so a longer
+ * description (e.g. commented-out DSL code) is emitted as a 256-char excerpt with
  * the full text preserved in metadata under DESCRIPTION_OVERFLOW_METADATA_KEY —
  * parseLogicAppsToIR restores it, so long comments survive the cloud round-trip.
  */

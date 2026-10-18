@@ -324,6 +324,23 @@ await ctx.connectors.dataverse.GetItem('ActionName', {
 }, 'shared_commondataserviceforapps');
 ```
 
+A `recordId` that is null or empty (an optional lookup that is not set) fails the action with `WorkflowOperationParametersRuntimeMissingValue … may not be null or empty: 'recordId'` — in one production flow this was 170 of 184 failures. Guard the read with `if (!ctx.empty(<the lookup>))` and read the Skipped action's output with `?.[...]` afterwards (see [examples.md](examples.md#example-12-optional-lookup-with-a-fallback-dataverse)). A valid id of the wrong table (a contact id against `accounts`) is a 404 `Entity 'account' With Id = … Does Not Exist`.
+
+### What a Dataverse row looks like
+
+The body of GetItem/ListRecords rows (measured in the cloud; the local engine returns the same):
+
+| Column type | In the body | Read it as |
+|---|---|---|
+| Text, number, date | the raw value (`revenue: 1000000`, `createdon: '2026-10-17T08:00:00Z'`) | `body('Row')?['revenue']` |
+| **Choice / OptionSet, State, Status** | the **integer** option value (`brk_anrede: 200000001`, `statecode: 0`) — never the label | compare with the number: `if (ctx.body('Row')?.['brk_anrede'] === 200000001)`. A comparison with the label (`=== 'Herr'`) is always false and nobody notices. The label is in `body('Row')?['brk_anrede@OData.Community.Display.V1.FormattedValue']` |
+| **Lookup** | `_<name>_value` holding the GUID, plus three annotations: `_<name>_value@OData.Community.Display.V1.FormattedValue` (display name), `_<name>_value@Microsoft.Dynamics.CRM.lookuplogicalname` (target table, e.g. `account` or `contact` for a Customer lookup), `_<name>_value@Microsoft.Dynamics.CRM.associatednavigationproperty` | `body('Row')?['_parentcustomerid_value']` for the id; branch a Customer/polymorphic lookup on `…@Microsoft.Dynamics.CRM.lookuplogicalname` |
+| Empty lookup, empty column | the column is **absent** from the row (null columns are omitted), so a read gives `null` | `ctx.empty(...)` / `?? fallback` |
+| Boolean (Two options) | `true` / `false` | — |
+| Expanded relation (`$expand`) | a single-valued navigation is a nested object; a collection is an array under the navigation property, plus a `<nav>@odata.nextLink` sibling (null columns inside expanded rows are kept) | `body('Row')?['primarycontactid']?['fullname']` |
+
+Writes take the logical names: a lookup is set with `'<nav>@odata.bind': '/accounts(<guid>)'`, a Choice with its integer.
+
 ### CreateRecord
 ```typescript
 await ctx.connectors.dataverse.CreateRecord('ActionName', {
@@ -632,6 +649,22 @@ await ctx.connectors['teams'].PostMessageToConversation('PostToTeams', {
 }, 'shared_teams');
 ```
 
+## The authentication argument and `X-MS-APIM-Tokens`
+
+Every connector call takes an optional **fourth argument**, `authentication`, emitted as the action's `inputs.authentication`. You will meet it in pulled child flows:
+
+```typescript
+await ctx.connectors.sharepoint.GetItems('Get_items', { dataset: site, table: list }, 'shared_sharepointonline', {
+  type: 'Raw',
+  value: ctx.json(ctx.decodeBase64(ctx.triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey']
+});
+```
+
+- **What it is:** the "run-only user" connection pattern. When a parent flow calls a child flow whose connections are set to *Provided by run-only user*, the call carries the parent's connection tokens in the `X-MS-APIM-Tokens` trigger header, and each child action authenticates with that key instead of its own connection reference.
+- **Do:** keep it on every connector call in such a flow, and add the same argument to connector calls you create there — a call without it is emitted with the default `"@parameters('$authentication')"`, i.e. the child's own connection, which may not exist for the run-only user.
+- **Do not:** add it to a flow that is not called this way; without the header the expression fails in the cloud (`headers['X-MS-APIM-Tokens']` is a non-null-safe read).
+- **Locally:** `flowforger run` ignores the `authentication` argument entirely and authenticates with the tokens you pass (`--auth`, `--sp-token`, …), so a child flow runs locally without the header.
+
 ---
 
 ## Connection Reference Summary
@@ -654,5 +687,7 @@ All apiIds are prefixed with `/providers/Microsoft.PowerApps/apis/`.
 ctx.body('ActionName')                   // Full response body
 ctx.body('ActionName')?.['value']        // Array of items (list operations)
 ctx.body('ActionName')?.['ID']           // Specific property
-ctx.outputs('ActionName')?.['body/id']   // Via outputs path
+ctx.outputs('ActionName')?.['body/id']   // Via outputs path — same value as ctx.body('ActionName')?.['id']
 ```
+
+Both forms are equivalent (pulled flows use the slash path). A connector action that was **Skipped** answers `null` to every null-safe read, so `?? fallback` and `ctx.empty()` handle an optional read without a second condition; see [SKILL.md](SKILL.md#when-to-use-ctxbody-vs-ctxoutputs).

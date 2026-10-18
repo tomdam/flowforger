@@ -1,5 +1,6 @@
 export { DebugSession } from './debug-session.js';
 export type {
+  BreakpointEntry,
   DebugFrame,
   DebugCallbacks,
   ResumeAction,
@@ -7,6 +8,7 @@ export type {
   DebugSessionOptions,
   JumpResult,
   RunOutcome,
+  PausedCall,
 } from './debug-session.js';
 export type { DebugFlowSource, DebugHost } from './host.js';
 export { ConnectorCallLog, stableStringify, wrapConnectorsForRecording, wrapConnectorsForReplay, MAX_RECORDED_CALLS, MAX_RECORDED_RESPONSE_BYTES } from './replay.js';

@@ -117,8 +117,8 @@ async function validateDocument(document: TextDocument): Promise<void> {
   const symbolIndex = buildSymbolIndex(text);
   symbolIndexCache.set(document.uri, symbolIndex);
 
-  // Get diagnostics from language service
-  const dslDiagnostics = getDiagnostics(text);
+  // Get diagnostics from language service (syntax errors come from the embedded TS service below)
+  const dslDiagnostics = getDiagnostics(text, { checkSyntax: false });
 
   // Convert to LSP diagnostics
   const lspDiagnostics: LSPDiagnostic[] = dslDiagnostics.map((d) =>

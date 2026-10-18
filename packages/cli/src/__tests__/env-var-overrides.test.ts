@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRunParameterOverrides } from '../env-var-overrides.js';
+import { resolveRunParameterOverrides, isSecretEnvVar } from '../env-var-overrides.js';
 
 const flow = {
   name: 'Test',
@@ -123,5 +123,59 @@ describe('resolveRunParameterOverrides', () => {
     });
     assert.ok(logs.some((l) => l.includes('cr123_siteUrl')));
     assert.ok(logs.some((l) => l.includes('cr123_maxItems')));
+  });
+});
+
+describe('secret redaction in the env var log', () => {
+  const secretFlow = {
+    name: 'Secrets',
+    parameters: {
+      'Function Key (cr123_DocxCleanupFunctionKey)': { type: 'String', metadata: { schemaName: 'cr123_DocxCleanupFunctionKey' } },
+      'Vault Ref (cr123_vaultRef)': { type: 'String', metadata: { schemaName: 'cr123_vaultRef' } },
+      'Site URL (cr123_siteUrl)': { type: 'String', metadata: { schemaName: 'cr123_siteUrl' } },
+    },
+  };
+  const secretDefs = [
+    { environmentvariabledefinitionid: 'd-key', schemaname: 'cr123_DocxCleanupFunctionKey', displayname: 'Function Key', type: 100000000, defaultvalue: 'abc123-FUNCTION-KEY' },
+    { environmentvariabledefinitionid: 'd-vault', schemaname: 'cr123_vaultRef', displayname: 'Vault Ref', type: 100000005, defaultvalue: '/subscriptions/x/vaults/y/secrets/z' },
+    { environmentvariabledefinitionid: 'd-site', schemaname: 'cr123_siteUrl', displayname: 'Site URL', type: 100000000, defaultvalue: 'https://contoso.sharepoint.com' },
+  ];
+
+  it('redacts values whose name or type marks them as secrets, but still returns them as overrides', async () => {
+    stubDataverse(secretDefs, []);
+    const logs: string[] = [];
+    const result = await resolveRunParameterOverrides({
+      ir: secretFlow,
+      dvUrl: 'https://org.crm.dynamics.com',
+      dvToken: 'tok',
+      log: (m) => logs.push(m),
+    });
+    const joined = logs.join('\n');
+    assert.doesNotMatch(joined, /abc123-FUNCTION-KEY/);
+    assert.doesNotMatch(joined, /vaults\/y/);
+    assert.match(joined, /cr123_DocxCleanupFunctionKey' = \[redacted\]/);
+    assert.match(joined, /cr123_vaultRef' = \[redacted\]/);
+    assert.match(joined, /cr123_siteUrl' = https:\/\/contoso\.sharepoint\.com/);
+    assert.equal(result?.['Function Key (cr123_DocxCleanupFunctionKey)'], 'abc123-FUNCTION-KEY');
+  });
+
+  it('prints secrets when showSecrets is set (--verbose)', async () => {
+    stubDataverse(secretDefs, []);
+    const logs: string[] = [];
+    await resolveRunParameterOverrides({
+      ir: secretFlow,
+      dvUrl: 'https://org.crm.dynamics.com',
+      dvToken: 'tok',
+      log: (m) => logs.push(m),
+      showSecrets: true,
+    });
+    assert.match(logs.join('\n'), /abc123-FUNCTION-KEY/);
+  });
+
+  it('isSecretEnvVar matches by type and by name only', () => {
+    assert.equal(isSecretEnvVar({ schemaName: 'cr_siteUrl', type: 100000000 }), false);
+    assert.equal(isSecretEnvVar({ schemaName: 'cr_siteUrl', type: 100000005 }), true);
+    assert.equal(isSecretEnvVar({ schemaName: 'cr_ApiToken', type: 100000000 }), true);
+    assert.equal(isSecretEnvVar({ schemaName: 'cr_x', displayName: 'Client Secret', type: 100000000 }), true);
   });
 });

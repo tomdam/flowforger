@@ -8,8 +8,8 @@
  */
 
 import type { FlowIR, Node, ActionNode } from '@flowforger/ir';
-import type { RunContext, ExecuteNodeResult, ActionOutput, BaseConnector, TraceEntry } from '@flowforger/engine';
-import { childFlowCallResult, executeNode, evalExpression, run as runEngine, TopLevelRun, toTriggerOutputs, triggerRunInfo } from '@flowforger/engine';
+import type { RunContext, RunOptions, ExecuteNodeResult, ActionOutput, BaseConnector, TraceEntry, LoopIndex } from '@flowforger/engine';
+import { childFlowCallResult, executeNode, evalExpression, loopIndexes, run as runEngine, TopLevelRun, toTriggerOutputs, triggerRunInfo } from '@flowforger/engine';
 import type { StepResult } from '@flowforger/ir';
 import { buildExpressionScope, evaluateDebugInput } from '@flowforger/dsl-native';
 import type { DslSourceMap, ExpressionScope } from '@flowforger/dsl-native';
@@ -58,6 +58,27 @@ export interface DebugSessionOptions {
   shouldPauseBefore?: (node: Node) => boolean;
   /** When returning true, breakpoint-triggered pauses are disabled (fast-forward). */
   suppressBreakpoints?: () => boolean;
+  /**
+   * The engine's `RunOptions.mocks`: a map of outputs by action name, or a resolver (the pins of
+   * a replayed cloud run). A mocked node does not run; its result carries `mocked: true`.
+   */
+  mocks?: RunOptions['mocks'];
+  /**
+   * Safe mode. Consulted before a node runs — for connector, HTTP and child-flow actions once
+   * their inputs are resolved — unless a mock stands in for it. 'pause' pauses the session there
+   * (reason 'guard'; `getPausedCall()` gives the node and inputs): a resume runs the action live,
+   * a stop ends the session before it.
+   */
+  guard?: (node: Node, ctx: RunContext, inputs: unknown) => 'continue' | 'pause';
+}
+
+/** The external call a guard pause is waiting on. */
+export interface PausedCall {
+  nodeId: string;
+  name: string;
+  inputs?: unknown;
+  /** The enclosing loops' item indexes, outermost first (`loopIndexes`). */
+  iterationPath: Array<{ scopeName: string; itemIndex: number }>;
 }
 
 export interface IterationContextInfo {
@@ -76,12 +97,24 @@ interface FlattenedStep {
  * Each frame has its own source (IR + optional source map/DSL), context,
  * and step list.
  */
+/**
+ * One breakpoint as registered with the session. `iteration` restricts it to one loop
+ * iteration (outermost first; a prefix matches every inner iteration of that outer one), and
+ * `condition` — DSL style, evaluated like the console — must be `true` for the pause to happen.
+ */
+export interface BreakpointEntry {
+  nodeId: string;
+  line: number;
+  condition?: string;
+  iteration?: LoopIndex[];
+}
+
 export interface DebugFrame {
   source: DebugFlowSource;
   ctx: RunContext;
   steps: FlattenedStep[];
-  /** Breakpoints for this frame's source: nodeId -> line */
-  breakpoints: Map<string, number>;
+  /** Breakpoints for this frame's source: nodeId -> entry */
+  breakpoints: Map<string, BreakpointEntry>;
   /** The node ID in the parent flow that triggered this child flow */
   callerNodeId?: string;
 }
@@ -146,8 +179,8 @@ export class DebugSession {
   // Call stack for child flow debugging
   private callStack: DebugFrame[] = [];
 
-  // Breakpoints per source (normalized key -> Map<nodeId, line>)
-  private breakpointsPerKey = new Map<string, Map<string, number>>();
+  // Breakpoints per source (normalized key -> Map<nodeId, entry>)
+  private breakpointsPerKey = new Map<string, Map<string, BreakpointEntry>>();
 
   // Pause/resume
   private resumeResolver: ((action: ResumeAction) => void) | null = null;
@@ -164,6 +197,7 @@ export class DebugSession {
 
   // Current state for DAP queries
   private pausedNode: Node | null = null;
+  private pausedCall: PausedCall | null = null;
   private currentIterationContext: IterationContextInfo | null = null;
 
   // Innermost node currently executing (stack: top-level node, then nested
@@ -438,7 +472,7 @@ export class DebugSession {
       // shouldPauseBefore deactivates itself when it fires, so consulting it
       // again under the gate would silently drop the arrival pause.
       const pauseBefore = this.options?.shouldPauseBefore?.(node) ?? false;
-      const hasBreakpoint = breakpoints.has(node.id) && !this.options?.suppressBreakpoints?.();
+      const hasBreakpoint = this.breakpointHits(breakpoints.get(node.id), node, ctx, source);
       const entryPause = this.stopOnEntry && i === 0 && this.callStack.length === 0;
       if (pauseBefore || entryPause || hasBreakpoint || this.steppingMode === 'step') {
         // Gated like the engine-hook pause: a child-flow debugged inside a
@@ -506,6 +540,12 @@ export class DebugSession {
         const result = await this.executeStepNode(node, ctx, source);
         if (node.id === jumpTargetId) jumpTargetId = undefined;
 
+        // A guard stop: the node (or something inside it) did not run, and neither does the rest.
+        if (result._stopped) {
+          this.isStopped = true;
+          break;
+        }
+
         top.finished(node, result);
         ctx.variables = result.variables;
         handledIds.add(node.id);
@@ -557,7 +597,7 @@ export class DebugSession {
       // Stateful part evaluated exactly ONCE, before the gate (see the same
       // pattern in executeSteps): the fast-forward controller's
       // shouldPauseBefore deactivates itself when it fires.
-      const hasBreakpoint = breakpoints.has(childNode.id) && !this.options?.suppressBreakpoints?.();
+      const hasBreakpoint = this.breakpointHits(breakpoints.get(childNode.id), childNode, childCtx, source);
       const pauseBefore = this.options?.shouldPauseBefore?.(childNode) ?? false;
       if (childDebugMode === 'step' || hasBreakpoint || pauseBefore) {
         // Parallel foreach lanes reach this hook concurrently, so the pause is
@@ -650,12 +690,48 @@ export class DebugSession {
       return { handled: false };
     };
 
+    // Safe mode: pause before an unmocked external call with its resolved inputs. Gated like
+    // the other pauses (parallel foreach lanes reach this concurrently).
+    const onBeforeExecute = async (hookNode: Node, hookCtx: RunContext, inputs?: unknown): Promise<'continue' | 'stop'> => {
+      if (this.isStopped) return 'stop';
+      const guard = this.options?.guard;
+      if (!guard) return 'continue';
+      const mocks = this.options?.mocks;
+      const mocked = typeof mocks === 'function' ? mocks(hookNode, hookCtx, inputs) !== undefined : !!mocks && Object.prototype.hasOwnProperty.call(mocks, hookNode.name);
+      if (mocked) return 'continue';
+      if (guard(hookNode, hookCtx, inputs) !== 'pause') return 'continue';
+      const release = await this.acquirePauseGate();
+      try {
+        if (this.isStopped) return 'stop';
+        this.updateIterationContext(hookCtx, source);
+        this.pausedNode = hookNode;
+        this.pausedCall = { nodeId: hookNode.id, name: hookNode.name, ...(inputs !== undefined ? { inputs } : {}), iterationPath: loopIndexes(hookCtx) };
+        this.callbacks.onStopped('guard', hookNode.id);
+        const action = await this.waitForResume();
+        this.pausedCall = null;
+        if (action === 'stop') return 'stop';
+        const effective = action === 'jump' ? 'step' : action;
+        childDebugMode = effective;
+        this.steppingMode = effective;
+        return 'continue';
+      } finally {
+        release();
+      }
+    };
+
     return executeNode(node, ctx, {
       connectors: this.connectors,
       onBeforeChildExecute,
       onAfterChildExecute,
       onBeforeWorkflowExecute,
+      onBeforeExecute,
+      mocks: this.options?.mocks,
     });
+  }
+
+  /** The external call a safe-mode pause is waiting on (reason 'guard'), else null. */
+  getPausedCall(): PausedCall | null {
+    return this.pausedCall;
   }
 
   /**
@@ -780,7 +856,7 @@ export class DebugSession {
 
   // --- Breakpoint helpers ---
 
-  private getBreakpointsForKey(key: string): Map<string, number> {
+  private getBreakpointsForKey(key: string): Map<string, BreakpointEntry> {
     const norm = this.host.normalizeKey(key);
     let bps = this.breakpointsPerKey.get(norm);
     if (!bps) {
@@ -794,15 +870,48 @@ export class DebugSession {
     return this.getBreakpointsForKey(key).size > 0;
   }
 
-  setBreakpointsForSource(key: string, breakpointEntries: Array<{ nodeId: string; line: number }>): void {
+  setBreakpointsForSource(key: string, breakpointEntries: BreakpointEntry[]): void {
     // Mutate the existing map in place — never replace it. Execution loops
     // capture a reference to this map at start; replacing it would leave them
     // checking a stale snapshot and skip breakpoints added mid-run.
     const bpMap = this.getBreakpointsForKey(key);
     bpMap.clear();
     for (const bp of breakpointEntries) {
-      bpMap.set(bp.nodeId, bp.line);
+      bpMap.set(bp.nodeId, bp);
     }
+  }
+
+  /**
+   * Whether a breakpoint pauses before `node` in `ctx`. An `iteration` path must match the
+   * current loop indexes position by position (a shorter path matches every inner iteration);
+   * a `condition` must evaluate to exactly `true`. A condition that errors or yields a
+   * non-boolean pauses anyway and says so on the console — `evaluateDebugInput` never throws
+   * and a mistyped field name quietly evaluates to null, so silence would disarm the breakpoint.
+   */
+  private breakpointHits(entry: BreakpointEntry | undefined, node: Node, ctx: RunContext, source: DebugFlowSource): boolean {
+    if (!entry || this.options?.suppressBreakpoints?.()) return false;
+    if (entry.iteration) {
+      const current = loopIndexes(ctx);
+      const matches = entry.iteration.every((want, i) => current[i]?.scopeName === want.scopeName && current[i]?.itemIndex === want.itemIndex);
+      if (!matches) return false;
+    }
+    if (entry.condition !== undefined && entry.condition.trim() !== '') {
+      const outcome = evaluateDebugInput(
+        entry.condition,
+        this.getExpressionScopeForKey(source.key),
+        ctx,
+        (expr, c) => evalExpression(expr, { ...c, debugEvaluation: true }),
+      );
+      if (outcome.error !== undefined) {
+        this.callbacks.onOutput(`Breakpoint condition on ${node.name} could not be evaluated: ${outcome.error}`, 'console');
+        return true;
+      }
+      if (outcome.value === true) return true;
+      if (outcome.value === false) return false;
+      this.callbacks.onOutput(`Breakpoint condition on ${node.name} is not a boolean: ${outcome.result}`, 'console');
+      return true;
+    }
+    return true;
   }
 
   clearBreakpointsForSource(key: string): void {

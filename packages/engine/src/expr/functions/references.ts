@@ -77,7 +77,13 @@ register('action', (_args, { ctx }) => {
   };
 });
 
-register('item', (_args, { ctx }) => ctx.variables['item']);
+// Select, Filter array and table columns bind their row as `item`; elsewhere item() is the
+// current item of the innermost foreach (Until frames carry none), as in the cloud.
+register('item', (_args, { ctx }) => {
+  if ('item' in ctx.variables) return ctx.variables['item'];
+  const frame = [...(ctx.iterationStack ?? [])].reverse().find(f => 'item' in f);
+  return frame?.item;
+});
 
 register('items', (args, { ctx, ev }) => {
   const loopName = String(ev(args[0]));

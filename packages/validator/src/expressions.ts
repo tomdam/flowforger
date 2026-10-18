@@ -36,24 +36,62 @@ function truncate(s: string): string {
   return s.length > MAX_EXPR_IN_MESSAGE ? s.slice(0, MAX_EXPR_IN_MESSAGE) + '…' : s;
 }
 
+/**
+ * Check every expression in `value`: a Logic Apps `definition` or an IR `nodes` array.
+ *
+ * The `description` of the definition, a trigger or an action is a note, not an expression: the
+ * cloud saves "@word", "@{" and invalid syntax there as is (conformance/save-rules/descriptions.mjs),
+ * so it is skipped. A `description` anywhere else (inside inputs, a JSON schema) is still checked.
+ */
 export function collectExpressionIssues(value: unknown, basePath: string): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  walk(value, basePath, issues);
+  walk(value, basePath, issues, Array.isArray(value) ? 'list' : 'node');
   return issues;
 }
 
-function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
+/**
+ * Where a value sits in the definition tree: a trigger/action/definition (`node`), a Logic Apps
+ * name → node map (`map`), an IR node array (`list`), an else/default/case body holding `actions`
+ * (`branch`), a Logic Apps case map (`casemap`) or IR case array (`caselist`), or anything else.
+ */
+type Role = 'node' | 'map' | 'list' | 'branch' | 'casemap' | 'caselist' | 'other';
+
+function childRole(role: Role, key: string, child: unknown): Role {
+  const isArray = Array.isArray(child);
+  const isObject = !!child && typeof child === 'object' && !isArray;
+  switch (role) {
+    case 'map':
+      return 'node';
+    case 'casemap':
+      return 'branch';
+    case 'node':
+      if ((key === 'actions' || key === 'triggers') && isObject) return 'map';
+      if ((key === 'actions' || key === 'elseActions' || key === 'defaultActions') && isArray) return 'list';
+      if ((key === 'else' || key === 'default') && isObject) return 'branch';
+      if (key === 'cases') return isArray ? 'caselist' : isObject ? 'casemap' : 'other';
+      return 'other';
+    case 'branch':
+      if (key === 'actions') return isArray ? 'list' : isObject ? 'map' : 'other';
+      return 'other';
+    default:
+      return 'other';
+  }
+}
+
+function walk(value: unknown, path: string, issues: ValidationIssue[], role: Role = 'other'): void {
   if (typeof value === 'string') {
     checkString(value, path, issues);
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((v, i) => walk(v, `${path}[${i}]`, issues));
+    const itemRole: Role = role === 'list' ? 'node' : role === 'caselist' ? 'branch' : 'other';
+    value.forEach((v, i) => walk(v, `${path}[${i}]`, issues, itemRole));
     return;
   }
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value)) {
-      walk(v, `${path}.${k}`, issues);
+      if (role === 'node' && k === 'description') continue;
+      walk(v, `${path}.${k}`, issues, childRole(role, k, v));
     }
   }
 }

@@ -417,6 +417,21 @@ Actions **inside** the loop still run serially per iteration (correct — `Grant
 
 **Do NOT use parallel iterations when:** the body appends to an array variable via `.push()`, increments a counter, or otherwise mutates shared state — Power Automate's `AppendToArrayVariable` / `SetVariable` are not safe under concurrency. Such loops need `{"concurrency":{"repetitions":1}}`: leaving the setting out is not sequential in the cloud. The FlowForger optimizer warns about this pattern (see `packages/dsl-native/src/optimizer/patterns/parallelism-analyzer.ts`).
 
+#### Pagination (`@runtimeConfig`)
+
+A connector list action (SharePoint `GetItems`, Dataverse `ListRecords`, ...) returns one page unless pagination is on. Turn it on with `@runtimeConfig {"paginationPolicy":{"minimumItemCount":N}}` on the call — the designer's "Pagination" setting:
+
+```typescript
+/** @runtimeConfig {"paginationPolicy":{"minimumItemCount":5000}} */
+await ctx.connectors.dataverse.ListRecords('AllAccounts', {
+  entityName: 'accounts',
+  "$select": 'name',
+}, 'shared_commondataserviceforapps');
+// read it as ctx.body('AllAccounts')?.['value'] — never `const rows = await ctx....` (DSL032: the binding is dropped)
+```
+
+The local engine applies it the way the cloud does (measured by `conformance/flows/paging.ff.ts`): whole pages are followed until at least N items are collected (no cut, so N=150 on 100-item pages gives 200), and the output is `{ value: [...] }` without `@odata.nextLink`. Only the SharePoint and Dataverse connectors follow pages locally; on other connectors the setting is kept in the compiled flow but a local run returns the first page. A FetchXml query's paging cookie is never followed, locally or in the cloud.
+
 ### Do-Until Loop
 
 ```typescript
@@ -511,8 +526,19 @@ ctx.outputs('ComposeName')?.['property']
 ctx.body('HttpAction')?.['property']
 ctx.body('ConnectorAction')?.['value']
 
-// Full outputs path (works for any action type)
+// Full outputs path (works for any action type) — identical to ctx.body('ActionName')?.['property']
 ctx.outputs('ActionName')?.['body/property']
+```
+
+**`const` aliases.** `const name = ctx.triggerBody()?.['name']` creates no action; every later read of `name` inlines the expression (`@triggerBody()?['name']`), also inside conditions, template strings and loop bodies. Only `let`/`var` become flow variables. A `const` bound to an action call (`const r = await ctx.http(...)`) is an error (DSL032): read the action with `ctx.body('Name')` / `ctx.outputs('Name')` instead. Inside a `ctx.eval()` expression string an alias is not substituted — write the expression out.
+
+**Skipped actions read as null.** An action that did not run (untaken `if` branch, unmet `@runAfter`) answers `null` to every null-safe read (`?.['...']`, `ctx.body()`, `ctx.outputs()`), so `??`/`coalesce` and `ctx.empty()` treat it as missing; a non-null-safe `['...']` on it fails the reading action. See [SKILL.md](SKILL.md#when-to-use-ctxbody-vs-ctxoutputs).
+
+**`??` is `coalesce()`, and `coalesce` does not skip empty strings.** `a ?? 'x'` compiles to `coalesce(a, 'x')`, which returns the first value that is not `null` — `''` is a value. For "null or empty", test with `empty()`:
+
+```typescript
+ctx.body('Row')?.['name'] ?? 'n/a'                                    // null → 'n/a'; '' → ''
+ctx.if(ctx.empty(ctx.body('Row')?.['name']), 'n/a', ctx.body('Row')?.['name'])   // null or '' → 'n/a'
 ```
 
 ### Variables and Parameters

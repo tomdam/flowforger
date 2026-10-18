@@ -497,3 +497,70 @@ This pattern composes naturally with the other two big wins:
 - **Parallel branches** for upstream queries that build the source array, via `@runAfter <commonPredecessor>: Succeeded` (see [DSL Syntax → Parallel branches](dsl-syntax.md#parallel-branches-fan-out-via-runafter))
 
 Combined, these three patterns routinely cut flow runtime by 50–70% with no behavioural change.
+
+## Example 12: Optional Lookup with a Fallback (Dataverse)
+
+A lookup column that may be empty must not feed `GetItem` directly: a null `recordId` fails the action (see [connectors.md](connectors.md#getitem--retrieverecord)). Guard the read with an `if`, and rely on the rule that a **Skipped action reads as null** through `?.[...]` — so one `??` picks whichever read ran, with no second condition. `flowforger validate` points at an unguarded read: `DV_LOOKUP_UNGUARDED` (info) names a `GetItem` whose `recordId` is a `_x_value` column of another action with no enclosing `if` on that same value — fine for a required lookup, a bug waiting for an optional one.
+
+```typescript
+async run(ctx: FlowContext) {
+  await ctx.connectors.dataverse.GetItem('Get_Period', {
+    entityName: 'cr_periods',
+    recordId: ctx.triggerBody()?.['periodId']
+  }, 'shared_commondataserviceforapps');
+
+  // The period may carry its own broker; otherwise the broker comes from the parent program.
+  /** @action Period_has_no_broker */
+  if (ctx.empty(ctx.body('Get_Period')?.['_cr_broker_value'])) {
+    await ctx.connectors.dataverse.GetItem('Get_Program', {
+      entityName: 'cr_programs',
+      recordId: ctx.body('Get_Period')?.['_cr_program_value']
+    }, 'shared_commondataserviceforapps');
+  }
+
+  // Get_Program is Skipped when the period had a broker → its read is null → coalesce keeps the period's value
+  await ctx.compose('Broker_id', ctx.body('Get_Period')?.['_cr_broker_value'] ?? ctx.body('Get_Program')?.['_cr_broker_value']);
+
+  /** @action Broker_resolved */
+  if (!ctx.empty(ctx.outputs('Broker_id'))) {
+    await ctx.connectors.dataverse.GetItem('Get_Broker', {
+      entityName: 'contacts',
+      recordId: ctx.outputs('Broker_id')
+    }, 'shared_commondataserviceforapps');
+  }
+
+  // Null when no broker exists anywhere — every later read must stay null-safe
+  await ctx.compose('Broker_name', ctx.body('Get_Broker')?.['fullname'] ?? 'no broker');
+}
+```
+
+**Customer (polymorphic) lookup.** A Customer column points at an account *or* a contact. The row says which in the `lookuplogicalname` annotation; read the matching table in each branch and coalesce afterwards — remember the name column differs (`name` vs `fullname`):
+
+```typescript
+/** @action Customer_is_an_account */
+if (ctx.body('Get_Period')?.['_cr_customer_value@Microsoft.Dynamics.CRM.lookuplogicalname'] === 'account') {
+  await ctx.connectors.dataverse.GetItem('Get_Account', {
+    entityName: 'accounts',
+    recordId: ctx.body('Get_Period')?.['_cr_customer_value'],
+    '$select': 'name,emailaddress1'
+  }, 'shared_commondataserviceforapps');
+} else {
+  await ctx.connectors.dataverse.GetItem('Get_Contact', {
+    entityName: 'contacts',
+    recordId: ctx.body('Get_Period')?.['_cr_customer_value'],
+    '$select': 'fullname,emailaddress1,cr_salutation'
+  }, 'shared_commondataserviceforapps');
+}
+
+await ctx.compose('Customer_name', ctx.body('Get_Account')?.['name'] ?? ctx.body('Get_Contact')?.['fullname']);
+
+// A Choice column is a number — compare with the option value, never with its label
+/** @action Salutation_is_Mr */
+if (ctx.body('Get_Contact')?.['cr_salutation'] === 100000000) {
+  await ctx.compose('Greeting_Mr', 'Dear Mr');
+} else {
+  await ctx.compose('Greeting_default', 'Dear');
+}
+```
+
+Both `??` reads above compile to `coalesce(...)`, which treats `''` as a value; use `ctx.if(ctx.empty(x), fallback, x)` when an empty string must also fall back (see [dsl-syntax.md](dsl-syntax.md#action-outputs)).

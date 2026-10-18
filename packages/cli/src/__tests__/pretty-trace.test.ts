@@ -187,8 +187,8 @@ class StopFlow {
     assert.deepEqual(lines.slice(4, 11), [
       "  ✓ Get_open_invoices → 2 items",
       "  ✓ ForEach_invoice — 3 iterations",
-      '    [1/3] "INV-1041"',
-      '    [2/3] "Finance"',
+      '    [1/3] INV-1041',
+      '    [2/3] Finance',
       '    [3/3] {"a":1}',
       "  ✓ One → 1 item",
       '  ✓ NotACollection → {"value":[1],"other":true}',

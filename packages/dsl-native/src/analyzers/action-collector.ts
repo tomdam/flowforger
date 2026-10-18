@@ -106,8 +106,10 @@ export function parseActionNameFromJSDoc(statement: Statement | Node): string | 
   }
 
   // Parse @action tag
-  // Format: @action ActionName (may contain spaces, e.g. "Case 2"; stops at next @<word> tag or */)
-  const actionMatch = jsDocText.match(/@action\s+([\s\S]+?)(?=\s+@[a-zA-Z]|\s*\*\/|$)/);
+  // Format: @action ActionName (may contain spaces, e.g. "Case 2"; stops at the end of the line,
+  // the next @<word> tag or */). A note on the next line is not part of the name: the cloud
+  // rejects a name containing a newline.
+  const actionMatch = jsDocText.match(/@action[ \t]+([^\r\n]+?)(?=\s+@[a-zA-Z]|\s*\*\/|[ \t]*(?:\r?\n|$))/);
   return actionMatch ? actionMatch[1].trim() : undefined;
 }
 

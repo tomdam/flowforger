@@ -461,28 +461,54 @@ export function isRecurrenceTrigger(n: Node): n is RecurrenceTriggerNode {
 }
 
 /**
- * Power Automate rejects action/trigger descriptions longer than 255 characters.
+ * Power Automate rejects action/trigger descriptions longer than 256 characters on save
+ * ("exceeded the length limit: maximum '256'"; measured by conformance/save-rules/descriptions).
  * IR node descriptions are unbounded (DSL comments — including commented-out code —
- * map to them); the Logic Apps emitter emits a longer description as a 255-char
+ * map to them); the Logic Apps emitter emits a longer description as a 256-char
  * excerpt in `description` and preserves the full text in the action's metadata
  * under DESCRIPTION_OVERFLOW_METADATA_KEY, which parseLogicAppsToIR reads back.
+ * The flow-level `definition.description` has no such limit.
  */
-export const MAX_ACTION_DESCRIPTION_LENGTH = 255;
+export const MAX_ACTION_DESCRIPTION_LENGTH = 256;
+
+/** The limit the emitter used before it was measured (Oct 2026); flows pushed then carry 255-char excerpts. */
+const LEGACY_DESCRIPTION_EXCERPT_LENGTH = 255;
 
 export const DESCRIPTION_OVERFLOW_METADATA_KEY = 'flowforgerDescription';
 
 /**
- * The <=255-char excerpt the emitter puts in `description` for a long description.
+ * The <=256-char excerpt the emitter puts in `description` for a long description.
  * Deterministic so the parser can detect whether a cloud-side `description` still
  * matches the stored full text (a note edited in the Power Automate designer wins
  * over stale overflow metadata).
  */
-export function toDescriptionExcerpt(description: string): string {
-  if (description.length <= MAX_ACTION_DESCRIPTION_LENGTH) return description;
-  let cut = description.slice(0, MAX_ACTION_DESCRIPTION_LENGTH - 1);
+export function toDescriptionExcerpt(description: string, max: number = MAX_ACTION_DESCRIPTION_LENGTH): string {
+  if (description.length <= max) return description;
+  let cut = description.slice(0, max - 1);
   // Don't end on the high half of a split surrogate pair
   if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1);
   return cut + '…';
+}
+
+/** Whether a cloud-side `description` is still the emitter's excerpt of `full` (current or legacy length). */
+export function isDescriptionExcerptOf(description: unknown, full: string): boolean {
+  return description === toDescriptionExcerpt(full) || description === toDescriptionExcerpt(full, LEGACY_DESCRIPTION_EXCERPT_LENGTH);
+}
+
+/**
+ * The parts of an action/trigger name the cloud refuses on save: control characters and
+ * < > % & \ ? / ("The name cannot contain any control characters or any of the following
+ * symbols"), and "@{" ("The name of template action … is not defined or not valid"). Measured by
+ * conformance/save-rules/descriptions.mjs (the name-* cases); "@", braces, quotes and parentheses
+ * on their own are accepted.
+ */
+export function invalidActionNameParts(name: string): string[] {
+  const found = new Set<string>();
+  for (const ch of name) {
+    if (/[\u0000-\u001f\u007f-\u009f<>%&\\?/]/.test(ch)) found.add(ch);
+  }
+  if (name.includes('@{')) found.add('@{');
+  return [...found];
 }
 
 export * from './diff.js';

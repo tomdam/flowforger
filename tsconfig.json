@@ -19,6 +19,7 @@
     { "path": "packages/connectors-teams" },
     { "path": "packages/connectors-onedrive" },
     { "path": "packages/dataverse-sdk" },
+    { "path": "packages/cloud-run" },
     { "path": "packages/debug-core" },
     { "path": "packages/debug-node" },
     { "path": "packages/mcp-server" },

@@ -38,7 +38,7 @@ import type {
   ChildFlowDefinition,
 } from '@flowforger/ir';
 
-import { getLoggingConfig, getParserConfig, DESCRIPTION_OVERFLOW_METADATA_KEY, toDescriptionExcerpt } from '@flowforger/ir';
+import { getLoggingConfig, getParserConfig, DESCRIPTION_OVERFLOW_METADATA_KEY, isDescriptionExcerptOf } from '@flowforger/ir';
 
 // Module-level config storage for the current parse run
 let currentParserConfig: Required<ParserConfig> = getParserConfig();
@@ -68,7 +68,7 @@ function filterMetadata(metadata: Record<string, any> | undefined): Record<strin
 /**
  * Set a node's description from a parsed action/trigger definition.
  *
- * A description longer than Power Automate's 255-char limit is emitted as a truncated
+ * A description longer than Power Automate's 256-char limit is emitted as a truncated
  * excerpt in `description` with the full text (e.g. commented-out DSL code) preserved in
  * metadata under DESCRIPTION_OVERFLOW_METADATA_KEY. Prefer that full text — but only
  * while the excerpt still matches it: a note edited in the Power Automate designer no
@@ -76,7 +76,7 @@ function filterMetadata(metadata: Record<string, any> | undefined): Record<strin
  */
 function applyParsedDescription(node: any, def: any): void {
   const full = def.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY];
-  if (typeof full === 'string' && full && def.description === toDescriptionExcerpt(full)) {
+  if (typeof full === 'string' && full && isDescriptionExcerptOf(def.description, full)) {
     node.description = full;
   } else if (def.description) {
     node.description = def.description;

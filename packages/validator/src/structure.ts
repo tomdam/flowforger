@@ -1,4 +1,5 @@
 import type { FlowIR, Node } from '@flowforger/ir';
+import { invalidActionNameParts } from '@flowforger/ir';
 import { tryParseExpression, parseTemplateStrict, type ExprNode } from '@flowforger/expressions';
 import type { ValidationIssue } from './index.js';
 
@@ -87,6 +88,8 @@ interface Rec {
   caseCount?: number;
   /** A Switch's `expression` as authored. */
   switchExpression?: unknown;
+  /** An If's `expression` as authored (Logic Apps JSON only; IR conditions are expression strings). */
+  ifExpression?: unknown;
   until?: { actionCount: number; hasLimit: boolean; count?: unknown; timeout?: unknown };
   terminate?: { runStatus?: unknown; hasRunError: boolean };
   responseKind?: string;
@@ -96,6 +99,10 @@ interface Rec {
   targets?: string;
   /** OpenApiConnection connectionName (Logic Apps JSON only). */
   connectionName?: string;
+  /** A connector action's connector (`dataverse`, `sharepoint`, ...), operation id and parameters. */
+  connector?: { name: string; operation: string; params?: Record<string, unknown> };
+  /** An If's condition as text (the IR expression string, or the Logic Apps expression object serialized). */
+  conditionText?: string;
   /** Select / Filter array / Table: item() refers to the current element of `from`, no loop needed. */
   allowsItem?: boolean;
   /** The enclosing scope/condition/switch/loop, if any. */
@@ -207,6 +214,7 @@ function runRules(m: Model): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const err = (code: string, message: string, path?: string) => issues.push({ level: 'error', code, message, path });
   const warn = (code: string, message: string, path?: string) => issues.push({ level: 'warning', code, message, path });
+  const info = (code: string, message: string, path?: string) => issues.push({ level: 'info', code, message, path });
 
   // --- names -----------------------------------------------------------------------------------
   const byLowerName = new Map<string, Rec[]>();
@@ -227,6 +235,13 @@ function runRules(m: Model): ValidationIssue[] {
   for (const t of nameTargets) {
     if (t.name.length > LIMITS.nameLength) {
       err('ACTION_NAME_LENGTH', `${t.what} name '${t.name.slice(0, 40)}…' is ${t.name.length} characters; the limit is ${LIMITS.nameLength}.`, t.path);
+    }
+    const invalid = invalidActionNameParts(t.name);
+    if (invalid.length) {
+      err('ACTION_NAME_INVALID',
+        `${t.what} name ${JSON.stringify(t.name)} contains ${invalid.map((c) => JSON.stringify(c)).join(', ')}. ` +
+        `Power Automate rejects a name with control characters (a newline, a tab), any of < > % & \\ ? /, or "@{" on save.`,
+        t.path);
     }
   }
 
@@ -350,6 +365,30 @@ function runRules(m: Model): ValidationIssue[] {
     }
   }
 
+  // --- If condition shape --------------------------------------------------------------------
+  // The condition object may nest and/or/not and comparisons; `not` must hold an object, never an
+  // expression string (conformance/save-rules/conditions.mjs: "The object expression property name
+  // 'not' ... has a parameter of type 'String' which is not supported. Only object and array are
+  // supported."). `and`/`or` arrays may hold strings.
+  for (const r of m.recs) {
+    if (r.kind !== 'if' || !r.ifExpression || typeof r.ifExpression !== 'object') continue;
+    const walk = (v: unknown, path: string): void => {
+      if (Array.isArray(v)) { v.forEach((x, i) => walk(x, `${path}[${i}]`)); return; }
+      if (!v || typeof v !== 'object') return;
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        if (k === 'not' && typeof x === 'string') {
+          err('CONDITION_NOT_STRING',
+            `Condition '${r.name}' has a 'not' whose operand is the expression string ${JSON.stringify(x)}. Power Automate rejects the flow on save ` +
+            `("The object expression property name 'not' ... has a parameter of type 'String' which is not supported. Only object and array are supported."). ` +
+            `Wrap it as a comparison: { "not": { "equals": [${JSON.stringify(x)}, true] } }.`,
+            `${path}.not`);
+        }
+        walk(x, `${path}.${k}`);
+      }
+    };
+    walk(r.ifExpression, `${r.path}.expression`);
+  }
+
   // --- runAfter (per sibling group) -----------------------------------------------------------
   for (const g of m.groups) {
     const siblings = new Map(g.recs.map((r) => [lower(r.name), r]));
@@ -398,18 +437,24 @@ function runRules(m: Model): ValidationIssue[] {
       state.set(n, 'done');
       return undefined;
     };
+    let hasCycle = false;
     for (const n of edges.keys()) {
       const cyc = visit(n, []);
       if (cyc) {
         const names = cyc.map((x) => siblings.get(x)?.name ?? x);
         err('RUNAFTER_CYCLE', `runAfter dependencies form a cycle: ${names.join(' → ')}.`, siblings.get(cyc[0])?.path ?? g.path);
+        hasCycle = true;
         break;
       }
     }
+    if (!hasCycle) runAfterReachabilityIssues(g, m, warn);
   }
 
   // --- expression references -------------------------------------------------------------------
   const actionNames = new Set(byLowerName.keys());
+  responseSkippedOnSuccessIssues(m, warn);
+  dataverseLookupIssues(m, info);
+
   const scanTargets: Array<{ name: string; path: string; scanValue: unknown; loops: Rec['loopAncestors']; allowsItem: boolean; rec?: Rec }> =
     m.recs.map((r) => ({ name: r.name, path: r.path, scanValue: r.scanValue, loops: r.loopAncestors, allowsItem: !!r.allowsItem, rec: r }));
   const readableFrom = runAfterPaths(m);
@@ -525,6 +570,241 @@ function runAfterPaths(m: Model): (from: Rec) => Set<Rec> {
     cache.set(from, readable);
     return readable;
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// runAfter reachability
+// ---------------------------------------------------------------------------------------------
+
+type RunStatus = 'succeeded' | 'failed' | 'timedout' | 'skipped';
+const RAN_STATUSES: RunStatus[] = ['succeeded', 'failed', 'timedout'];
+/** Above this many transitive predecessors the status search is skipped (it is exponential). */
+const REACHABILITY_MAX_ANCESTORS = 12;
+
+interface RunAfterDep {
+  target: Rec;
+  /** Lower-cased statuses accepted for the target. */
+  statuses: Set<string>;
+}
+
+/**
+ * The effective runAfter of every action in a sibling group: the explicit entries that name a
+ * sibling, or the previous sibling (Succeeded) in Flow IR. Malformed entries are reported by the
+ * schema rules and ignored here.
+ */
+function groupRunAfterDeps(g: Group, m: Model): Map<Rec, RunAfterDep[]> {
+  const siblings = new Map(g.recs.map((r) => [lower(r.name), r]));
+  const deps = new Map<Rec, RunAfterDep[]>();
+  g.recs.forEach((r, i) => {
+    if (r.runAfter && typeof r.runAfter === 'object' && !Array.isArray(r.runAfter)) {
+      const list: RunAfterDep[] = [];
+      for (const [k, v] of Object.entries(r.runAfter as Record<string, unknown>)) {
+        const target = siblings.get(lower(k));
+        if (!target || target === r) continue;
+        const statuses = new Set((Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === 'string').map(lower));
+        list.push({ target, statuses });
+      }
+      deps.set(r, list);
+    } else if (r.runAfter === undefined && m.implicitSequentialRunAfter && i > 0) {
+      deps.set(r, [{ target: g.recs[i - 1], statuses: new Set(['succeeded']) }]);
+    } else {
+      deps.set(r, []);
+    }
+  });
+  return deps;
+}
+
+const statusLabel = (s: string) => ({ succeeded: 'Succeeded', failed: 'Failed', skipped: 'Skipped', timedout: 'TimedOut' } as Record<string, string>)[s] ?? s;
+const depsLabel = (deps: RunAfterDep[]) => deps.map((d) => `'${d.target.name}': ${[...d.statuses].map(statusLabel).join(', ')}`).join('; ');
+
+/**
+ * Warn about runAfter conditions the run can never satisfy. runAfter entries are ANDed, so an
+ * action after a try/catch written as `Catch: Succeeded, Skipped` + `Try: Succeeded` is Skipped
+ * on the catch path: `Catch` Succeeded implies `Try` Failed. The cloud saves such a flow and the
+ * run ends Succeeded with the action and everything after it Skipped, so this is a warning.
+ *
+ * The search assigns a status to every transitive predecessor in topological order: an action
+ * whose condition is met ran (Succeeded, Failed or TimedOut), otherwise it is Skipped. A status
+ * is "dead" when it can hold on its own but never together with the action's other dependencies;
+ * a status the target can never reach at all (`Skipped` for the first action) is left alone,
+ * since over-listing statuses is harmless and common (`Try: Succeeded, Failed, Skipped`).
+ */
+function runAfterReachabilityIssues(g: Group, m: Model, warn: (code: string, message: string, path?: string) => void): void {
+  const deps = groupRunAfterDeps(g, m);
+  const order = topologicalOrder(g.recs, deps);
+  if (!order) return;
+  const position = new Map(order.map((r, i) => [r, i]));
+  const conditionMet = (r: Rec, world: Map<Rec, RunStatus>) => deps.get(r)!.every((d) => d.statuses.has(world.get(d.target)!));
+
+  for (const r of g.recs) {
+    const explicit = r.runAfter && typeof r.runAfter === 'object' && !Array.isArray(r.runAfter);
+    const ds = deps.get(r)!;
+    if (!explicit || ds.length < 2) continue;
+
+    // transitive predecessors, in topological order
+    const ancestors = new Set<Rec>();
+    const stack = ds.map((d) => d.target);
+    while (stack.length) {
+      const p = stack.pop()!;
+      if (ancestors.has(p)) continue;
+      ancestors.add(p);
+      stack.push(...deps.get(p)!.map((d) => d.target));
+    }
+    if (ancestors.size > REACHABILITY_MAX_ANCESTORS) continue;
+    const chain = [...ancestors].sort((a, b) => position.get(a)! - position.get(b)!);
+
+    /** Is there a status assignment (with `fixed` pinned) under which r's whole condition holds, or (requireAll false) that merely exists? */
+    const exists = (fixed: { rec: Rec; status: RunStatus } | undefined, requireAll: boolean): boolean => {
+      const world = new Map<Rec, RunStatus>();
+      const step = (i: number): boolean => {
+        if (i === chain.length) return !requireAll || conditionMet(r, world);
+        const n = chain[i];
+        const options: RunStatus[] = conditionMet(n, world) ? RAN_STATUSES : ['skipped'];
+        for (const s of options) {
+          if (fixed && fixed.rec === n && fixed.status !== s) continue;
+          world.set(n, s);
+          if (step(i + 1)) return true;
+        }
+        world.delete(n);
+        return false;
+      };
+      return step(0);
+    };
+
+    if (!exists(undefined, true)) {
+      warn('RUNAFTER_UNSATISFIABLE',
+        `Action '${r.name}' can never run: no outcome of its runAfter dependencies (${depsLabel(ds)}) satisfies all of them at once (runAfter entries are ANDed). ` +
+        `Everything chained after '${r.name}' is Skipped too, and the run still ends Succeeded. Run it after one action that covers every path, e.g. a Finally scope with runAfter Succeeded, Failed, Skipped.`,
+        r.path);
+      continue;
+    }
+    for (const d of ds) {
+      for (const status of d.statuses) {
+        const s = status as RunStatus;
+        if (!['succeeded', 'failed', 'timedout', 'skipped'].includes(s)) continue;
+        if (!exists({ rec: d.target, status: s }, false)) continue; // unreachable on its own: harmless over-listing
+        if (exists({ rec: d.target, status: s }, true)) continue;
+        const others = ds.filter((o) => o !== d);
+        warn('RUNAFTER_DEAD_STATUS',
+          `Action '${r.name}' runs after '${d.target.name}': ${statusLabel(s)}, but '${d.target.name}' can never be ${statusLabel(s)} while its other runAfter dependencies hold (${depsLabel(others)}). ` +
+          `On the path where '${d.target.name}' is ${statusLabel(s)}, '${r.name}' is Skipped, and so is everything chained after it; the run still ends Succeeded. ` +
+          `Remove that status or the conflicting dependency, or run '${r.name}' after one action that covers every path (a Finally scope).`,
+          r.path);
+      }
+    }
+  }
+}
+
+/**
+ * Warn when no Response action runs on the path where every action succeeds: the usual shape is
+ * a Response chained (implicitly) after a catch scope, so on success the catch is Skipped and so
+ * is the Response — an HTTP caller waits for nothing and a parent flow fails with 502 BadGateway
+ * (NoResponse). Only runAfter-driven skips count (own dependencies and enclosing blocks'); a
+ * Response in an if/switch branch may run, so it is never reported. A Response inside a catch
+ * scope is fine as long as another Response runs on the success path, so a flow with a Response
+ * in Try and one in Catch stays quiet. Other action kinds are not checked: an error-mail chain
+ * after a catch scope is deliberate, and reporting it would make the rule noise.
+ */
+function responseSkippedOnSuccessIssues(m: Model, warn: (code: string, message: string, path?: string) => void): void {
+  const responses = m.recs.filter((r) => r.kind === 'response');
+  if (responses.length === 0) return;
+  const deps = new Map<Rec, RunAfterDep[]>();
+  for (const g of m.groups) for (const [r, d] of groupRunAfterDeps(g, m)) deps.set(r, d);
+
+  const memo = new Map<Rec, { skipped: boolean; why?: string }>();
+  const visiting = new Set<Rec>();
+  const skippedOnSuccess = (r: Rec): { skipped: boolean; why?: string } => {
+    const known = memo.get(r);
+    if (known) return known;
+    if (visiting.has(r)) return { skipped: false }; // a cycle is reported by RUNAFTER_CYCLE
+    visiting.add(r);
+    let result: { skipped: boolean; why?: string } = { skipped: false };
+    if (r.parent) {
+      const p = skippedOnSuccess(r.parent);
+      if (p.skipped) result = { skipped: true, why: `'${r.name}' is inside '${r.parent.name}', which is Skipped on that path (${p.why})` };
+    }
+    if (!result.skipped) {
+      for (const d of deps.get(r) ?? []) {
+        // On the all-success path the target is Succeeded, unless it is itself Skipped there.
+        const t = skippedOnSuccess(d.target);
+        if (d.statuses.has(t.skipped ? 'skipped' : 'succeeded')) continue;
+        const listed = [...d.statuses].map(statusLabel).join(', ');
+        result = {
+          skipped: true,
+          why: t.skipped
+            ? `'${r.name}' runs after '${d.target.name}': ${listed}, but '${d.target.name}' is Skipped on that path (${t.why})`
+            : `'${r.name}' runs after '${d.target.name}': ${listed}, and '${d.target.name}' is Succeeded on that path`,
+        };
+        break;
+      }
+    }
+    visiting.delete(r);
+    memo.set(r, result);
+    return result;
+  };
+
+  const verdicts = responses.map((r) => ({ r, ...skippedOnSuccess(r) }));
+  if (verdicts.some((v) => !v.skipped)) return;
+  const first = verdicts[0];
+  const names = verdicts.map((v) => `'${v.r.name}'`).join(', ');
+  warn('RUNAFTER_SKIPPED_ON_SUCCESS',
+    `No Response action runs when every action succeeds (${names}${verdicts.length === 1 ? ' is' : ' are'} Skipped on that path: ${first.why}). ` +
+    `The caller then gets no answer — a parent flow fails with 502 BadGateway (NoResponse). ` +
+    `Run the Response after an action that covers every path (a Finally scope with runAfter Succeeded, Failed, Skipped), or list both statuses of the catch scope (runAfter Catch: Succeeded, Skipped).`,
+    first.r.path);
+}
+
+const LOOKUP_REF = /\b(?:body|outputs|actionBody|actionOutputs)\(\s*'([^']+)'\s*\)[^,]*?\b(_\w+_value)\b/i;
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Dataverse "Get a row" (GetItem) whose recordId is a lookup column (`_x_value`) read from
+ * another action, with no enclosing `if` whose condition mentions that same column of that same
+ * action. An empty lookup makes recordId null and fails the action, so an optional lookup needs
+ * the guard (flowforger skill, examples.md Example 12: a Skipped action reads as null, so a later
+ * coalesce() picks whichever read ran). Informational: a required lookup is fine without it, and
+ * the cloud saves either way.
+ */
+function dataverseLookupIssues(m: Model, info: (code: string, message: string, path?: string) => void): void {
+  for (const r of m.recs) {
+    const c = r.connector;
+    if (!c || lower(c.name) !== 'dataverse' || lower(c.operation) !== 'getitem') continue;
+    const recordId = c.params?.recordId;
+    if (typeof recordId !== 'string') continue;
+    const ref = LOOKUP_REF.exec(recordId);
+    if (!ref) continue;
+    const [, source, column] = ref;
+    const sourceRef = new RegExp(`\\(\\s*'${escapeRegExp(source)}'\\s*\\)`, 'i');
+    let guarded = false;
+    for (let p = r.parent; p && !guarded; p = p.parent) {
+      if (p.kind !== 'if' || !p.conditionText) continue;
+      guarded = lower(p.conditionText).includes(lower(column)) && sourceRef.test(p.conditionText);
+    }
+    if (guarded) continue;
+    info('DV_LOOKUP_UNGUARDED',
+      `Action '${r.name}' gets a row by the lookup column '${column}' of '${source}'. When that lookup is empty, recordId is null and the action fails. ` +
+      `If the lookup can be empty, run the action inside an if on the same value — if (!empty(body('${source}')?['${column}'])) { … } — ` +
+      `a Skipped action reads as null, so a later coalesce() can fall back (flowforger skill, examples.md Example 12).`,
+      r.path);
+  }
+}
+
+/** Kahn's algorithm over the group's dependencies; undefined when they form a cycle. */
+function topologicalOrder(recs: Rec[], deps: Map<Rec, RunAfterDep[]>): Rec[] | undefined {
+  const indegree = new Map<Rec, number>(recs.map((r) => [r, deps.get(r)!.length]));
+  const dependents = new Map<Rec, Rec[]>();
+  for (const r of recs) for (const d of deps.get(r)!) dependents.set(d.target, [...(dependents.get(d.target) || []), r]);
+  const queue = recs.filter((r) => indegree.get(r) === 0);
+  const order: Rec[] = [];
+  while (queue.length) {
+    const n = queue.shift()!;
+    order.push(n);
+    for (const d of dependents.get(n) || []) {
+      indegree.set(d, indegree.get(d)! - 1);
+      if (indegree.get(d) === 0) queue.push(d);
+    }
+  }
+  return order.length === recs.length ? order : undefined;
 }
 
 function runAfterPathMessage(from: Rec, read: Rec, fn: string): string {
@@ -707,6 +987,9 @@ function irModel(ir: FlowIR): Model {
       } else if (n.type === 'connector' || n.type === 'connectorwebhook') {
         rec.kind = 'connector';
         rec.scanValue = anyN.params;
+        if (typeof anyN.connector === 'string' && typeof anyN.operation === 'string') {
+          rec.connector = { name: anyN.connector, operation: anyN.operation, params: anyN.params && typeof anyN.params === 'object' ? anyN.params : undefined };
+        }
       } else if (n.type === 'foreach') {
         rec.kind = 'foreach';
         rec.scanValue = { itemsExpression: anyN.itemsExpression };
@@ -719,6 +1002,7 @@ function irModel(ir: FlowIR): Model {
       } else if (n.type === 'if') {
         rec.kind = 'if';
         rec.scanValue = { condition: anyN.condition };
+        rec.conditionText = typeof anyN.condition === 'string' ? anyN.condition : anyN.condition === undefined ? undefined : JSON.stringify(anyN.condition);
       } else if (n.type === 'switch') {
         rec.kind = 'switch';
         rec.scanValue = { expression: anyN.expression };
@@ -791,6 +1075,15 @@ function laKind(type: string): RecKind {
   }
 }
 
+/** The IR connector name for a Logic Apps apiId (`.../apis/shared_commondataserviceforapps` → `dataverse`). */
+function laConnectorName(apiId: string): string {
+  const api = apiId.split('/').pop() ?? '';
+  const bare = api.replace(/^shared_/, '');
+  if (bare === 'commondataserviceforapps') return 'dataverse';
+  if (bare === 'sharepointonline') return 'sharepoint';
+  return bare;
+}
+
 function laModel(def: any, definition: any): Model {
   const recs: Rec[] = [];
   const groups: Group[] = [];
@@ -823,6 +1116,10 @@ function laModel(def: any, definition: any): Model {
       if (VAR_TARGET_KINDS.has(type) && typeof action.inputs?.name === 'string') rec.targets = action.inputs.name;
       if (type === 'foreach') rec.foreachConcurrency = action.runtimeConfiguration?.concurrency?.repetitions;
       if (type === 'switch') rec.switchExpression = action.expression;
+      if (type === 'if') {
+        rec.ifExpression = action.expression;
+        rec.conditionText = typeof action.expression === 'string' ? action.expression : action.expression === undefined ? undefined : JSON.stringify(action.expression);
+      }
       if (type === 'switch') rec.caseCount = action.cases && typeof action.cases === 'object' ? Object.keys(action.cases).length : 0;
       if (type === 'until') {
         const limit = action.limit && typeof action.limit === 'object' ? action.limit : undefined;
@@ -835,6 +1132,17 @@ function laModel(def: any, definition: any): Model {
         };
       }
       if (rec.kind === 'connector' && typeof action.inputs?.host?.connectionName === 'string') rec.connectionName = action.inputs.host.connectionName;
+      if (rec.kind === 'connector') {
+        const apiId = typeof action.inputs?.host?.apiId === 'string' ? action.inputs.host.apiId : '';
+        const operationId = typeof action.inputs?.host?.operationId === 'string' ? action.inputs.host.operationId : '';
+        if (apiId && operationId) {
+          rec.connector = {
+            name: laConnectorName(apiId),
+            operation: operationId,
+            params: action.inputs?.parameters && typeof action.inputs.parameters === 'object' ? action.inputs.parameters : undefined,
+          };
+        }
+      }
       recs.push(rec);
       group.recs.push(rec);
 

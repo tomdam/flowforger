@@ -60,8 +60,17 @@ export class DataverseClient {
   }
 
   async getFlow(workflowId: string) {
-    const select = '$select=workflowid,name,description,category,statecode,clientdata';
+    const select = '$select=workflowid,name,description,category,statecode,statuscode,clientdata';
     return this.request(`/workflows(${workflowId})?${select}`);
+  }
+
+  /**
+   * The Flow API id of a flow (what api.flow.microsoft.com calls it): the workflow
+   * row's resourceid, or workflowidunique for an older row without one.
+   */
+  async getFlowApiId(workflowId: string): Promise<string | undefined> {
+    const row = await this.request(`/workflows(${workflowId})?$select=resourceid,workflowidunique`);
+    return row?.resourceid ?? row?.workflowidunique ?? undefined;
   }
 
   async getFlowByName(name: string) {

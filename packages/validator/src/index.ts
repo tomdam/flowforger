@@ -1,5 +1,5 @@
 import type { FlowIR, Node } from '@flowforger/ir';
-import { DESCRIPTION_OVERFLOW_METADATA_KEY } from '@flowforger/ir';
+import { DESCRIPTION_OVERFLOW_METADATA_KEY, MAX_ACTION_DESCRIPTION_LENGTH } from '@flowforger/ir';
 import { collectExpressionIssues } from './expressions.js';
 import { collectIrPlacementIssues, collectLogicAppsPlacementIssues } from './placement.js';
 import { collectIrStructureIssues, collectLogicAppsStructureIssues } from './structure.js';
@@ -22,33 +22,22 @@ export interface ValidationResult {
 }
 
 /**
- * Descriptions (action/trigger notes, the flow description) are plain text to FlowForger, but
- * Power Automate runs them through the same template parser as every other string in the
- * definition: "@{...}" anywhere is an interpolation and a leading "@" starts an expression.
- * Either makes the cloud reject the flow on save (InvalidTemplate). In the DSL, descriptions
- * come from comments — see DSL035/DSL036 in @flowforger/dsl-language-service.
+ * Power Automate refuses to save an action or trigger description over 256 characters
+ * ("exceeded the length limit: maximum '256'"). The emitter never writes one (it stores a longer
+ * description as an excerpt plus the full text in metadata), so this only fires on hand-written
+ * Logic Apps JSON. The flow-level description has no limit, and the cloud does not parse
+ * descriptions as expressions: "@{...}" or a leading "@" in one is saved as is
+ * (conformance/save-rules/descriptions.mjs).
  */
-function collectDescriptionIssues(description: unknown, path: string, what: string): ValidationIssue[] {
-  if (typeof description !== 'string') return [];
-  const issues: ValidationIssue[] = [];
-  const interpolation = description.match(/@\{[^}\n]*\}?/);
-  if (interpolation) {
-    issues.push({
-      level: 'error',
-      code: 'DESCRIPTION_EXPRESSION',
-      message: `${what} contains '${interpolation[0]}'. Power Automate parses "@{...}" in a description as a template expression and rejects the flow on save. Remove the "@".`,
-      path,
-    });
-  }
-  if (/^\s*@(?!@)/.test(description)) {
-    issues.push({
-      level: 'warning',
-      code: 'DESCRIPTION_LEADING_AT',
-      message: `${what} starts with "@". Power Automate parses a description that begins with "@" as a template expression. Start it with a word instead.`,
-      path,
-    });
-  }
-  return issues;
+function collectDescriptionLengthIssues(node: any, path: string, what: string): ValidationIssue[] {
+  const description = node?.description;
+  if (typeof description !== 'string' || description.length <= MAX_ACTION_DESCRIPTION_LENGTH) return [];
+  return [{
+    level: 'error',
+    code: 'DESCRIPTION_LENGTH',
+    message: `${what} is ${description.length} characters; Power Automate rejects descriptions over ${MAX_ACTION_DESCRIPTION_LENGTH} on save. Shorten it (FlowForger keeps a longer note as an excerpt plus the full text in metadata.${DESCRIPTION_OVERFLOW_METADATA_KEY}).`,
+    path: `${path}.description`,
+  }];
 }
 
 export function validateFlowIR(ir: FlowIR): ValidationResult {
@@ -94,12 +83,10 @@ export function validateFlowIR(ir: FlowIR): ValidationResult {
   // Track initializevariable actions by variableName to detect duplicates across the whole IR.
   // PA rejects two InitializeVariable actions targeting the same variable name on import.
 
-  issues.push(...collectDescriptionIssues(ir.description, 'description', 'Flow description'));
 
   // control constructs
   function walk(nodes: Node[], isNested = false) {
     for (const n of nodes) {
-      issues.push(...collectDescriptionIssues((n as any).description, `nodes.${n.name}.description`, `Description of ${n.type} '${n.name}'`));
       // Check for initializevariable inside nested structures (not allowed in Logic Apps)
       if (n.type === 'action' && (n as any).kind === 'initializevariable' && isNested) {
         issues.push({
@@ -293,12 +280,11 @@ export function validateLogicApps(def: any): ValidationResult {
     }
   }
 
-  // Descriptions (notes) anywhere in the definition tree
-  issues.push(...collectDescriptionIssues(definition.description, 'definition.description', 'Flow description'));
+  // Action and trigger descriptions (notes) anywhere in the definition tree: at most 256 characters
   for (const triggerName of triggerKeys) {
     const trigger = definition.triggers[triggerName];
     if (trigger && typeof trigger === 'object') {
-      issues.push(...collectLogicAppsNodeDescriptionIssues(trigger, `definition.triggers.${triggerName}`, `Description of trigger "${triggerName}"`));
+      issues.push(...collectDescriptionLengthIssues(trigger, `definition.triggers.${triggerName}`, `Description of trigger "${triggerName}"`));
     }
   }
   walkLogicAppsActions(definition.actions, 'definition.actions', issues);
@@ -316,23 +302,13 @@ export function validateLogicApps(def: any): ValidationResult {
   return { ok: issues.find((i) => i.level === 'error') === undefined, issues };
 }
 
-function collectLogicAppsNodeDescriptionIssues(node: any, path: string, what: string): ValidationIssue[] {
-  const issues = collectDescriptionIssues(node.description, `${path}.description`, what);
-  // The emitter stores a >255-char description's full text in metadata; the cloud parses that too.
-  const overflow = node.metadata?.[DESCRIPTION_OVERFLOW_METADATA_KEY];
-  if (typeof overflow === 'string') {
-    issues.push(...collectDescriptionIssues(overflow, `${path}.metadata.${DESCRIPTION_OVERFLOW_METADATA_KEY}`, `${what} (full text in metadata)`));
-  }
-  return issues;
-}
-
 /** Walk the actions tree (scope/if/foreach/until/switch nesting) and check every action's description. */
 function walkLogicAppsActions(actions: any, path: string, issues: ValidationIssue[]): void {
   if (!actions || typeof actions !== 'object') return;
   for (const [name, action] of Object.entries<any>(actions)) {
     if (!action || typeof action !== 'object') continue;
     const actionPath = `${path}.${name}`;
-    issues.push(...collectLogicAppsNodeDescriptionIssues(action, actionPath, `Description of action "${name}"`));
+    issues.push(...collectDescriptionLengthIssues(action, actionPath, `Description of action "${name}"`));
     walkLogicAppsActions(action.actions, `${actionPath}.actions`, issues);
     walkLogicAppsActions(action.else?.actions, `${actionPath}.else.actions`, issues);
     walkLogicAppsActions(action.default?.actions, `${actionPath}.default.actions`, issues);

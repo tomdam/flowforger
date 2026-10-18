@@ -287,6 +287,10 @@ await ctx.callWorkflow('RunChild', 'MyChildFlow', { text: 'hello' });
 ctx.body('RunChild')               // ✅ for Child Workflows
 ```
 
+**`body('X')?['field']` and `outputs('X')?['body/field']` are the same read.** The slash in `['body/field']` is a path (`outputs.body.field`), the form the Power Automate designer writes for every connector field. Both are fine; pulled flows use the slash form, and an expression that mixes them is not a bug. `body()` of an action whose outputs have no `body` (a Compose) is null.
+
+**A Skipped action reads as null.** When an action did not run (its `if` branch was not taken, or its `@runAfter` was not met), `outputs('X')?['body/field']`, `body('X')?['field']` and `outputs('X')` are all `null`, so `coalesce(outputs('X')?['body/x'], ...)` falls through and `empty(...)` is true. Only the non-null-safe form fails: `outputs('X')['body/field']` on a Skipped action fails the reading action with `InvalidTemplate`, as it does on any null. Measured in the cloud and locally; see the "optional lookup with a fallback" recipe in [examples.md](examples.md#example-12-optional-lookup-with-a-fallback-dataverse).
+
 ### 6. Try/Catch MUST have a Finally scope (or an explicit @runAfter covering both paths)
 
 **This is the most common cause of broken flows.** The DSL transformer auto-chains each action to the previous one with `runAfter: { "PreviousAction": ["Succeeded"] }`. In a try/catch pattern, the "previous action" for anything after the catch is the CatchBlock — but CatchBlock only runs when TryBlock **fails**. If TryBlock succeeds, CatchBlock is skipped, and **every action after it is also skipped**, breaking the flow in half.
@@ -366,6 +370,8 @@ Multiple `@runAfter` tags are the right tool for a **fan-in** — joining genuin
 
 **The rule applies to ALL actions with conditional @runAfter**, not just try/catch. Any time an action uses `@runAfter X: Failed` (or any non-default status), actions after it will be skipped on the success path unless you add a finally scope or point them at that action with a status list covering every path.
 
+**A dead status in an ANDed `@runAfter` is silent in the cloud.** The run still ends `Succeeded`; the action and everything chained after it are just Skipped on that path. A real example that passed validation and shipped: `@runAfter Catch: Succeeded, Skipped @runAfter Try: Succeeded` — `Catch: Succeeded` implies `Try: Failed`, which contradicts `Try: Succeeded`, so the catch path can never reach the action. `flowforger validate` reports such entries as `RUNAFTER_DEAD_STATUS` (a listed status that can never hold together with the other dependencies) and `RUNAFTER_UNSATISFIABLE` (no outcome runs the action at all), and `flowforger run` reproduces the skips, so test both paths locally. The same bug with no dead status — a Response chained after the catch scope and no Finally, so the caller never gets an answer on the success path (a parent flow fails with 502 BadGateway) — is `RUNAFTER_SKIPPED_ON_SUCCESS`: it warns when no Response action runs on the all-success path.
+
 **Reading the failure inside the catch.** `ctx.result('TryBlock')` lists the try scope's direct children as `{ name, inputs, outputs, startTime, endTime, code, status, error }`. Filter it for `status` `Failed`. What a failed item carries depends on what failed (measured in the cloud, `conformance/flows/control.ff.ts`):
 
 - **Connector or HTTP call:** `code` is the HTTP status name (`NotFound`, `BadRequest`, ...) and there is **no `error`**. Read `outputs.statusCode` and `outputs.body.message` (SharePoint) / `outputs.body.error.message` (Dataverse).
@@ -428,6 +434,19 @@ if (ctx.and(condition1, condition2))                     // ctx.and() as top-lev
 if (ctx.or(condition1, condition2))                      // ctx.or() as top-level
 ```
 
+**What a condition compiles to.** An `if` condition becomes the Condition action's `expression`. A comparison or a `not` is wrapped in `and: [...]` so the designer can render it; a bare function call such as `empty(x)` stays a string expression (the designer shows it as code, which is fine). The `@conditionFormat` tag in [dsl-syntax.md](dsl-syntax.md#ifelse) opts out of the wrapper: keep it on pulled flows, omit it on new ones. The recipes below are the ones to copy; each shape is accepted on save and evaluates the same in the cloud and locally (measured by `conformance/save-rules/conditions.mjs` and `conformance/flows/conditions.ff.ts`, Oct 2026):
+
+| Intent | DSL | Compiled `expression` |
+|---|---|---|
+| value is set (not null, not empty) | `if (!ctx.empty(x))` or `if (ctx.not(ctx.empty(x)))` | `{"and":[{"not":{"equals":["@empty(x)",true]}}]}` |
+| value is null or empty | `if (ctx.empty(x))` | `"@empty(x)"` |
+| value is not null (empty string counts as set) | `if (x !== null)` | `{"and":[{"not":{"equals":["@x","@null"]}}]}` |
+| equals a literal (a Choice column is a number — see [connectors.md](connectors.md#what-a-dataverse-row-looks-like)) | `if (x === 200000001)` | `{"and":[{"equals":["@x",200000001]}]}` |
+| both | `if (a && b)` | `{"and":[a, b]}` |
+| either | `if (a \|\| b)` | `{"or":[a, b]}` |
+
+`not` always holds an object: a comparison as is, any other function wrapped as `{"equals":["@f(x)",true]}` — the cloud refuses to save `{"not":"@empty(x)"}` ("has a parameter of type 'String' which is not supported"; the JSON validator reports it as `CONDITION_NOT_STRING`). `and`/`or` arrays may hold plain expression strings. Pulled flows often show `((!(ctx.empty(x)) as any) === true)`, the generator's rendering of a designer-built `not(empty(x)) is equal to true` row; it compiles to `{"and":[{"equals":["@not(empty(x))",true]}]}` and is not better than `!ctx.empty(x)`, just longer. `x` may be a `const` alias (`const name = ctx.triggerBody()?.['name']`): reads of it inline the expression. A `const` bound to an action call (`const r = await ctx.compose(...)`) is an error (DSL032) — read actions with `ctx.outputs()`/`ctx.body()`.
+
 ### 8. Use `.push()` to append to array variables — NEVER spread/reassignment
 
 Power Automate appends to an array variable via the **AppendToArrayVariable** action. In the FlowForger DSL, this maps to `arrayName.push(value)`. The transformer **only** recognizes the `.push()` pattern — array spread-reassignment (`arr = [...arr, item]`) is **not transformed** and will emit raw TypeScript into the flow, producing a broken action.
@@ -468,9 +487,9 @@ for (const user of ctx.body('GetUsers')?.['value'] ?? []) {
 }
 ```
 
-### 9. Action descriptions (comments above an action) — any length is fine, but NEVER write `@{…}` in a comment
+### 9. Action descriptions (comments above an action) — any length and any text are fine, but NEVER put a note on the `@action` line
 
-Any **plain comment** (`//` or `/* */`) or `@description` text placed above an action is captured by the transformer as that action's `description` field. Power Automate caps the `description` field at **255 characters**, but the emitter handles this automatically: a longer comment is emitted as a 255-char excerpt (ending `…`) in `description`, with the **full text preserved in the action's metadata** under `flowforgerDescription`. On pull, `parseLogicAppsToIR` restores the full text (a note edited in the Power Automate designer wins over the stored full text). So long comments — including **commented-out actions kept for reference** — survive the DSL → cloud → DSL round-trip, and there is no length limit to worry about and no push/publish failure.
+Any **plain comment** (`//` or `/* */`) or `@description` text placed above an action is captured by the transformer as that action's `description` field. Power Automate caps the `description` field at **256 characters** (measured: a 257-character one is rejected on save), but the emitter handles this automatically: a longer comment is emitted as a 256-char excerpt (ending `…`) in `description`, with the **full text preserved in the action's metadata** under `flowforgerDescription`. On pull, `parseLogicAppsToIR` restores the full text (a note edited in the Power Automate designer wins over the stored full text). So long comments — including **commented-out actions kept for reference** — survive the DSL → cloud → DSL round-trip, and there is no length limit to worry about and no push/publish failure.
 
 ```typescript
 // ✅ FINE — long explanatory comments and commented-out actions round-trip intact:
@@ -480,26 +499,22 @@ Any **plain comment** (`//` or `/* */`) or `@description` text placed above an a
 await ctx.compose('BuildPayload', { order: ctx.triggerBody() });
 ```
 
-**⚠️ Never write `@{…}` in a comment, and don't start a comment with `@`.** Comments become the emitted action's `description`, and Power Automate runs *every* string in the definition — descriptions included — through its template parser: `@{…}` anywhere in a description is an interpolation, and a leading `@` starts an expression. Either makes the cloud reject the flow on push/save (`InvalidTemplate`), even though the DSL transforms and compiles fine locally. When a comment needs to mention an expression, write it without the `@`:
+**Any text is fine in a description, `@{…}` and a leading `@` included** — the cloud saves descriptions as is and never evaluates them (measured: `conformance/save-rules/descriptions.mjs`).
+
+**⚠️ But never put a note on the `@action` line.** The action name is the *rest of the `@action` line* (names may contain spaces, e.g. `Case 2`), so anything written after the name on that line becomes part of the name. Power Automate rejects an action name containing `@{`, a control character, or any of `< > % & \ ? /` on save — so a note like the one below breaks the push. Put the note in a `//` comment above the JSDoc instead: that becomes the description (free text on a later line of a structural-only JSDoc is dropped):
 
 ```typescript
-// ❌ WRONG — the flow is rejected on push (the description becomes a template expression):
-// Build the payload using @{triggerBody()?['name']} for the name
-await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+// ❌ WRONG — the action is named "Init_total — counts @{outputs('Get_items')}" and the push is rejected:
+/** @action Init_total — counts @{outputs('Get_items')} */
+let total: number = 0;
 
-// ❌ WRONG — a description starting with "@" is parsed as an expression:
-// @todo handle retries
-await ctx.compose('Notify', { ok: true });
-
-// ✅ CORRECT — same information, no template syntax:
-// Build the payload using triggerBody()?['name'] for the name
-await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
-
-// TODO: handle retries
-await ctx.compose('Notify', { ok: true });
+// ✅ CORRECT — the note is a // comment above, which becomes the description:
+// Counts the items from @{outputs('Get_items')}
+/** @action Init_total */
+let total: number = 0;
 ```
 
-This applies to `//` comments, `/* */` comments, `@description` text, and the class-level flow description alike. `flowforger validate <file.ff.ts>` reports these as **DSL035** (error — `@{` in any comment) and **DSL036** (warning — description starting with `@`); the IR / Logic Apps JSON validators report the same as `DESCRIPTION_EXPRESSION` / `DESCRIPTION_LEADING_AT`. Fix them before pushing.
+`flowforger validate <file.ff.ts>` reports an invalid `@action` name as **DSL035** (error); the IR / Logic Apps JSON validators report any invalid action or trigger name as `ACTION_NAME_INVALID`, and a hand-written Logic Apps description over 256 characters as `DESCRIPTION_LENGTH`.
 
 **What becomes the description:**
 - Only the **descriptive prose** — plain comments and `@description` text.
@@ -507,8 +522,8 @@ This applies to `//` comments, `/* */` comments, `@description` text, and the cl
 - A plain comment placed **above** a `/** @action … */` JSDoc block is also folded into the description.
 
 **Notes:**
-- Only the 255-char excerpt is visible as the action's note in the Power Automate designer; the full text reappears whenever the flow is opened in FlowForger (CLI, web app, or VS Code).
-- **Exception — the flow-level description** (the class-level JSDoc on the `@Flow` class): it maps to `definition.description`, which has NO overflow handling. Keep the flow-level description at 255 characters or fewer.
+- Only the 256-char excerpt is visible as the action's note in the Power Automate designer; the full text reappears whenever the flow is opened in FlowForger (CLI, web app, or VS Code).
+- The flow-level description (the class-level JSDoc on the `@Flow` class) maps to `definition.description`, which the cloud does not limit (1000 characters measured accepted), so it needs no overflow handling.
 
 ### 10. NEVER call `ctx.response()` or `ctx.terminate()` inside a loop — and never `ctx.response()` with a recurring trigger
 
@@ -636,7 +651,7 @@ What the cloud accepts (measured in `conformance/save-rules/runafter-path.mjs`):
 
 | Pattern | JSDoc Annotation | JS Syntax |
 |---------|-----------------|-----------|
-| If/Else | `@action Name` | `if (...) { } else { }` |
+| If/Else | `@action Name` (plus `@conditionFormat string\|object` on pulled flows only — see [dsl-syntax.md](dsl-syntax.md#ifelse)) | `if (...) { } else { }` |
 | Switch | `@action Name` | `switch (...) { case: ... }` |
 | For Each | `@action Name` | `for (const x of ...) { }` |
 | Do-Until | `@action Name` | `do { } while (...)` |
@@ -657,7 +672,7 @@ See [DSL Syntax Reference](dsl-syntax.md) for detailed syntax.
 | Approvals | `ctx.connectors.approvals` | `shared_approvals` |
 | Any other | `ctx.connectors['name']` | Custom reference name |
 
-See [Connectors Reference](connectors.md) for all operations and parameters.
+See [Connectors Reference](connectors.md) for all operations and parameters. Every connector call takes the connection reference name as its third argument and an optional fourth `authentication` argument; pulled child flows carry `{ type: 'Raw', value: ctx.json(ctx.decodeBase64(ctx.triggerOutputs().headers['X-MS-APIM-Tokens']))['$ConnectionKey'] }` there, the "run-only user" connection handed down by the parent — keep it on every connector call in such a flow (see [connectors.md](connectors.md#the-authentication-argument-and-x-ms-apim-tokens)).
 
 ## Documentation
 

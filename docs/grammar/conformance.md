@@ -206,12 +206,13 @@ userEmails.push(x);                   // ✅ AppendToArrayVariable
 
 ---
 
-## R9 — Flow-level description must be ≤ 255 characters 🔴
+## R9 — Action/trigger descriptions over 256 characters overflow into metadata 🔴
 
 **Action/trigger descriptions have no length limit.** Any plain comment (`//` or `/* */`) or
 `@description` text above an action becomes the IR `description`. Power Automate caps the
-Logic Apps `description` field at **255 characters**, but the emitter handles overflow
-automatically: a longer description is emitted as a 255-char excerpt (ending `…`) with the
+Logic Apps `description` field of actions and triggers at **256 characters** (a 257-character one
+is rejected on save), but the emitter handles overflow
+automatically: a longer description is emitted as a 256-char excerpt (ending `…`) with the
 full text preserved in the action's metadata under `flowforgerDescription`, and
 `parseLogicAppsToIR` restores it on pull — so long comments (including commented-out code)
 round-trip through the cloud intact.
@@ -220,9 +221,8 @@ round-trip through the cloud intact.
   are **not** part of the description.
 - A plain comment placed above a `/** @action … */` block is folded into the description.
 
-The remaining hard limit is the **flow-level description** (the class-level JSDoc on the
-`@Flow` class): it maps to `definition.description`, which has no overflow handling — keep it
-at 255 characters or fewer.
+The **flow-level description** (the class-level JSDoc on the `@Flow` class) maps to
+`definition.description`, which the cloud does not limit (1000 characters measured accepted).
 
 *Origin:* `parseDescriptionFromJSDoc` / `getLeadingPlainCommentText`; overflow handling in
 `@flowforger/emitter-logicapps` (`applyDescriptionAndMetadata`) and
@@ -358,30 +358,34 @@ A plain HTTP response (no Power Apps / Virtual Agent consumer) does not need the
 
 ---
 
-## R15 — Comments must not contain `@{…}` or start with `@` 🔴
+## R15 — Never put a note on the `@action` line 🔴
 
-Comments become the emitted `description` of the action/trigger (see R9), and Power Automate
-runs **every** string in the definition — descriptions included — through its template parser:
-`@{…}` anywhere is an interpolation, a leading `@` starts an expression. Either makes the cloud
-reject the flow on push/save (`InvalidTemplate`) even though the DSL transforms and compiles
-locally.
+The action name is the rest of the `@action` line (names may contain spaces, e.g. `Case 2`), so a
+note written after the name on that line becomes part of the name. Power Automate rejects an
+action name containing `@{`, a control character, or any of `< > % & \ ? /` on save
+("The name of template action … is not defined or not valid" / "…has these invalid characters").
+Put the note in a `//` comment above the JSDoc: that becomes the description (free text on a
+later line of a structural-only JSDoc is not part of the name, but it is dropped).
 
 ```ts
-// ❌ WRONG — rejected on push
-// Build the payload using @{triggerBody()?['name']}
-await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+// ❌ WRONG — rejected on push: the name is "Init_total — counts @{outputs('Get_items')}"
+/** @action Init_total — counts @{outputs('Get_items')} */
+let total: number = 0;
 
-// ✅ CORRECT — mention the expression without the "@"
-// Build the payload using triggerBody()?['name']
-await ctx.compose('BuildPayload', { name: ctx.triggerBody()?.['name'] });
+// ✅ CORRECT — the note in a // comment above becomes the description
+// Counts the items from @{outputs('Get_items')}
+/** @action Init_total */
+let total: number = 0;
 ```
 
-Applies to `//` and `/* */` comments, `@description` text, and the class-level flow description.
-A literal leading `@` can be written as `@@`.
+Descriptions themselves may contain anything: the cloud saves `@{…}` and a leading `@` in an
+action, trigger or flow description as is and never evaluates it (an earlier version of this rule
+forbade both; measured wrong, Oct 2026).
 
-*Origin:* Logic Apps template parser. *Enforced by:* `DSL035` (error) / `DSL036` (warning) in
-`@flowforger/dsl-language-service` (`flowforger validate <file.ff.ts>`, Monaco, VS Code), and
-`DESCRIPTION_EXPRESSION` / `DESCRIPTION_LEADING_AT` in `@flowforger/validator` for IR and
+*Origin:* Logic Apps action-name rules, measured by `conformance/save-rules/descriptions.mjs`
+(the `name-*` cases). *Enforced by:* `DSL035` (error) in `@flowforger/dsl-language-service`
+(`flowforger validate <file.ff.ts>`, Monaco, VS Code) for `@action` values, and
+`ACTION_NAME_INVALID` in `@flowforger/validator` for every action and trigger name in IR and
 Logic Apps JSON.
 
 ---
@@ -526,13 +530,13 @@ after the previous one, so only flows with explicit `@runAfter` can break this r
 | R6 | Try/Catch needs a Finally (or explicit `@runAfter`) | 🔴 |
 | R7 | `&&`/`||` not top-level `ctx.and()`/`ctx.or()` | 🔴 |
 | R8 | Append arrays with `.push()` only | 🟠 |
-| R9 | Flow-level description ≤ 255 chars (action descriptions unlimited — overflow into metadata) | 🔴 |
+| R9 | Action/trigger descriptions over 256 chars overflow into metadata (no limit for authors; flow description unlimited) | 🔴 |
 | R10 | No `@{...}` around array/object/number values | 🟠 |
 | R11 | Exactly one trigger + one action method | 🔴 |
 | R12 | `body()` for HTTP/connector/child-flow, `outputs()` for Compose | 🟠 |
 | R13 | `@ManualTrigger` inputs need `"x-ms-dynamically-added": true` | 🔴 |
 | R14 | `ctx.response` PowerApp/VirtualAgent schema needs `"x-ms-dynamically-added": true` | 🔴 |
-| R15 | No `@{…}` in comments; comments must not start with `@` | 🔴 |
+| R15 | Never put a note on the `@action` line (it becomes part of the action name) | 🔴 |
 | R16 | No `ctx.response()`/`ctx.terminate()` inside loops; no `ctx.response()` with a recurring trigger | 🔴 |
 | R17 | Stay inside the definition limits (80-char names, 500 actions, 25 cases, 250 variables, 50 parameters, 8192-char expressions, concurrency/retry/recurrence ranges) | 🔴 |
 | R18 | No `.push()` / `=` / string `+=` on variables inside a parallel `for...of` (add `repetitions: 1`) | 🟠 |

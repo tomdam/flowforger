@@ -673,3 +673,33 @@ describe('generateNativeDslFromIR @Flow workflowId emission', () => {
     assert.strictEqual(ir2.workflowId, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
   });
 });
+
+describe('transformCode — syntax gate', () => {
+  it('refuses source with TypeScript parse errors instead of transforming the recovered AST', () => {
+    // '...?@a1='' ends a string and starts another with no comma: TypeScript recovers,
+    // and the recovered AST used to compile into an expression with DSL text leaked into it.
+    const code = `
+      @Flow({ name: 'BrokenQuote' })
+      class BrokenQuote {
+        @HttpTrigger()
+        trigger(ctx: FlowContext) {}
+
+        @Action()
+        async run(ctx: FlowContext) {
+          let varTargetRelative: string = '/sites/x/lib/folder';
+          await ctx.compose('Uri', ctx.braced(ctx.concat('_api/web/folders/addUsingPath(DecodedUrl=@a1,Overwrite=false)?@a1='', ctx.encodeUriComponent(ctx.variables('varTargetRelative')), ''')));
+        }
+      }
+    `;
+    assert.throws(
+      () => transformCode(code, 'broken.ff.ts'),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /syntax error/i);
+        assert.match(err.message, /broken\.ff\.ts:10:\d+/);
+        assert.match(err.message, /',' expected/);
+        return true;
+      }
+    );
+  });
+});

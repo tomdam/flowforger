@@ -1,7 +1,7 @@
 /**
  * Round-trip tests for long action descriptions (e.g. commented-out DSL code).
  *
- * The Logic Apps emitter stores a >255-char description as a 255-char excerpt in
+ * The Logic Apps emitter stores a >256-char description as a 256-char excerpt in
  * `description` plus the full text in metadata.flowforgerDescription; the parser
  * must restore the full text — unless the cloud-side note was edited, in which
  * case the edited note wins and the stale overflow is dropped.
@@ -59,6 +59,21 @@ describe('description overflow parsing', () => {
     assert.strictEqual(node.description, LONG_DESCRIPTION);
     // Overflow key must not leak into IR metadata (the emitter re-derives it)
     assert.deepStrictEqual(node.metadata, { operationMetadataId: 'fixed-id-123' });
+  });
+
+  it('restores the full description from a legacy 255-char excerpt (flows pushed before the limit was measured)', () => {
+    const legacyExcerpt = LONG_DESCRIPTION.slice(0, 254) + '…';
+    assert.notStrictEqual(legacyExcerpt, toDescriptionExcerpt(LONG_DESCRIPTION));
+    const ir = parseLogicAppsToIR(clientdataWith({
+      type: 'Http',
+      inputs: { method: 'GET', uri: 'https://api.example.com/data' },
+      description: legacyExcerpt,
+      metadata: { [DESCRIPTION_OVERFLOW_METADATA_KEY]: LONG_DESCRIPTION },
+      runAfter: {},
+    }));
+
+    const node: any = ir.nodes.find((n: any) => n.name === 'CallApi');
+    assert.strictEqual(node.description, LONG_DESCRIPTION);
   });
 
   it('prefers an edited cloud-side note over stale overflow metadata', () => {

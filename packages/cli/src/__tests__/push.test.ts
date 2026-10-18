@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runPush, PushError, type PushClient, type PushInput } from '../push.js';
+import { runPush, PushError, flowStateSummary, type PushClient, type PushInput } from '../push.js';
 
 const EXISTING_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const NEW_ID = 'bbbbbbbb-1111-2222-3333-444444444444';
@@ -226,5 +226,80 @@ describe('runPush — errors', () => {
 
     assert.equal(result.action, 'created');
     assert.equal(rec.lookups.length, 0);
+  });
+});
+
+describe('flowStateSummary', () => {
+  it('reports an activated flow as active', () => {
+    const s = flowStateSummary(1, 2, EXISTING_ID);
+    assert.equal(s.active, true);
+    assert.match(s.text, /^State: Activated/);
+  });
+
+  it('warns loudly about a Draft flow and names the activate command', () => {
+    const s = flowStateSummary(0, 1, EXISTING_ID);
+    assert.equal(s.active, false);
+    assert.match(s.text, /Draft .*not running/);
+    assert.match(s.text, new RegExp(`activate --id ${EXISTING_ID} --auth --state 1 --status 2`));
+  });
+
+  it('treats Suspended and unknown states as not active', () => {
+    assert.equal(flowStateSummary(2, 3, EXISTING_ID).active, false);
+    assert.match(flowStateSummary(2, 3, EXISTING_ID).text, /Suspended/);
+    assert.equal(flowStateSummary(undefined, undefined, EXISTING_ID).active, false);
+  });
+});
+
+describe('runPush — --expect-clean', () => {
+  const LIVE_ID = 'cccccccc-1111-2222-3333-444444444444';
+  const envelope = (actions: Record<string, unknown>) =>
+    JSON.stringify({ properties: { connectionReferences: {}, definition: { triggers: { manual: { type: 'Request' } }, actions } } });
+  const compose = (v: unknown) => ({ type: 'Compose', runAfter: {}, inputs: v });
+
+  function clientWithLive(liveClientdata: string | null): Recorder & { fetched: string[] } {
+    const rec = makeClient() as Recorder & { fetched: string[] };
+    rec.fetched = [];
+    rec.client.getFlow = async (id) => {
+      rec.fetched.push(id);
+      return { clientdata: liveClientdata };
+    };
+    return rec;
+  }
+
+  it('patches when the live flow has nothing the local file lacks (a local-only change is fine)', async () => {
+    const rec = clientWithLive(envelope({ A: compose(1) }));
+    const result = await runPush(rec.client, input({ explicitId: LIVE_ID, clientdata: envelope({ A: compose(2), B: compose(3) }), expectClean: true }));
+    assert.equal(result.action, 'patched');
+    assert.deepEqual(rec.fetched, [LIVE_ID]);
+    assert.equal(rec.patched.length, 1);
+  });
+
+  it('refuses when the live flow has an action the local file lacks, and patches nothing', async () => {
+    const rec = clientWithLive(envelope({ A: compose(1), Added_in_designer: compose(9) }));
+    await assert.rejects(
+      runPush(rec.client, input({ explicitId: LIVE_ID, clientdata: envelope({ A: compose(1) }), expectClean: true })),
+      (err: unknown) => err instanceof PushError && /--expect-clean/.test((err as Error).message) && /action 'Added_in_designer'/.test((err as Error).message),
+    );
+    assert.equal(rec.patched.length, 0);
+  });
+
+  it('patches a live flow without clientdata (nothing to lose)', async () => {
+    const rec = clientWithLive(null);
+    const result = await runPush(rec.client, input({ explicitId: LIVE_ID, clientdata: envelope({ A: compose(1) }), expectClean: true }));
+    assert.equal(result.action, 'patched');
+  });
+
+  it('does not read the live flow without --expect-clean', async () => {
+    const rec = clientWithLive(envelope({ A: compose(1), Added_in_designer: compose(9) }));
+    const result = await runPush(rec.client, input({ explicitId: LIVE_ID, clientdata: envelope({ A: compose(1) }) }));
+    assert.equal(result.action, 'patched');
+    assert.deepEqual(rec.fetched, []);
+  });
+
+  it('creates normally when the name has no match', async () => {
+    const rec = clientWithLive(envelope({ A: compose(1) }));
+    const result = await runPush(rec.client, input({ clientdata: envelope({ A: compose(1) }), expectClean: true }));
+    assert.equal(result.action, 'created');
+    assert.deepEqual(rec.fetched, []);
   });
 });

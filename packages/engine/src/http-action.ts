@@ -80,15 +80,28 @@ export function retryDelayMs(policy: any, retry: number, retryAfter: number | un
   return Math.min(max, Math.max(min, scale * 2 ** (retry - 1)));
 }
 
+type BeforeInvokeDecision = 'continue' | 'stop' | ExecuteNodeResult;
+
 /** Polling interval when a 202 answer carries no Retry-After. */
 const DEFAULT_POLL_MS = 10_000;
 
 /** One HTTP action, start to end. Throws only for expression failures in its inputs. */
-export async function executeHttpAction(action: ActionNode, ctx: RunContext, http: BaseConnector): Promise<ExecuteNodeResult> {
+export async function executeHttpAction(
+  action: ActionNode,
+  ctx: RunContext,
+  http: BaseConnector,
+  beforeInvoke?: (inputs: Record<string, unknown>) => BeforeInvokeDecision | Promise<BeforeInvokeDecision>,
+): Promise<ExecuteNodeResult> {
   const evaluated = evaluateParams(action.inputs, ctx);
   const policy = (action as any).retryPolicy;
   const inputs = httpInputsRecord(evaluated, policy);
   ctx.currentAction && (ctx.currentAction.inputs = inputs);
+  const decision = await beforeInvoke?.(inputs);
+  if (decision === 'stop') {
+    return { status: 'Cancelled', _stopped: true, inputs, variables: { ...ctx.variables } };
+  }
+  // A mocked result stands in for the call (RunOptions.mocks).
+  if (decision !== undefined && decision !== 'continue') return decision;
   const asyncPattern = !String((action as any).operationOptions ?? '').toLowerCase().includes('disableasyncpattern');
   const done = (r: Omit<ExecuteNodeResult, 'variables' | 'inputs'>): ExecuteNodeResult => ({
     ...r,

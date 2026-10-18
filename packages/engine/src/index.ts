@@ -221,6 +221,65 @@ export interface RunOptions {
     workflowRef: string,
     evaluatedBody: any,
   ) => Promise<{ handled: true; result: ExecuteNodeResult } | { handled: false }>;
+
+  /**
+   * Called before a node executes, at top level or nested at any depth. For connector, HTTP and
+   * child-flow actions it is called once the inputs are resolved, with the payload the call would
+   * be made with (the same value `ActionOutput.inputs` records); for every other node `inputs` is
+   * undefined and the call comes before anything is evaluated. Return 'stop' to end the run
+   * there: the node does not execute, nothing after it runs, every enclosing block ends
+   * Cancelled, and the result carries `stopped: true` and `stoppedBefore` with the trace so far.
+   * `flowforger run --stop-before <action>` uses this to make a local run safe before a write.
+   * The answer may be a promise: a debugger pauses inside the hook, showing the resolved inputs
+   * of an external call, before deciding.
+   */
+  onBeforeExecute?: (node: Node, ctx: RunContext, inputs?: any) => BeforeExecuteDecision | Promise<BeforeExecuteDecision>;
+
+  /**
+   * Outputs to use instead of running an action, keyed by action name (`flowforger run --mock
+   * <action>=<file.json>`), or a resolver called for every node (replaying a cloud run). A mocked
+   * action does not execute: its outputs are the given value as is (so a connector, HTTP or
+   * child-flow mock is the full `{ statusCode, body }` shape that `body('X')` reads), its status
+   * is Succeeded unless the resolver says Failed, and its trace entry carries `mocked: true`.
+   * Connector, HTTP and child-flow actions still resolve their inputs first (recorded in
+   * `inputs`, like a real call), and `onBeforeExecute` is consulted before the mock. A mocked
+   * block (scope, if, switch, loop) is replaced whole: nothing inside it runs.
+   *
+   * A resolver sees the node, the context (`loopIndexes(ctx)` gives the enclosing loops'
+   * indexes, outermost first) and, for connector/HTTP/child-flow actions, the resolved inputs;
+   * it answers with a `MockResult` or undefined to let the node run. A `status: 'Failed'`
+   * result behaves like a real failure: successors that only accept Succeeded are skipped,
+   * a catch scope whose runAfter accepts Failed runs, the enclosing block and (when nothing
+   * handles it) the run end Failed, and `actions('X')` reports the given `code` and `error`.
+   */
+  mocks?: Record<string, any> | MockResolver;
+}
+
+export type BeforeExecuteDecision = 'continue' | 'stop';
+
+/** What a mock resolver answers for a node: its outputs and, for a recorded failure, how it failed. */
+export interface MockResult {
+  outputs?: any;
+  /** Default Succeeded. */
+  status?: 'Succeeded' | 'Failed';
+  /** The cloud's error object (`{ code, message }`) or an Error; what `actions('X')?['error']` shows. */
+  error?: any;
+  /** The cloud's code ('NotFound', 'ActionFailed', ...); derived from `outputs.statusCode` or the error when absent. */
+  code?: string;
+}
+
+/** See `RunOptions.mocks`. */
+export type MockResolver = (node: Node, ctx: RunContext, inputs: any | undefined) => MockResult | undefined;
+
+/** One enclosing loop of the node being executed, as the cloud's `repetitionIndexes` name it. */
+export interface LoopIndex {
+  scopeName: string;
+  itemIndex: number;
+}
+
+/** The enclosing loops of the node being executed, outermost first (foreach and until alike). */
+export function loopIndexes(ctx: RunContext): LoopIndex[] {
+  return (ctx.iterationStack ?? []).map((f) => ({ scopeName: f.loopName, itemIndex: f.index }));
 }
 
 export interface TraceEntry {
@@ -231,6 +290,8 @@ export interface TraceEntry {
   inputs?: any;
   outputs?: any;
   error?: any;
+  /** The outputs came from `RunOptions.mocks`; the action did not run. */
+  mocked?: boolean;
   iterations?: IterationTraceEntry[];
   /**
    * Scope/if/switch only: the entries of the actions that ran (or were
@@ -269,6 +330,9 @@ export interface IterationTraceEntry {
 
 export interface RunResult extends StepResult {
   trace: TraceEntry[];
+  /** An `onBeforeExecute` hook ended the run before `stoppedBefore` executed (status Cancelled). */
+  stopped?: boolean;
+  stoppedBefore?: { nodeId: string; name: string; inputs?: any };
   artifacts?: FileArtifact[];
   /** What the flow's first Response action answered (a child flow's answer to its parent). */
   response?: FlowResponse;
@@ -566,6 +630,7 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
       ...(result.inputs !== undefined ? { inputs: result.inputs } : {}),
       outputs: result.outputs,
       error: result.error,
+      ...(result.mocked ? { mocked: true } : {}),
     };
     if (result.iterations) {
       entry.iterations = result.iterations;
@@ -574,6 +639,9 @@ export async function run(flow: FlowIR, options: RunOptions = {}): Promise<RunRe
       entry.children = result._childTrace;
     }
     trace.push(entry);
+    if (result._stopped) {
+      return { status: 'Cancelled', stopped: true, stoppedBefore: stoppedBeforeByRun.get(rootOf(ctx)), trace, artifacts: ctx.artifacts };
+    }
     top.finished(node, result);
   }
 
@@ -743,6 +811,10 @@ export interface ExecuteNodeResult {
   _childFailed?: boolean;
   /** @internal Terminate only: the runError it ends the run with */
   _runError?: any;
+  /** @internal An `onBeforeExecute` hook stopped the run before this node (or a node inside it) ran */
+  _stopped?: boolean;
+  /** The outputs came from `RunOptions.mocks`; the node did not run. */
+  mocked?: boolean;
   /** The cloud's code/error for `actions()` / `result()` (see action-status.ts); set by executeNode */
   code?: string;
   cloudError?: Outcome['cloudError'];
@@ -773,6 +845,69 @@ function recordCurrentActionInputs(ctx: RunContext, inputs: any): void {
   if (ctx.currentAction) ctx.currentAction.inputs = inputs;
 }
 
+/** Where an `onBeforeExecute` hook stopped each run (keyed by the run's root context). */
+const stoppedBeforeByRun = new WeakMap<RunContext, { nodeId: string; name: string; inputs?: any }>();
+
+/** Nodes whose `onBeforeExecute` call waits until their inputs are resolved. */
+function resolvesInputsBeforeHook(node: Node): boolean {
+  if (node.type === 'connector') return true;
+  const kind = (node as any).kind;
+  return node.type === 'action' && (kind === 'http' || kind === 'workflow');
+}
+
+/**
+ * Ask the `onBeforeExecute` hook whether to stop before `node`; records the stop on the run's
+ * root context so `run()` can report it. The root context is the one without an iteration frame
+ * chain of its own: nested contexts are spread copies sharing `actions`' origin, so the record
+ * is keyed by the `artifacts` array, which every copy shares by reference.
+ */
+async function stopsBefore(node: Node, ctx: RunContext, options: RunOptions, inputs?: any): Promise<boolean> {
+  if (!options.onBeforeExecute) return false;
+  if ((await options.onBeforeExecute(node, ctx, inputs)) !== 'stop') return false;
+  stoppedBeforeByRun.set(rootOf(ctx), { nodeId: node.id, name: node.name, ...(inputs !== undefined ? { inputs } : {}) });
+  return true;
+}
+
+/** The result standing in for `node` when `RunOptions.mocks` names it (or the resolver answers), else undefined. */
+function mockedResult(node: Node, ctx: RunContext, options: RunOptions, inputs?: any): ExecuteNodeResult | undefined {
+  const mocks = options.mocks;
+  if (!mocks) return undefined;
+  let mock: MockResult | undefined;
+  if (typeof mocks === 'function') {
+    mock = mocks(node, ctx, inputs);
+    if (!mock) return undefined;
+  } else {
+    if (!Object.prototype.hasOwnProperty.call(mocks, node.name)) return undefined;
+    mock = { outputs: mocks[node.name] };
+  }
+  const err = mock.error;
+  // A recorded error object is what the cloud showed in actions('X')?['error'].
+  const cloudError =
+    err && typeof err === 'object' && !(err instanceof Error) && typeof err.message === 'string'
+      ? { code: String(err.code ?? mock.code ?? 'ActionFailed'), message: err.message }
+      : undefined;
+  return {
+    status: mock.status === 'Failed' ? 'Failed' : 'Succeeded',
+    ...(inputs !== undefined ? { inputs } : {}),
+    outputs: mock.outputs,
+    ...(err !== undefined ? { error: err } : {}),
+    ...(mock.code !== undefined ? { code: mock.code } : {}),
+    ...(cloudError ? { cloudError } : {}),
+    variables: { ...ctx.variables },
+    mocked: true,
+  };
+}
+
+const rootByArtifacts = new WeakMap<object, RunContext>();
+function rootOf(ctx: RunContext): RunContext {
+  // Nested contexts are shallow copies of the root; `artifacts` is the one array they all share.
+  const key = ctx.artifacts as unknown as object;
+  const root = rootByArtifacts.get(key);
+  if (root) return root;
+  rootByArtifacts.set(key, ctx);
+  return ctx;
+}
+
 export async function executeNode(
   node: Node,
   ctx: RunContext,
@@ -797,6 +932,8 @@ interface ChildRunResult {
   runError?: any;
   /** A debug hook asked to stop. */
   stopped?: boolean;
+  /** An `onBeforeExecute` hook stopped the run before a child ran. */
+  _stopped?: boolean;
   /** The direct children's records, in order (what `result()` of the block lists). */
   records: ScopedActionResult[];
 }
@@ -807,6 +944,14 @@ async function executeNodeInner(
   options: RunOptions = {}
 ): Promise<ExecuteNodeResult> {
   const { connectors = {} } = options;
+
+  if (node.type !== 'trigger' && node.type !== 'recurrence' && !resolvesInputsBeforeHook(node)) {
+    if (await stopsBefore(node, ctx, options)) {
+      return { status: 'Cancelled', _stopped: true, variables: { ...ctx.variables } };
+    }
+    const mocked = mockedResult(node, ctx, options);
+    if (mocked) return mocked;
+  }
 
   /**
    * Run an array of child nodes sequentially, calling executeNode recursively.
@@ -893,6 +1038,7 @@ async function executeNodeInner(
           ...(childResult.inputs !== undefined ? { inputs: childResult.inputs } : {}),
           outputs: childResult.outputs,
           error: childResult.error,
+          ...(childResult.mocked ? { mocked: true } : {}),
         };
         if (childResult.iterations) {
           entry.iterations = childResult.iterations;
@@ -901,6 +1047,11 @@ async function executeNodeInner(
           entry.children = childResult._childTrace;
         }
         childTrace.push(entry);
+
+        // onBeforeExecute stopped the run before this child (or something inside it) ran.
+        if (childResult._stopped) {
+          return { status: 'Cancelled', _stopped: true, records };
+        }
 
         // Call debug hook after child execution
         if (options.onAfterChildExecute) {
@@ -938,7 +1089,10 @@ async function executeNodeInner(
   }
 
   /** A block's own result after running children: Cancelled (with the terminate signal) or its children's status. */
-  function blockResult(child: ChildRunResult): Pick<ExecuteNodeResult, 'status' | '_terminate' | '_runError' | 'code' | 'cloudError'> {
+  function blockResult(child: ChildRunResult): Pick<ExecuteNodeResult, 'status' | '_terminate' | '_runError' | '_stopped' | 'code' | 'cloudError'> {
+    if (child._stopped) {
+      return { status: 'Cancelled', _stopped: true };
+    }
     if (child.terminated) {
       return { status: 'Cancelled', _terminate: child.terminated, _runError: child.runError, ...SKIPPED_BY_TERMINATE };
     }
@@ -976,7 +1130,8 @@ async function executeNodeInner(
           };
         }
 
-        return await executeHttpAction(action, ctx, http);
+        return await executeHttpAction(action, ctx, http, async (inputs) =>
+          (await stopsBefore(node, ctx, options, inputs)) ? 'stop' : (mockedResult(node, ctx, options, inputs) ?? 'continue'));
       } else if (action.kind === 'compose') {
         const value = (action.inputs as any).value;
         const result = deepEvalValue(value, ctx);
@@ -1031,6 +1186,15 @@ async function executeNodeInner(
         const inputs = action.inputs as any;
         // Use deepEvalValue to recursively evaluate expressions in objects/arrays
         const value = deepEvalValue(inputs.value, ctx);
+        if (Array.isArray(value)) {
+          // The cloud refuses an array as an appended value: an array variable holds scalars and
+          // objects (append `string(x)` and `json(concat('[', join(v, ','), ']'))` it back). Code
+          // BadRequest; message as observed in a tenant, measured by conformance/flows/loops.ff.ts.
+          throw new Error(
+            `The variable '${inputs.name}' of type 'Array' cannot be initialized or updated with value of type 'Array'. ` +
+              `The variable '${inputs.name}' only supports values of types 'Float, Integer, String, Boolean, Object'.`,
+          );
+        }
         if (!Array.isArray(ctx.variables[inputs.name])) {
           ctx.variables[inputs.name] = [];
         }
@@ -1237,6 +1401,11 @@ async function executeNodeInner(
         if (body !== undefined) resolvedInputs.body = body;
         if (headers !== undefined) resolvedInputs.headers = headers;
         recordCurrentActionInputs(ctx, resolvedInputs);
+        if (await stopsBefore(node, ctx, options, resolvedInputs)) {
+          return { status: 'Cancelled', _stopped: true, inputs: resolvedInputs, variables: { ...ctx.variables } };
+        }
+        const mockedCall = mockedResult(node, ctx, options, resolvedInputs);
+        if (mockedCall) return mockedCall;
 
         // Allow debug runner to intercept workflow execution
         if (options.onBeforeWorkflowExecute) {
@@ -1320,14 +1489,6 @@ async function executeNodeInner(
       const connectorName = connAction.connector;
       const conn = connectors[connectorName];
 
-      if (!conn) {
-        return {
-          status: 'Failed',
-          error: new Error(`Connector '${connectorName}' not provided`),
-          variables: { ...ctx.variables },
-        };
-      }
-
       // Declared outside the try so a failed invoke still reports what was sent.
       let evaluatedParams: any;
       try {
@@ -1335,6 +1496,22 @@ async function executeNodeInner(
         // expression finds nothing is sent as null (which clears a column), not left out.
         evaluatedParams = missingAsNull(evaluateParams(connAction.params, ctx));
         recordCurrentActionInputs(ctx, evaluatedParams);
+        // The stop hook comes before the connector check: `--stop-before` on a write must work
+        // without a token for that connector, since no call is going to be made.
+        if (await stopsBefore(node, ctx, options, evaluatedParams)) {
+          return { status: 'Cancelled', _stopped: true, inputs: evaluatedParams, variables: { ...ctx.variables } };
+        }
+        // A mock also comes before the connector check: no token is needed for a mocked action.
+        const mockedConnector = mockedResult(node, ctx, options, evaluatedParams);
+        if (mockedConnector) return mockedConnector;
+        if (!conn) {
+          return {
+            status: 'Failed',
+            inputs: evaluatedParams,
+            error: new Error(`Connector '${connectorName}' not provided`),
+            variables: { ...ctx.variables },
+          };
+        }
         const minimumItemCount = Number((connAction as any).runtimeConfiguration?.paginationPolicy?.minimumItemCount);
         let rawOutput = await conn.invoke(connAction.operation, evaluatedParams, ctx);
         if (minimumItemCount > 0) {
@@ -1485,6 +1662,7 @@ async function executeNodeInner(
       // Each iteration's child records, by item index, for result().
       const iterationRecords: ScopedActionResult[][] = [];
       let terminateSignal: string | undefined;
+      let stoppedBefore = false;
       let runError: any;
 
       const prevIterationInfo = ctx.iterationInfo;
@@ -1512,6 +1690,10 @@ async function executeNodeInner(
           if (result.terminated) {
             terminateSignal = result.terminated;
             runError = result.runError;
+            break;
+          }
+          if (result._stopped) {
+            stoppedBefore = true;
             break;
           }
           if (result.stopped) break;
@@ -1547,6 +1729,10 @@ async function executeNodeInner(
             }
 
             if (result.stopped) stopSignal.stopped = true;
+            if (result._stopped) {
+              stoppedBefore = true;
+              stopSignal.stopped = true;
+            }
             if (result.terminated) {
               terminateSignal = result.terminated;
               runError = result.runError;
@@ -1589,6 +1775,7 @@ async function executeNodeInner(
         variables: { ...ctx.variables },
         iterations,
         ...(terminateSignal ? { status: 'Cancelled' as const, _terminate: terminateSignal, _runError: runError, ...SKIPPED_BY_TERMINATE } : {}),
+        ...(stoppedBefore ? { status: 'Cancelled' as const, _stopped: true } : {}),
       };
     }
 
@@ -1599,6 +1786,7 @@ async function executeNodeInner(
       let lastRecords: ScopedActionResult[] = [];
       let lastStatus: StepResult['status'] = 'Succeeded';
       let terminateSignal: string | undefined;
+      let stoppedBefore = false;
       let runError: any;
 
       const prevIterationInfo = ctx.iterationInfo;
@@ -1621,10 +1809,11 @@ async function executeNodeInner(
         lastRecords = result.records;
         lastStatus = result.status === 'Failed' ? 'Failed' : 'Succeeded';
 
-        if (result.terminated || result.stopped) {
+        if (result.terminated || result.stopped || result._stopped) {
           iterations.push({ index, status: lastStatus, actions: iterationActions });
           terminateSignal = result.terminated;
           runError = result.runError;
+          if (result._stopped) stoppedBefore = true;
           break;
         }
 
@@ -1655,6 +1844,7 @@ async function executeNodeInner(
         variables: { ...ctx.variables },
         iterations,
         ...(terminateSignal ? { status: 'Cancelled' as const, _terminate: terminateSignal, _runError: runError, ...SKIPPED_BY_TERMINATE } : {}),
+        ...(stoppedBefore ? { status: 'Cancelled' as const, _stopped: true } : {}),
       };
     }
 

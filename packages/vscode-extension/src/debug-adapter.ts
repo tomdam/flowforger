@@ -101,11 +101,12 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
   private nextVarRef = 100;
   private expandableVars = new Map<number, any>();
 
-  // Pending breakpoints per source file (set before launch completes)
-  private pendingBreakpoints = new Map<string, number[]>();
+  // Pending breakpoints per source file (set before launch completes). Each carries its DAP
+  // condition (a DSL-style expression) so it reaches the session as `BreakpointEntry.condition`.
+  private pendingBreakpoints = new Map<string, Array<{ line: number; condition?: string }>>();
 
   /** Every setBreakpoints request seen, by normalized path — re-applied after a relaunch. */
-  private requestedBreakpoints = new Map<string, { filePath: string; lines: number[] }>();
+  private requestedBreakpoints = new Map<string, { filePath: string; bps: Array<{ line: number; condition?: string }> }>();
 
   // Compiled source maps for child flow files (cached for breakpoint validation)
   private childSourceMaps = new Map<string, DslSourceMap>();
@@ -189,7 +190,7 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
     response.body = response.body || {};
     response.body.supportsConfigurationDoneRequest = true;
     response.body.supportsFunctionBreakpoints = false;
-    response.body.supportsConditionalBreakpoints = false;
+    response.body.supportsConditionalBreakpoints = true;
     response.body.supportsEvaluateForHovers = true;
     response.body.supportsStepBack = false;
     response.body.supportsSetVariable = false;
@@ -361,12 +362,12 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
       this.runner = this.createRunner(root, args.stopOnEntry || false);
 
       // Apply any pending breakpoints that were set before launch
-      for (const [fileNorm, lines] of this.pendingBreakpoints.entries()) {
+      for (const [fileNorm, bps] of this.pendingBreakpoints.entries()) {
         if (fileNorm === this.sourceFileNorm) {
-          this.applyBreakpointsForFile(this.sourceFile, lines, sourceMap);
+          this.applyBreakpointsForFile(this.sourceFile, bps, sourceMap);
         } else {
           // Child flow file — try to compile for breakpoint validation
-          this.applyPendingChildBreakpoints(fileNorm, lines);
+          this.applyPendingChildBreakpoints(fileNorm, bps);
         }
       }
       this.pendingBreakpoints.clear();
@@ -384,20 +385,23 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
   ): void {
     const sourcePath = args.source?.path || '';
     const sourcePathNorm = sourcePath ? normalizePath(sourcePath) : '';
-    const requestedLines = args.breakpoints?.map((bp) => bp.line) || [];
+    const requested = (args.breakpoints ?? []).map((bp) => ({
+      line: bp.line,
+      ...(bp.condition && bp.condition.trim() ? { condition: bp.condition } : {}),
+    }));
 
     if (sourcePathNorm) {
-      this.requestedBreakpoints.set(sourcePathNorm, { filePath: sourcePath, lines: requestedLines });
+      this.requestedBreakpoints.set(sourcePathNorm, { filePath: sourcePath, bps: requested });
     }
 
     if (!this.runner) {
       // Runner not yet created — store pending per source file (normalized)
       if (sourcePathNorm) {
-        this.pendingBreakpoints.set(sourcePathNorm, requestedLines);
+        this.pendingBreakpoints.set(sourcePathNorm, requested);
       }
       response.body = {
-        breakpoints: requestedLines.map(
-          (line) => new Breakpoint(true, line),
+        breakpoints: requested.map(
+          (bp) => new Breakpoint(true, bp.line),
         ),
       };
       this.sendResponse(response);
@@ -410,15 +414,15 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
     if (!sourceMap) {
       // Unknown file — mark all breakpoints as unverified
       response.body = {
-        breakpoints: requestedLines.map(
-          (line) => new Breakpoint(false, line),
+        breakpoints: requested.map(
+          (bp) => new Breakpoint(false, bp.line),
         ),
       };
       this.sendResponse(response);
       return;
     }
 
-    const confirmed = this.applyBreakpointsForFile(sourcePath, requestedLines, sourceMap);
+    const confirmed = this.applyBreakpointsForFile(sourcePath, requested, sourceMap);
     response.body = { breakpoints: confirmed };
     this.sendResponse(response);
   }
@@ -465,32 +469,33 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
    */
   private applyBreakpointsForFile(
     filePath: string,
-    requestedLines: number[],
+    requested: Array<{ line: number; condition?: string }>,
     sourceMap: DslSourceMap,
   ): DebugProtocol.Breakpoint[] {
     if (!this.runner) return [];
 
     const confirmed: DebugProtocol.Breakpoint[] = [];
     const src = new Source(path.basename(filePath), path.resolve(filePath));
-    const breakpointEntries: Array<{ nodeId: string; line: number }> = [];
+    const breakpointEntries: Array<{ nodeId: string; line: number; condition?: string }> = [];
 
-    for (const line of requestedLines) {
+    for (const { line, condition } of requested) {
+      const withCondition = condition ? { condition } : {};
       // Check exact line
       if (sourceMap.breakpointableLines.has(line)) {
         const nodeId = sourceMap.lineToNodeId.get(line);
         if (nodeId) {
-          breakpointEntries.push({ nodeId, line });
+          breakpointEntries.push({ nodeId, line, ...withCondition });
           confirmed.push(new Breakpoint(true, line, undefined, src));
           continue;
         }
       }
 
-      // Try nearest breakpointable line
+      // Try nearest breakpointable line (the condition moves with it)
       const nearest = this.runner.findNearestBreakpointableLine(line, sourceMap);
       if (nearest) {
         const nodeId = sourceMap.lineToNodeId.get(nearest);
         if (nodeId) {
-          breakpointEntries.push({ nodeId, line: nearest });
+          breakpointEntries.push({ nodeId, line: nearest, ...withCondition });
           confirmed.push(new Breakpoint(true, nearest, undefined, src));
           continue;
         }
@@ -509,13 +514,13 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
   /**
    * Apply pending breakpoints for a child flow file (before it's been stepped into).
    */
-  private applyPendingChildBreakpoints(fileNorm: string, lines: number[]): void {
+  private applyPendingChildBreakpoints(fileNorm: string, bps: Array<{ line: number; condition?: string }>): void {
     // Find the actual file path from the normalized path
     // On Windows, we need to find a matching .ff.ts file
     // For now, try to find it by checking common locations
     const sourceMap = this.getSourceMapForFile(fileNorm);
     if (sourceMap && this.runner) {
-      this.applyBreakpointsForFile(fileNorm, lines, sourceMap);
+      this.applyBreakpointsForFile(fileNorm, bps, sourceMap);
     }
   }
 
@@ -806,9 +811,9 @@ class FlowForgerDebugSession extends VsCodeDebugSession {
 
   /** Re-register every requested breakpoint against the current runner's source maps. */
   private reapplyBreakpoints(): void {
-    for (const { filePath, lines } of this.requestedBreakpoints.values()) {
+    for (const { filePath, bps } of this.requestedBreakpoints.values()) {
       const sm = this.getSourceMapForFile(filePath);
-      if (sm) this.applyBreakpointsForFile(filePath, lines, sm);
+      if (sm) this.applyBreakpointsForFile(filePath, bps, sm);
     }
   }
 

@@ -3,7 +3,7 @@
  * Orchestrates the transformation of TypeScript native DSL to FlowIR.
  */
 
-import { Project, ClassDeclaration, MethodDeclaration, Statement, SyntaxKind, SourceFile, VariableDeclarationKind, Expression } from 'ts-morph';
+import { Project, ClassDeclaration, MethodDeclaration, Statement, SyntaxKind, SourceFile, VariableDeclarationKind, Expression, ts } from 'ts-morph';
 import type { FlowIR, Node, TriggerNode, RecurrenceTriggerNode, ConnectionReference, FlowParameter, FlowMetadata, ScopeNode, ActionNode, FlowForgerConfig, ChildFlowDefinition } from '@flowforger/ir';
 import { getLoggingConfig } from '@flowforger/ir';
 import { resetIdCounter, genTriggerId, genActionId, genScopeId } from '../utils/id-generator.js';
@@ -78,9 +78,29 @@ export function transformCode(sourceCode: string, fileName = 'flow.ts', config?:
 }
 
 /**
+ * Refuse source with TypeScript parse errors. The parser recovers from most of them
+ * (a missing comma, an unterminated string), and transforming the recovered AST produces
+ * an IR whose expressions contain DSL text the author never meant as data.
+ */
+function assertNoSyntaxErrors(sourceFile: SourceFile): void {
+  const tsFile = sourceFile.compilerNode as ts.SourceFile & { parseDiagnostics?: readonly ts.DiagnosticWithLocation[] };
+  const errors = tsFile.parseDiagnostics ?? [];
+  if (errors.length === 0) return;
+  const lines = errors.map((d) => {
+    const { line, character } = tsFile.getLineAndCharacterOfPosition(d.start);
+    return `  ${sourceFile.getBaseName()}:${line + 1}:${character + 1} ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`;
+  });
+  const shown = lines.slice(0, 10);
+  if (lines.length > shown.length) shown.push(`  … and ${lines.length - shown.length} more`);
+  throw new Error(`TypeScript syntax error${errors.length === 1 ? '' : 's'} in ${sourceFile.getBaseName()}:\n${shown.join('\n')}`);
+}
+
+/**
  * Transform a ts-morph SourceFile to FlowIR.
  */
 function transformSourceFile(sourceFile: SourceFile): FlowIR {
+  assertNoSyntaxErrors(sourceFile);
+
   // Reset ID counter for fresh IDs
   resetIdCounter();
 
@@ -1305,6 +1325,11 @@ function processStatement(
           if (varNode) {
             nodes.push(varNode);
           }
+        } else if (initializer && decl.getNameNode().getKind() === SyntaxKind.Identifier) {
+          // `const x = <expression>`: no action of its own; later reads of `x` inline the expression
+          // (see TransformContext.constAliases). A const holding an action result is DSL032.
+          ctx.constAliases ??= new Map();
+          ctx.constAliases.set(decl.getName(), transformExpression(initializer, ctx, false));
         }
       }
 

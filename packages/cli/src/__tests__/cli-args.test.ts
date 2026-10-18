@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from '../cli-args.js';
+import { parseArgs, requireBooleanFlag, requireStringFlag, findUnknownFlags, KNOWN_FLAGS, ArgError } from '../cli-args.js';
 
 describe('parseArgs', () => {
   it('parses a bare flag as boolean true', () => {
@@ -61,5 +61,52 @@ describe('requireStringFlag', () => {
       () => requireStringFlag({ name: ['A', 'B'] }, 'name'),
       (err: unknown) => err instanceof ArgError && /only be specified once/.test((err as Error).message),
     );
+  });
+});
+
+describe('findUnknownFlags', () => {
+  it('accepts known flags with and without values', () => {
+    assert.deepEqual(findUnknownFlags(['--out', 'x.json', '--emit', 'logicapps', '--auth']), []);
+  });
+
+  it('rejects a single-dash option, which parseArgs would otherwise drop', () => {
+    const msgs = findUnknownFlags(['flow.ff.ts', '--emit', 'logicapps', '-o', 'Json/']);
+    assert.equal(msgs.length, 1);
+    assert.match(msgs[0], /Unknown option '-o'/);
+    assert.match(msgs[0], /did you mean '--out'/);
+  });
+
+  it('suggests the closest flag for a typo', () => {
+    const msgs = findUnknownFlags(['--emmit', 'logicapps']);
+    assert.equal(msgs.length, 1);
+    assert.match(msgs[0], /'--emmit'.*did you mean '--emit'/);
+  });
+
+  it('does not suggest anything for a far-off name', () => {
+    const msgs = findUnknownFlags(['--completely-made-up-thing']);
+    assert.equal(msgs.length, 1);
+    assert.doesNotMatch(msgs[0], /did you mean/);
+  });
+
+  it('treats a flag value that looks like a single-dash token as a value', () => {
+    assert.deepEqual(findUnknownFlags(['--var', 'x=-1', '--param', '-5']), []);
+  });
+
+  it('every flag the CLI source reads is in KNOWN_FLAGS (drift guard)', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { dirname, join } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+    const read = new Set<string>();
+    for (const f of readdirSync(srcDir)) {
+      if (!f.endsWith('.ts')) continue;
+      const text = readFileSync(join(srcDir, f), 'utf-8');
+      for (const m of text.matchAll(/(?<![\w-])args(?:\.([A-Za-z_][\w-]*)|\['([\w-]+)'\])/g)) read.add(m[1] ?? m[2]);
+      for (const m of text.matchAll(/require(?:Boolean|String)Flag\(args, '([\w-]+)'\)/g)) read.add(m[1]);
+    }
+    read.delete('_');
+    // camelCase twins read next to their kebab-case flag are not CLI options.
+    const missing = [...read].filter((k) => !KNOWN_FLAGS.has(k) && !/[A-Z]/.test(k));
+    assert.deepEqual(missing, [], `flags read in source but missing from KNOWN_FLAGS: ${missing.join(', ')}`);
   });
 });

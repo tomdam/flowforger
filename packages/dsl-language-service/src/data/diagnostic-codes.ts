@@ -274,7 +274,7 @@ export const DiagnosticCodes = {
   },
 
   // DSL031 (description exceeds 255 characters) is retired: the Logic Apps emitter now
-  // emits long descriptions as a 255-char excerpt with the full comment preserved in
+  // emits long descriptions as a 256-char excerpt with the full comment preserved in
   // action metadata (flowforgerDescription), so long comments are no longer an error.
   // Do not reuse the DSL031 code number.
 
@@ -303,24 +303,20 @@ export const DiagnosticCodes = {
       `'${name}' is not a known expression function (engine or cloud). Check for typos.`,
   },
 
-  // Comments become Power Automate descriptions (DSL035-DSL036)
+  // @action tag value that Power Automate refuses as an action name (DSL035)
   DSL035: {
     code: 'DSL035',
     severity: 'error' as DiagnosticSeverity,
-    message: "Comment contains a template expression: '{0}'",
-    format: (snippet: string) =>
-      `Comment contains '${snippet}'. Comments become the action's description in Power Automate, ` +
-      `which parses "@{...}" inside a description as a template expression and rejects the flow on save ` +
-      `(InvalidTemplate). Write the expression without the "@" (e.g. "{...}" or the bare function call).`,
+    message: "Invalid action name in @action: '{0}'",
+    format: (name: string, parts: string) =>
+      `@action name '${name}' contains ${parts}. Power Automate rejects an action name with "@{", a control character ` +
+      `or any of < > % & \\ ? / on save. The name is the rest of the @action line, so a note written after it becomes ` +
+      `part of the name: put the note on its own line or in a // comment above.`,
   },
-  DSL036: {
-    code: 'DSL036',
-    severity: 'warning' as DiagnosticSeverity,
-    message: "Comment starts with '{0}'",
-    format: (snippet: string) =>
-      `Comment starts with '${snippet}'. Comments become the action's description in Power Automate, ` +
-      `and a description that begins with "@" is parsed as a template expression. Start the comment with a word instead.`,
-  },
+
+  // DSL036 (comment starting with "@") is retired, like DSL035's old meaning ("@{...}" in any
+  // comment): the cloud saves a description with "@{...}" or a leading "@" as is
+  // (conformance/save-rules/descriptions.mjs). Do not reuse the DSL036 code number.
 
   // Response / Terminate inside a loop (DSL037)
   DSL037: {
@@ -449,6 +445,14 @@ export const DiagnosticCodes = {
     severity: 'warning' as DiagnosticSeverity,
     message: "'{0}' is called with the wrong number of arguments",
     format: (cloudMessage: string) => `${cloudMessage} Power Automate saves the flow, but this fails when it runs.`,
+  },
+
+  // TypeScript syntax (DSL051)
+  DSL051: {
+    code: 'DSL051',
+    severity: 'error' as DiagnosticSeverity,
+    message: 'TypeScript syntax error: {0}',
+    format: (tsMessage: string) => `TypeScript syntax error: ${tsMessage}`,
   },
 } as const;
 

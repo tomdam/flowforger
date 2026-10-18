@@ -39,6 +39,7 @@ import {
   type ExprNode,
 } from '@flowforger/expressions';
 import { getPositionFromOffset } from '../analyzer/dsl-parser.js';
+import { invalidActionNameParts } from '@flowforger/ir';
 
 /**
  * A diagnostic message with location information.
@@ -102,8 +103,8 @@ export interface DiagnosticsOptions {
   checkSelfRefArrayReassign?: boolean;
   /** Check Power Automate expressions inside ctx.eval(`...`) literals (DSL033, DSL034) */
   checkEvalExpressions?: boolean;
-  /** Check comments (future action descriptions) for Power Automate template syntax (DSL035, DSL036) */
-  checkDescriptionComments?: boolean;
+  /** Check `@action` tag values for characters the cloud refuses in an action name (DSL035) */
+  checkActionNameTags?: boolean;
   /** Check ctx.response()/ctx.terminate() placement: not inside loops (DSL037), response needs a request trigger (DSL038) */
   checkActionPlacement?: boolean;
   /** Check definition limits: name length, action/switch-case/variable counts (DSL039-DSL042) */
@@ -114,6 +115,12 @@ export interface DiagnosticsOptions {
   checkParallelLoopState?: boolean;
   /** Check that actions only read actions on their runAfter path (DSL048) */
   checkRunAfterPath?: boolean;
+  /**
+   * Report TypeScript parse errors (DSL051). TypeScript recovers from most syntax errors, so
+   * without this the recovered AST is analysed — and compiled — as if the source were valid.
+   * Hosts that already show TypeScript's own syntax diagnostics (the LSP server, Monaco) turn it off.
+   */
+  checkSyntax?: boolean;
 }
 
 const defaultOptions: DiagnosticsOptions = {
@@ -138,12 +145,13 @@ const defaultOptions: DiagnosticsOptions = {
   checkQuotedSpread: true,
   checkSelfRefArrayReassign: true,
   checkEvalExpressions: true,
-  checkDescriptionComments: true,
+  checkActionNameTags: true,
   checkActionPlacement: true,
   checkLimits: true,
   checkTriggerOptions: true,
   checkParallelLoopState: true,
   checkRunAfterPath: true,
+  checkSyntax: true,
 };
 
 /**
@@ -159,6 +167,11 @@ export function getDiagnostics(
   // Build symbol index
   const index = buildSymbolIndex(code);
   const sourceFile = index.sourceFile;
+
+  // Check TypeScript syntax
+  if (opts.checkSyntax) {
+    diagnostics.push(...checkSyntax(sourceFile));
+  }
 
   // Check flow structure
   if (opts.checkFlowDecorator || opts.checkTrigger || opts.checkAction) {
@@ -245,9 +258,9 @@ export function getDiagnostics(
     diagnostics.push(...checkEvalExpressions(sourceFile));
   }
 
-  // Check comments for "@{...}" / leading "@" that would break the description in the cloud (DSL035, DSL036)
-  if (opts.checkDescriptionComments) {
-    diagnostics.push(...checkDescriptionComments(sourceFile));
+  // Check @action tag values the cloud would refuse as an action name (DSL035)
+  if (opts.checkActionNameTags) {
+    diagnostics.push(...checkActionNameTags(sourceFile));
   }
 
   // Check Response/Terminate placement: not inside loops, Response needs a request trigger (DSL037, DSL038)
@@ -286,6 +299,31 @@ export function getDiagnostics(
 /**
  * Check flow structure (decorators, trigger, action method).
  */
+/** TypeScript's own parse diagnostics for the source file (not exposed on the public type). */
+function parseDiagnosticsOf(sourceFile: ts.SourceFile): readonly ts.DiagnosticWithLocation[] {
+  return (sourceFile as ts.SourceFile & { parseDiagnostics?: readonly ts.DiagnosticWithLocation[] }).parseDiagnostics ?? [];
+}
+
+/**
+ * Report TypeScript parse errors as DSL051 (one per parse diagnostic, in source order).
+ * `ts.createSourceFile` never throws: it recovers and records the errors on the source
+ * file, so every later check — and the transformer — would otherwise run on a recovered
+ * AST whose expressions are not what the author wrote.
+ */
+function checkSyntax(sourceFile: ts.SourceFile): Diagnostic[] {
+  return parseDiagnosticsOf(sourceFile).map((d) => {
+    const start = sourceFile.getLineAndCharacterOfPosition(d.start);
+    const end = sourceFile.getLineAndCharacterOfPosition(d.start + Math.max(d.length, 1));
+    return {
+      code: DiagnosticCodes.DSL051.code,
+      severity: DiagnosticCodes.DSL051.severity,
+      message: DiagnosticCodes.DSL051.format!(ts.flattenDiagnosticMessageText(d.messageText, ' ')),
+      range: { start, end },
+      source: 'flowforger',
+    };
+  });
+}
+
 function checkFlowStructure(
   sourceFile: ts.SourceFile,
   index: SymbolIndex,
@@ -1125,6 +1163,46 @@ function checkMultipleActionMethods(sourceFile: ts.SourceFile): Diagnostic[] {
 const VALID_RUN_AFTER_STATUSES = new Set(['succeeded', 'failed', 'skipped', 'timedout']);
 
 /**
+ * Add the action names the transformer generates for mutations the variable index does not
+ * record: `arr.push(v)` → Append_to_arr, `s += v` → Append_s (string) or Increment_s (number),
+ * `n -= v` / `n--` → Decrement_n, `n++` → Increment_n. A repeat of the same name gets _2, _3 ….
+ * Both candidates are added for `+=` because the type is not known here; the check is only
+ * "does this name exist", so being permissive costs nothing.
+ */
+function addAutoMutationActionNames(sourceFile: ts.SourceFile, declaredActions: Set<string>): void {
+  const counts = new Map<string, number>();
+  const add = (prefix: string, name: string) => {
+    const key = `${prefix}_${name}`.toLowerCase();
+    const n = (counts.get(key) || 0) + 1;
+    counts.set(key, n);
+    declaredActions.add(n === 1 ? key : `${key}_${n}`);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'push' &&
+      ts.isIdentifier(node.expression.expression)
+    ) {
+      add('append_to', node.expression.expression.text);
+    } else if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left)) {
+      const kind = node.operatorToken.kind;
+      if (kind === ts.SyntaxKind.PlusEqualsToken) {
+        add('increment', node.left.text);
+        add('append', node.left.text);
+      } else if (kind === ts.SyntaxKind.MinusEqualsToken) {
+        add('decrement', node.left.text);
+      }
+    } else if ((ts.isPostfixUnaryExpression(node) || ts.isPrefixUnaryExpression(node)) && ts.isIdentifier(node.operand)) {
+      if (node.operator === ts.SyntaxKind.PlusPlusToken) add('increment', node.operand.text);
+      else if (node.operator === ts.SyntaxKind.MinusMinusToken) add('decrement', node.operand.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
+/**
  * Check @runAfter annotations for invalid statuses (DSL021) and
  * non-existent action references (DSL022).
  */
@@ -1166,6 +1244,10 @@ function checkRunAfterAnnotations(sourceFile: ts.SourceFile, index: SymbolIndex)
       declaredActions.add(`append_${name}${suffix}`);
     }
   }
+
+  // `.push()`, `+=`, `-=`, `++` and `--` are not in the variable index but compile to
+  // Append_to_x / Append_x / Increment_x / Decrement_x (with _2, _3 … on repeats).
+  addAutoMutationActionNames(sourceFile, declaredActions);
 
   // Also scan ALL JSDoc comments for @action annotations. The action-finder only extracts
   // @action from control structures and ctx.method() calls, but @action can appear on any
@@ -1926,13 +2008,6 @@ export function getDiagnosticCounts(
  * from raw source text), inner offsets would be misaligned, so findings fall
  * back to squiggling the whole literal.
  */
-/**
- * Structural JSDoc tags the transformer strips from descriptions. Mirrors the tag list in
- * `parseDescriptionFromJSDoc` (@flowforger/dsl-native) plus `@trigger`.
- */
-const STRUCTURAL_JSDOC_TAGS =
-  'metadata|runAfter|action|type|parallel|limit|originalName|retryPolicy|runtimeConfig|conditionFormat|varType|trackedProperties|operationOptions|paramsOmitted|valueArrayForm|varNameCase|trigger';
-
 interface CommentInfo {
   pos: number;
   end: number;
@@ -1975,53 +2050,6 @@ function collectComments(sourceFile: ts.SourceFile): CommentInfo[] {
   return out.sort((a, b) => a.pos - b.pos);
 }
 
-/**
- * The part of a comment that the transformer turns into a description, as
- * `{ offset, prose }` where `offset` is the index inside `comment.text` at which the
- * prose starts. Returns undefined when nothing from this comment becomes a description.
- *
- * Mirrors the transformer:
- * - `//` comments and plain block comments: the whole text.
- * - JSDoc with `@description`: the text after the tag, up to the next structural tag.
- * - JSDoc directly above the flow class (or above the imports): the whole text.
- * - Any other JSDoc (structural tags only): nothing — free prose there is dropped.
- */
-function descriptionProse(
-  comment: CommentInfo,
-  sourceText: string,
-): { offset: number; prose: string } | undefined {
-  const { text, kind } = comment;
-  if (kind === 'line') {
-    return { offset: 2, prose: text.slice(2) };
-  }
-  const innerOffset = kind === 'jsdoc' ? 3 : 2;
-  const inner = text.slice(innerOffset, text.endsWith('*/') ? -2 : undefined);
-  if (kind === 'block') {
-    return { offset: innerOffset, prose: inner.replace(/^\s*\*\s?/gm, '') };
-  }
-  const descMatch = inner.match(
-    new RegExp(`@description\\s+([\\s\\S]*?)(?=\\s*@(?:${STRUCTURAL_JSDOC_TAGS})\\b|$)`),
-  );
-  if (descMatch && descMatch.index !== undefined) {
-    const proseStart = descMatch.index + descMatch[0].indexOf(descMatch[1]);
-    return { offset: innerOffset + proseStart, prose: descMatch[1] };
-  }
-  // Class-level (or file-level) JSDoc: the transformer keeps the whole block as the flow description.
-  const following = sourceText.slice(comment.end).replace(/^\s+/, '');
-  if (/^(@Flow\b|export\b|class\b|abstract\b|import\b)/.test(following)) {
-    return { offset: innerOffset, prose: inner.replace(/^\s*\*? ?/gm, '') };
-  }
-  return undefined;
-}
-
-/**
- * Check comments — which become action / trigger / flow descriptions in the emitted
- * Logic Apps JSON — for Power Automate template syntax the cloud would try to parse:
- *
- * - DSL035 (error): "@{" anywhere in a comment. Flagged in every comment, even ones that
- *   don't currently become a description, so the file never carries the hazard.
- * - DSL036 (warning): a description that starts with "@" (but not "@@").
- */
 /**
  * Placement of ctx.response() / ctx.terminate().
  *
@@ -2502,63 +2530,42 @@ function checkRunAfterPath(sourceFile: ts.SourceFile, index: SymbolIndex): Diagn
   return diagnostics;
 }
 
-function checkDescriptionComments(sourceFile: ts.SourceFile): Diagnostic[] {
+/**
+ * DSL035: an `@action` tag value the cloud refuses as an action name. The transformer takes the
+ * rest of the tag's line as the name (it may contain spaces, e.g. "Case 2"), so a note written
+ * after the name on the same line — `@action B — uses @{outputs('A')}` — becomes part of it,
+ * and Power Automate rejects a name containing "@{", a control character or < > % & \ ? /
+ * on save. Mirrors `parseActionNameFromJSDoc` (@flowforger/dsl-native) and ACTION_NAME_INVALID in
+ * @flowforger/validator. Comments that become descriptions are not checked: the cloud saves
+ * "@{...}" and a leading "@" in a description as is (conformance/save-rules/descriptions.mjs).
+ */
+function checkActionNameTags(sourceFile: ts.SourceFile): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  const sourceText = sourceFile.text;
-  const comments = collectComments(sourceFile);
-
-  const push = (code: 'DSL035' | 'DSL036', snippet: string, start: number, end: number) => {
-    diagnostics.push({
-      code: DiagnosticCodes[code].code,
-      severity: DiagnosticCodes[code].severity,
-      message: DiagnosticCodes[code].format!(snippet),
-      range: {
-        start: sourceFile.getLineAndCharacterOfPosition(start),
-        end: sourceFile.getLineAndCharacterOfPosition(end),
-      },
-      source: 'flowforger',
-    });
-  };
-
-  for (let i = 0; i < comments.length; i++) {
-    const comment = comments[i];
-
-    // DSL035: every "@{" in the comment.
-    const interpolation = /@\{/g;
+  for (const comment of collectComments(sourceFile)) {
+    if (comment.kind !== 'jsdoc') continue;
+    // A Switch case's @action is the case key, not an action name: "/" and "&" are fine there
+    // (designer-built flows use them).
+    if (/@type\s+case\b/.test(comment.text)) continue;
+    if (/^\s*(?:case\b|default\s*:)/.test(sourceFile.text.slice(comment.end))) continue;
+    const tag = /@action[ \t]+([^\r\n]+?)(?=\s+@[a-zA-Z]|\s*\*\/|[ \t]*(?:\r?\n|$))/g;
     let m: RegExpExecArray | null;
-    while ((m = interpolation.exec(comment.text)) !== null) {
-      const start = comment.pos + m.index;
-      // Squiggle through the closing brace when it sits on the same line, else just "@{".
-      const lineEnd = comment.text.indexOf('\n', m.index);
-      const sameLine = comment.text.slice(m.index, lineEnd === -1 ? undefined : lineEnd);
-      const close = sameLine.indexOf('}');
-      const snippet = close === -1 ? '@{' : sameLine.slice(0, close + 1);
-      push('DSL035', snippet.length > 40 ? snippet.slice(0, 37) + '…' : snippet, start, start + snippet.length);
+    while ((m = tag.exec(comment.text)) !== null) {
+      const name = m[1].trim();
+      const invalid = invalidActionNameParts(name);
+      if (invalid.length === 0) continue;
+      const start = comment.pos + m.index + m[0].indexOf(m[1]);
+      diagnostics.push({
+        code: DiagnosticCodes.DSL035.code,
+        severity: DiagnosticCodes.DSL035.severity,
+        message: DiagnosticCodes.DSL035.format!(name, invalid.map((c) => JSON.stringify(c)).join(', ')),
+        range: {
+          start: sourceFile.getLineAndCharacterOfPosition(start),
+          end: sourceFile.getLineAndCharacterOfPosition(start + m[1].length),
+        },
+        source: 'flowforger',
+      });
     }
-
-    // DSL036: description text starting with "@". A `//` line that continues a run of `//`
-    // lines is joined into the previous one, so only the first line of a run can "start".
-    if (comment.kind === 'line' && i > 0) {
-      const prev = comments[i - 1];
-      const between = sourceText.slice(prev.end, comment.pos);
-      if (prev.kind === 'line' && /^[ \t]*\r?\n[ \t]*$/.test(between)) continue;
-    }
-    // A trailing `//` comment after code on the same line never becomes a description.
-    if (comment.kind === 'line') {
-      const lineStart = sourceText.lastIndexOf('\n', comment.pos - 1) + 1;
-      if (/\S/.test(sourceText.slice(lineStart, comment.pos))) continue;
-    }
-    const desc = descriptionProse(comment, sourceText);
-    if (!desc) continue;
-    const leading = desc.prose.match(/^\s*(@(?!@)\S*)/);
-    if (!leading) continue;
-    const token = leading[1];
-    const atIndex = comment.text.indexOf('@', desc.offset);
-    if (atIndex === -1) continue;
-    const start = comment.pos + atIndex;
-    push('DSL036', token, start, start + token.length);
   }
-
   return diagnostics;
 }
 

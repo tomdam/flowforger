@@ -12,12 +12,19 @@ import { DataverseClient } from '@flowforger/dataverse-sdk';
 import { buildConnectors } from '@flowforger/debug-node';
 import { parseLogicAppsToIR, generateNativeDslFromIR } from '@flowforger/dsl-native';
 import { getDiagnostics, getDiagnosticCounts, type Diagnostic } from '@flowforger/dsl-language-service';
-import { resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTriggerCallbackUrl, flowUsesListCallbackUrl, collectAllConnectorScopes, resourceKeyForUrl, RESOURCE_APIS, type AuthConfig } from './auth.js';
+import { connectorsForExplicitTokens, resolveRequiredScopes, acquireTokens, acquireFlowServiceToken, fetchTriggerCallbackUrl, flowUsesListCallbackUrl, collectAllConnectorScopes, resourceKeyForUrl, RESOURCE_APIS, type AuthConfig } from './auth.js';
 import { checkParity, ParityTransformError } from './parity.js';
-import { runPush, PushError } from './push.js';
-import { parseArgs, requireBooleanFlag, requireStringFlag, ArgError } from './cli-args.js';
+import { runPush, PushError, flowStateSummary } from './push.js';
+import { runDiff } from './diff.js';
+import { formatDiffReport } from './definition-diff.js';
+import { resolveFlowTarget, type FlowTarget } from './flow-target.js';
+import { FlowApiClient, FlowApiError, findEnvironmentForDataverse } from './flow-api.js';
+import { fetchCloudRun, prepareReplay, describeReplay, type Replay, type CloudRun } from './replay-run.js';
+import { formatPrettyRunResult } from './pretty-trace.js';
+import { parseArgs, requireBooleanFlag, requireStringFlag, findUnknownFlags, ArgError } from './cli-args.js';
 import { resolveRunParameterOverrides } from './env-var-overrides.js';
 import { printPrettyRunResult } from './pretty-trace.js';
+import { collectMocks, parseLiveFlags, createRunGuard, mockedActionsInTrace } from './run-mocks.js';
 
 /**
  * Resolve the CLI's own package root (one level above dist/), working in both
@@ -150,6 +157,19 @@ function loadEmitterConfig(args: Record<string, any>, defaultPath?: string): any
 }
 
 /**
+ * The FlowForgerConfig for commands that fall back to flowforger.config.json
+ * in the working directory (pull, push, diff): an explicit --config must
+ * exist, the default file is optional.
+ */
+function loadCwdConfig(args: Record<string, any>): FlowForgerConfig {
+  const configPath = (args.config as string) || 'flowforger.config.json';
+  if (args.config || existsSync(resolve(configPath))) {
+    return loadConfig(configPath, args['config-env'] as string | undefined);
+  }
+  return DEFAULT_CONFIG;
+}
+
+/**
  * Load and validate the `auth` section from the config file for `--auth`.
  * Throws a helpful message when the file or the `auth` section is missing.
  */
@@ -176,7 +196,7 @@ async function acquireDataverseAuth(
   args: Record<string, any>,
   url: string | undefined,
   token: string,
-  cmd: 'pull' | 'push',
+  cmd: 'pull' | 'push' | 'activate' | 'diff' | 'runs' | 'run-show' | 'run',
 ): Promise<{ url: string; token: string }> {
   const authConfig = loadAuthConfig(args);
   // --url overrides config's dataverse resource for both URL and token scope
@@ -197,6 +217,91 @@ async function acquireDataverseAuth(
   return { url, token };
 }
 
+/**
+ * What `runs`, `run-show` and `run --replay-run` share: a Dataverse connection (--url/--token or
+ * --auth), a flow-service token (--flow-token or --auth), the flow resolved like push/diff
+ * (--id, the decorator workflowId, then the name), its Flow API id (the workflow row's
+ * resourceid) and the environment id (--environment-id, else found from the Dataverse URL).
+ * Prints the reason and exits 2 when any of these is missing.
+ */
+async function connectFlowApi(
+  args: Record<string, any>,
+  cmd: 'runs' | 'run-show' | 'run',
+  flow: { explicitId?: string; decoratorWorkflowId?: string; flowName?: string; isDsl: boolean; hasFile: boolean },
+): Promise<{ client: DataverseClient; url: string; flowApi: FlowApiClient; environmentId: string; flowApiId: string; target: FlowTarget }> {
+  const log = (msg: string) => console.error(msg);
+  let url = args.url as string;
+  let token = (args.token as string) || process.env.DATAVERSE_TOKEN || '';
+  if (args['auth']) {
+    ({ url, token } = await acquireDataverseAuth(args, url, token, cmd));
+  }
+  if ((!flow.hasFile && !flow.explicitId && !flow.flowName) || !url || !token) {
+    console.error(
+      cmd === 'run'
+        ? 'Required for --replay-run: --auth (recommended), or --url with --token/DATAVERSE_TOKEN'
+        : 'Required: --file, --id or --name; --url (or --auth with config); and --token or DATAVERSE_TOKEN env or --auth',
+    );
+    process.exit(2);
+  }
+
+  // The flow-service token: --flow-token, else --auth (same MSAL cache as the Dataverse token).
+  let flowToken = (args['flow-token'] as string | undefined) || undefined;
+  if (!flowToken && args['auth']) flowToken = await acquireFlowServiceToken(loadAuthConfig(args), args.verbose ? log : () => {});
+  if (!flowToken) {
+    console.error('A flow-service token is needed: pass --auth (recommended) or --flow-token <token> (resource https://service.flow.microsoft.com/)');
+    process.exit(2);
+  }
+
+  const client = new DataverseClient({ baseUrl: url, token });
+  let target: FlowTarget | null;
+  try {
+    target = await resolveFlowTarget(client, { explicitId: flow.explicitId, decoratorWorkflowId: flow.decoratorWorkflowId, flowName: flow.flowName, isDsl: flow.isDsl }, log);
+  } catch (err) {
+    if (err instanceof PushError) {
+      console.error(err.message);
+      process.exit(2);
+    }
+    throw err;
+  }
+  if (!target) {
+    console.error(`No flow named '${flow.flowName}' found in this environment`);
+    process.exit(2);
+  }
+  const flowApiId = await client.getFlowApiId(target.workflowId);
+  if (!flowApiId) {
+    console.error(`Flow ${target.workflowId} has no resourceid, so it cannot be addressed through the Flow API`);
+    process.exit(2);
+  }
+
+  const flowApi = new FlowApiClient({ token: flowToken });
+  let environmentId = args['environment-id'] as string | undefined;
+  if (!environmentId) {
+    let envs;
+    try {
+      envs = await flowApi.listEnvironments();
+    } catch (err) {
+      exitOnFlowApiError(err);
+      throw err;
+    }
+    const env = findEnvironmentForDataverse(envs, url);
+    if (!env) {
+      console.error(`No Power Platform environment linked to ${url} is visible to you; pass --environment-id <guid>`);
+      process.exit(2);
+    }
+    environmentId = env.id;
+  }
+  return { client, url, flowApi, environmentId, flowApiId, target };
+}
+
+/** Print a Flow API failure (with the permission hint for 401/403) and exit 2; returns for any other error. */
+function exitOnFlowApiError(err: unknown): void {
+  if (err instanceof FlowApiError) {
+    console.error(err.message);
+    if (err.status === 401 || err.status === 403) console.error('The flow-service token was refused; the app registration needs the Power Automate (service.flow.microsoft.com) User permission, and the flow must be visible to you.');
+    process.exit(2);
+  }
+}
+
 function help() {
   console.log(`FlowForger CLI
 
@@ -207,6 +312,18 @@ Usage:
                     (--in-content-type: --in is the raw request body, e.g. a form post or multipart data)
                     [--pretty | --json]  (default: pretty on a terminal, JSON when piped)
                     [--verbose]  (also print sign-in progress, and in pretty mode connector request/response logs)
+                    [--stop-before <actionName>]  (end the run before that action, printing the inputs it would get; exit code 3)
+                    [--mock <actionName>=<outputs.json>]  (repeatable: the action does not run, its outputs are the file's JSON)
+                    [--mocks <mocks.json>]  (one JSON object mapping action names to their outputs)
+                    [--live <actionName>[,<actionName>]]  (repeatable: only these actions may call out; any other
+                                                          connector/HTTP/child-flow action must be mocked, else the run
+                                                          ends before it with its inputs, exit code 3 — a safe dry run)
+                    [--replay-run <runId>]  (replay a cloud run: its trigger outputs are the input unless --in is given,
+                                             every connector/HTTP/child-flow action it recorded is pinned to the recorded
+                                             outputs per loop iteration — a failure as a failure — and safe mode is on:
+                                             an unpinned external action stops the run (exit 3) unless listed with --live,
+                                             which unpins it. Needs --auth (or --flow-token plus --url/--token); the flow
+                                             is resolved like run-show: --id, the @Flow workflowId, then the name)
                     [--vars vars.json] [--var k=v] [--param k=v]
                     [--auth] [--config flowforger.config.json]
                     [--sp-token <sharepoint-token>]
@@ -225,13 +342,30 @@ Usage:
                     [--no-children]
   --token accepts a Dataverse AAD token (audience = the environment URL); DATAVERSE_TOKEN env var also works. --auth uses the config's auth section.
   flowforger push [--id <workflowid>] --file <flow.ff.ts|clientdata.json> --url <dataverseUrl> [--token <token>] [--auth] [--config flowforger.config.json]
-                    [--name <flowName>] [--solution <uniqueName>] [--create | --no-create]
+                    [--name <flowName>] [--solution <uniqueName>] [--create | --no-create] [--require-active] [--expect-clean]
   --id is optional when the DSL has \`workflowId\` in @Flow({...}); explicit --id always wins.
   With no id, push finds the flow by name and updates it, or creates it if there is no match
   (as Draft, and writing the new workflowId back into your @Flow decorator).
   --solution places a newly created flow in that solution. --create always creates; --no-create
   makes a missing flow an error. JSON files need --name for name lookup and creation.
-  flowforger activate --id <workflowid> --url <dataverseUrl> [--token <token>] --state <statecode> --status <statuscode>
+  After the push the flow's state is printed (Activated / Draft / Suspended); --require-active
+  exits 1 when it is not Activated. push itself never changes the state.
+  --expect-clean refuses to update when the live flow has actions, triggers or parameters the
+  local file lacks (something was added in the designer since you pulled); pull and merge first.
+  flowforger diff --file <flow.ff.ts|clientdata.json> --url <dataverseUrl> [--token <token>] [--auth] [--config flowforger.config.json]
+                    [--id <workflowid> | --name <flowName>] [--pretty | --json]  (default: pretty on a terminal, JSON when piped)
+  Compare the local flow with the live one, per action: only-local, only-live, changed (type, inputs,
+  expression, runAfter, moved), plus trigger, parameter and flow-level differences. The live flow is
+  resolved like push (--id, then the decorator workflowId, then the name). Exit code 0 when identical,
+  1 when there are differences, 2 on a usage or resolution error.
+  flowforger runs (--file <flow.ff.ts> | --id <workflowid> | --name <flowName>) --auth [--top <n>] [--status <Succeeded|Failed|Cancelled|Running>]
+                    [--environment-id <guid>] [--flow-token <token>] [--pretty | --json]
+  flowforger run-show --run <runId> (--file <flow.ff.ts> | --id <workflowid> | --name <flowName>) --auth [--environment-id <guid>] [--pretty | --json]
+  List a flow's cloud runs, or print one run with the trace shape of \`run --json\` ({ status, trace }: every
+  action with the cloud's status, inputs, outputs and error; a block's body under children, a loop's under
+  iterations). Needs a flow-service token (--auth, or --flow-token). The environment is found from the
+  Dataverse URL unless --environment-id is given. run-show exits 0 when the run Succeeded, 1 otherwise.
+  flowforger activate --id <workflowid> [--url <dataverseUrl>] [--token <token> | --auth [--config flowforger.config.json]] --state <statecode> --status <statuscode>
   flowforger generate-dsl --in <clientdata.json> --out <flow.ff.ts> [--name <flowName>] [--config <config.json>]
   flowforger parity --in <clientdata.json> [--name <flowName>] [--config <config.json>] [--ignore-whitespace]
   flowforger sp-discover --token <graph-token> [--site <site-url>] [--list <list-name>]
@@ -550,6 +684,20 @@ async function discoverSharePoint(token: string, siteUrl?: string, listName?: st
   }
 }
 
+/** Whether the flow (its root, not child flows) contains an action named `name`, at any depth. */
+function flowHasAction(ir: FlowIR, name: string): boolean {
+  const walk = (nodes: any[] | undefined): boolean =>
+    (nodes ?? []).some((n) =>
+      n.name === name ||
+      walk(n.actions) ||
+      walk(n.elseActions) ||
+      (n.cases ?? []).some((c: any) => walk(c.actions)) ||
+      walk(n.defaultActions) ||
+      walk(n.default?.actions),
+    );
+  return walk(ir.nodes as any[]);
+}
+
 async function main() {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgs(rest);
@@ -557,6 +705,16 @@ async function main() {
   if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
     console.log(cliVersion());
     return;
+  }
+  if (cmd === '--help' || cmd === '-h' || cmd === 'help' || args.help || rest.includes('-h')) {
+    help();
+    return;
+  }
+  // A misspelled or single-dash option used to be ignored without a word
+  // (`compile x.ff.ts -o out/` wrote to the cwd). Refuse it instead.
+  const unknown = findUnknownFlags(rest);
+  if (unknown.length > 0) {
+    throw new ArgError(`${unknown.join('\n')}\nRun 'flowforger --help' for the option list.`);
   }
 
   switch (cmd) {
@@ -626,7 +784,6 @@ async function main() {
             'EXPR_LOOP_REFERENCE', 'VAR_INIT_NESTED', 'EXPR_UNKNOWN_PARAMETER', // DSL012/013, DSL014, DSL015
             'RUNAFTER_STATUS', 'RUNAFTER_UNKNOWN', 'RUNAFTER_SELF', // DSL021, DSL022
             'VAR_INIT_DUPLICATE', 'EXPR_SYNTAX', 'EXPR_UNKNOWN_FUNCTION', // DSL030, DSL033, DSL034
-            'DESCRIPTION_EXPRESSION', 'DESCRIPTION_LEADING_AT', // DSL035, DSL036
             'RESPONSE_NESTED', 'TERMINATE_NESTED', 'RESPONSE_TRIGGER', // DSL037, DSL038
             'ACTION_NAME_LENGTH', 'ACTION_COUNT', 'SWITCH_CASES', 'VARIABLE_COUNT', // DSL039-DSL042
             'FOREACH_CONCURRENCY', 'RETRY_POLICY', 'UNTIL_COUNT', 'UNTIL_TIMEOUT', // DSL043
@@ -640,7 +797,9 @@ async function main() {
             const { transformFile } = await import('@flowforger/dsl-native');
             const ir = await transformFile(filePath);
             const res = validateFlowIR(ir);
-            const irIssues = res.issues.filter((i) => !DSL_COVERED_IR_CODES.has(i.code) && i.level !== 'info');
+            // Info-level hints are shown too (DV_LOOKUP_UNGUARDED); HTTP_RETRY is left out because the
+            // cloud applies its default retry policy to an HTTP action without one.
+            const irIssues = res.issues.filter((i) => !DSL_COVERED_IR_CODES.has(i.code) && !(i.level === 'info' && i.code === 'HTTP_RETRY'));
             irIssueCount = irIssues.length;
             for (const i of irIssues) {
               console.log(`${file} ${i.level.toUpperCase()} [${i.code}] ${i.message}${i.path ? ` (${i.path})` : ''}`);
@@ -688,7 +847,7 @@ async function main() {
       // way the cloud's Request trigger stores it.
       const inContentType = args['in-content-type'] ? requireStringFlag(args, 'in-content-type') : undefined;
       if (inContentType && !args.in) throw new ArgError('--in-content-type needs --in <body file>');
-      const payload = !args.in
+      let payload: unknown = !args.in
         ? {}
         : inContentType
           ? requestTriggerOutputs(inContentType, readFileSync(resolve(args.in as string)))
@@ -696,7 +855,15 @@ async function main() {
       // --auth: automatic token acquisition via MSAL
       if (args['auth']) {
         const authConfig = loadAuthConfig(args);
-        const scopesByResource = await resolveRequiredScopes(ir, authConfig);
+        const explicitTokenConnectors = connectorsForExplicitTokens({
+          spToken: !!args['sp-token'],
+          dvToken: !!args['dv-token'],
+          graphToken: !!args['graph-token'],
+          wordToken: !!args['word-token'],
+          excelToken: !!args['excel-token'],
+          onedriveToken: !!args['onedrive-token'],
+        });
+        const scopesByResource = await resolveRequiredScopes(ir, authConfig, { skipConnectors: explicitTokenConnectors });
         const tokens = await acquireTokens(authConfig, scopesByResource, (msg) => console.error(msg), {
           verbose: !!args.verbose,
         });
@@ -771,6 +938,7 @@ async function main() {
         dvToken: args['dv-token'] as string | undefined,
         explicitOverrides: parameterOverrides,
         log: (msg) => console.error(msg),
+        showSecrets: !!args.verbose,
       });
       // Child workflow loader setup
       let loadChildFlow: ((workflowId: string) => Promise<FlowIR | null>) | undefined;
@@ -884,6 +1052,56 @@ async function main() {
       // in front of it; --verbose brings them back.
       const logger = wantJson || args.verbose ? (e: unknown) => console.error('[LOG]', e) : () => {};
 
+      // --stop-before <action>: end the run before that action executes, printing the inputs it
+      // would have been invoked with. Makes a local run safe before a write (create, update, send).
+      const stopBefore = args['stop-before'] ? requireStringFlag(args, 'stop-before') : undefined;
+      if (stopBefore && !flowHasAction(ir, stopBefore)) {
+        throw new ArgError(`--stop-before: no action named '${stopBefore}' in ${ir.name}`);
+      }
+
+      // --mock <action>=<file.json> / --mocks <file.json>: the action does not run; its outputs are
+      // the given JSON (for a connector/HTTP/child-flow action the full { statusCode, body } shape).
+      const hasAction = (n: string) => flowHasAction(ir, n);
+      const mocks = collectMocks(args, (f) => JSON.parse(readFileSync(resolve(f), 'utf-8')), hasAction);
+      // --live <action>: deny-by-default for everything that calls out. With it, every connector,
+      // HTTP and child-flow action must be mocked or listed, else the run ends before it.
+      const live = args.live === undefined ? undefined : parseLiveFlags(args.live, hasAction, mocks);
+
+      // --replay-run <runId>: pin every external action to what the cloud recorded for it (per loop
+      // iteration, a failure as a failure), take the run's trigger outputs as input, and imply the
+      // --live guard: an external action the run has no pin for stops the run unless listed.
+      const replayRunId = args['replay-run'] ? requireStringFlag(args, 'replay-run') : undefined;
+      let replay: Replay | undefined;
+      let cloudRun: CloudRun | undefined;
+      if (replayRunId) {
+        const cloud = await connectFlowApi(args, 'run', {
+          explicitId: args.id as string | undefined,
+          decoratorWorkflowId: ir.workflowId,
+          flowName: ir.name,
+          isDsl: input.endsWith('.ts'),
+          hasFile: true,
+        });
+        const liveFlow = await cloud.client.getFlow(cloud.target.workflowId);
+        if (!liveFlow?.clientdata) {
+          console.error(`Flow ${cloud.target.workflowId} has no clientdata (definition)`);
+          process.exit(2);
+        }
+        const liveIr = parseLogicAppsToIR(JSON.parse(liveFlow.clientdata), { flowName: liveFlow.name || ir.name, config: loadCwdConfig(args) });
+        try {
+          cloudRun = await fetchCloudRun(cloud.flowApi, cloud.environmentId, cloud.flowApiId, replayRunId, liveIr);
+        } catch (err) {
+          exitOnFlowApiError(err);
+          throw err;
+        }
+        replay = prepareReplay(cloudRun, ir, { live: live ?? new Set(), input: args.in ? payload : undefined, mockMap: mocks });
+        for (const w of replay.warnings) console.error(w);
+        console.error(describeReplay(cloudRun, replay));
+        payload = replay.input;
+      }
+      const guard = replay
+        ? createRunGuard({ stopBefore, live: live ?? new Set(), isMocked: replay.isMocked })
+        : createRunGuard({ stopBefore, live, mocks });
+
       const result = await runEngine(ir, {
         connectors,
         input: payload,
@@ -894,7 +1112,25 @@ async function main() {
         strictWorkflows: !!args['strict-workflows'],
         callbackUrl,
         environmentName: args['environment-id'] as string | undefined,
+        onBeforeExecute: guard?.hook,
+        mocks: replay ? replay.mocks : mocks,
       });
+      if (cloudRun) (result as any).replayedRun = { runId: cloudRun.runId, status: cloudRun.status };
+
+      // Why the run stopped early: the --live guard, or --stop-before.
+      const deniedLive = guard?.deniedLive();
+      if (result.stopped && result.stoppedBefore) {
+        (result.stoppedBefore as any).reason = deniedLive ? 'live' : 'stop-before';
+      }
+      if (stopBefore && !result.stopped) {
+        console.error(`[WARN] --stop-before: action '${stopBefore}' was never reached; the flow ran to the end`);
+      }
+      if (mocks) {
+        const reached = mockedActionsInTrace(result.trace);
+        for (const name of Object.keys(mocks)) {
+          if (!reached.has(name)) console.error(`[WARN] --mock: action '${name}' was never reached, so its mock was not used`);
+        }
+      }
 
       // Materialize debug file artifacts (from ctx.saveFile / @@ff:saveFile compose)
       const artifacts: FileArtifact[] = result.artifacts ?? [];
@@ -938,8 +1174,24 @@ async function main() {
       }
 
       if (wantJson) console.log(JSON.stringify(result, null, 2));
-      else printPrettyRunResult(ir.name, result);
-      process.exit(result.status === 'Succeeded' ? 0 : 1);
+      else {
+        printPrettyRunResult(ir.name, result);
+        if (result.stopped && result.stoppedBefore) {
+          const { name, inputs } = result.stoppedBefore;
+          if (deniedLive && replay) {
+            console.log(`\n⏸  Stopped before '${name}' (--replay-run safe mode): it would call out, but the cloud run has no pin for it here and it is not listed as live. Nothing after it ran.`);
+            console.log(`   Allow it with --live ${name}, or mock it (--mock ${name}=<outputs.json>).`);
+          } else if (deniedLive) {
+            console.log(`\n⏸  Stopped before '${name}' (--live): it would call out, but it is neither mocked nor listed as live. Nothing after it ran.`);
+            console.log(`   Mock it (--mock ${name}=<outputs.json> or an entry in --mocks), or allow it with --live ${name}.`);
+          } else {
+            console.log(`\n⏸  Stopped before '${name}' (--stop-before). Nothing after it ran.`);
+          }
+          if (inputs !== undefined) console.log(`   Inputs it would have been invoked with:\n${JSON.stringify(inputs, null, 2).replace(/^/gm, '   ')}`);
+        }
+      }
+      // 0 = Succeeded, 1 = Failed/Cancelled, 3 = stopped by --stop-before (the run is incomplete, not failed)
+      process.exit(result.stopped ? 3 : result.status === 'Succeeded' ? 0 : 1);
       break;
     }
     case 'pull': {
@@ -1300,9 +1552,12 @@ async function main() {
         console.log(`Pulled '${wfName}' (${workflowId}) → ${basename(outFile)}`);
       }
 
+      // For a single flow --out is the file path; create its folder like the
+      // --solution/--all form creates its directory.
       const mainOutFile = outArg
         ? resolve(outArg)
         : resolve(outDir, `${sanitizeFlowName(flowName)}.ff.ts`);
+      mkdirSync(dirname(mainOutFile), { recursive: true });
 
       await pullFlowRecursive(workflow.workflowid, flowName, clientdata, mainOutFile);
 
@@ -1311,10 +1566,14 @@ async function main() {
     case 'push': {
       let create: boolean;
       let noCreate: boolean;
+      let requireActive: boolean;
+      let expectClean: boolean;
       let pushName: string | undefined;
       try {
         create = requireBooleanFlag(args, 'create');
         noCreate = requireBooleanFlag(args, 'no-create');
+        requireActive = requireBooleanFlag(args, 'require-active');
+        expectClean = requireBooleanFlag(args, 'expect-clean');
         pushName = requireStringFlag(args, 'name');
       } catch (err) {
         if (err instanceof ArgError) {
@@ -1365,13 +1624,16 @@ async function main() {
         clientdata = readFileSync(resolve(file), 'utf-8');
       }
 
+      // --expect-clean compares with the same tolerance as diff (cwd config, if any).
+      const pushConfig = loadCwdConfig(args);
+
       const client = new DataverseClient({ baseUrl: url, token });
 
       let result;
       try {
         result = await runPush(
           client,
-          { clientdata, flowName, description, explicitId, decoratorWorkflowId, create, noCreate, solution, isDsl },
+          { clientdata, flowName, description, explicitId, decoratorWorkflowId, create, noCreate, solution, isDsl, expectClean, config: pushConfig },
           (msg) => console.log(msg),
         );
       } catch (err) {
@@ -1384,6 +1646,20 @@ async function main() {
 
       if (result.action === 'patched') {
         console.log('Patched clientdata');
+        // Say whether the flow is actually running: a push keeps the record's
+        // state, and a flow that arrived as Draft stays off until activated.
+        let state: ReturnType<typeof flowStateSummary>;
+        try {
+          const record = await client.getFlow(result.workflowId);
+          state = flowStateSummary(record?.statecode, record?.statuscode, result.workflowId);
+        } catch (err) {
+          state = { active: false, text: `State: unknown (could not read the workflow record: ${(err as Error).message})` };
+        }
+        console.log(state.text);
+        if (requireActive && !state.active) {
+          console.error('--require-active: the flow is not Activated after the push');
+          process.exit(1);
+        }
         break;
       }
 
@@ -1393,6 +1669,7 @@ async function main() {
           : `Created flow '${result.name}' (${result.workflowId})`
       );
       if (result.solution) console.log(`Added to solution '${result.solution}'`);
+      console.log(flowStateSummary(0, 1, result.workflowId).text);
 
       // Stamp the new GUID into the DSL so the next push is a plain update.
       // Best-effort: a failure here must not look like the create failed.
@@ -1410,7 +1687,164 @@ async function main() {
           console.log(`Add workflowId: "${result.workflowId}" to your @Flow decorator in ${file}`);
         }
       }
+      if (requireActive) {
+        console.error('--require-active: a created flow is always Draft; activate it, then push again');
+        process.exit(1);
+      }
       break;
+    }
+    case 'runs':
+    case 'run-show': {
+      let flowNameArg: string | undefined;
+      let runId: string | undefined;
+      let topArg: string | undefined;
+      let statusArg: string | undefined;
+      try {
+        flowNameArg = requireStringFlag(args, 'name');
+        runId = requireStringFlag(args, 'run');
+        topArg = requireStringFlag(args, 'top');
+        statusArg = requireStringFlag(args, 'status');
+      } catch (err) {
+        if (err instanceof ArgError) {
+          console.error(err.message);
+          process.exit(2);
+        }
+        throw err;
+      }
+      if (cmd === 'run-show' && !runId) {
+        console.error('Required: --run <runId> (list them with flowforger runs)');
+        process.exit(2);
+      }
+      const top = topArg === undefined ? 20 : Number(topArg);
+      if (!Number.isInteger(top) || top < 1) {
+        console.error(`--top must be a positive integer (got '${topArg}')`);
+        process.exit(2);
+      }
+
+      const explicitId = args.id as string | undefined;
+      const file = args.file as string | undefined;
+      const wantJson = !!args.json || (!args.pretty && !process.stdout.isTTY);
+
+      // Which flow: like push/diff — --id, the decorator workflowId of --file, then the name.
+      let decoratorWorkflowId: string | undefined;
+      let flowName = flowNameArg;
+      const isDsl = !!file && extname(file).toLowerCase() === '.ts';
+      if (isDsl) {
+        const { transformFile } = await import('@flowforger/dsl-native');
+        const ir = await transformFile(resolve(file!));
+        decoratorWorkflowId = ir.workflowId;
+        flowName = ir.name;
+      }
+      const { client, url, flowApi, environmentId, flowApiId, target } = await connectFlowApi(args, cmd, {
+        explicitId, decoratorWorkflowId, flowName, isDsl, hasFile: !!file,
+      });
+      try {
+        if (cmd === 'runs') {
+          const runs = await flowApi.listRuns(environmentId, flowApiId, { top, status: statusArg });
+          if (wantJson) {
+            console.log(JSON.stringify({ workflowId: target.workflowId, flowId: flowApiId, environmentId, runs }, null, 2));
+          } else {
+            console.log(`Runs of '${flowName ?? target.workflowId}' (${runs.length}${statusArg ? `, status ${statusArg}` : ''}, newest first):`);
+            for (const r of runs) {
+              const err = r.error && typeof r.error === 'object' ? ` — ${(r.error as any).code ?? ''} ${(r.error as any).message ?? ''}`.trimEnd() : '';
+              console.log(`  ${r.runId}  ${(r.status ?? '').padEnd(9)}  ${r.startTime ?? ''}  →  ${r.endTime ?? ''}${err}`);
+            }
+            if (runs.length) console.log(`Show one: flowforger run-show --run <runId> ${file ? `--file ${file}` : `--id ${target.workflowId}`} --auth`);
+          }
+          process.exit(0);
+        }
+
+        // run-show: the live definition gives the nesting; the Flow API gives every action's record.
+        const live = await client.getFlow(target.workflowId);
+        if (!live?.clientdata) {
+          console.error(`Flow ${target.workflowId} has no clientdata (definition)`);
+          process.exit(2);
+        }
+        const liveIr = parseLogicAppsToIR(JSON.parse(live.clientdata), { flowName: live.name || flowName, config: loadCwdConfig(args) });
+        const result = await fetchCloudRun(flowApi, environmentId, flowApiId, runId!, liveIr);
+        if (wantJson) {
+          console.log(JSON.stringify(result, null, 2));
+        } else {
+          console.log(`Run ${runId} of '${live.name || flowName}': ${result.status} (${result.startTime ?? '?'} → ${result.endTime ?? '?'})`);
+          for (const line of formatPrettyRunResult(live.name || flowName || target.workflowId, result, { color: !!process.stdout.isTTY && !process.env.NO_COLOR })) console.log(line);
+        }
+        process.exit(result.status === 'Succeeded' ? 0 : 1);
+      } catch (err) {
+        exitOnFlowApiError(err);
+        throw err;
+      }
+    }
+    case 'diff': {
+      let diffName: string | undefined;
+      try {
+        diffName = requireStringFlag(args, 'name');
+      } catch (err) {
+        if (err instanceof ArgError) {
+          console.error(err.message);
+          process.exit(2);
+        }
+        throw err;
+      }
+
+      const explicitId = args.id as string | undefined;
+      const file = args.file as string | undefined;
+      let url = args.url as string;
+      let token = (args.token as string) || process.env.DATAVERSE_TOKEN || '';
+
+      if (args['auth']) {
+        ({ url, token } = await acquireDataverseAuth(args, url, token, 'diff'));
+      }
+
+      if (!file || !url || !token) {
+        console.error('Required: --file, --url (or --auth with config), and --token or DATAVERSE_TOKEN env or --auth');
+        process.exit(2);
+      }
+
+      // Same convention as run: human output on a terminal, JSON when piped;
+      // --pretty / --json force either. Progress goes to stderr so stdout stays jq-safe.
+      const wantJson = !!args.json || (!args.pretty && !process.stdout.isTTY);
+      const log = (msg: string) => console.error(msg);
+
+      // The comparison tolerance (parity + parser.skipMetadataFields) from the cwd config and flags.
+      const diffConfig = buildConfigFromFlags(args, loadCwdConfig(args));
+
+      let clientdata: string;
+      let decoratorWorkflowId: string | undefined;
+      let flowName: string | undefined = diffName;
+      const isDsl = extname(file).toLowerCase() === '.ts';
+
+      if (isDsl) {
+        // DSL → compile exactly as push would send it
+        const { transformFile } = await import('@flowforger/dsl-native');
+        const ir = await transformFile(resolve(file));
+        decoratorWorkflowId = ir.workflowId;
+        flowName = ir.name;
+        const cfg = loadEmitterConfig(args, 'flowforger.config.json');
+        clientdata = JSON.stringify(emitLogicAppsJson(ir, cfg));
+      } else {
+        clientdata = readFileSync(resolve(file), 'utf-8');
+      }
+
+      const client = new DataverseClient({ baseUrl: url, token });
+
+      let outcome;
+      try {
+        outcome = await runDiff(client, { clientdata, flowName, explicitId, decoratorWorkflowId, isDsl, config: diffConfig }, log);
+      } catch (err) {
+        if (err instanceof PushError) {
+          console.error(err.message);
+          process.exit(2);
+        }
+        throw err;
+      }
+
+      const { report, workflowId, flowName: liveName } = outcome;
+      if (wantJson) {
+        console.log(JSON.stringify({ workflowId, flowName: liveName, file, ...report }, null, 2));
+      } else {
+        for (const line of formatDiffReport(report, { flowName: liveName, workflowId, file })) console.log(line);
+      }
+      process.exit(report.identical ? 0 : 1);
     }
     case 'generate-dsl': {
       const infile = (args.in as string) || (args._ as string);
@@ -1478,12 +1912,18 @@ async function main() {
     }
     case 'activate': {
       const id = args.id as string;
-      const url = args.url as string;
-      const token = (args.token as string) || process.env.DATAVERSE_TOKEN || '';
+      let url = args.url as string;
+      let token = (args.token as string) || process.env.DATAVERSE_TOKEN || '';
       const statecode = Number(args.state);
       const statuscode = Number(args.status);
+
+      // --auth: acquire Dataverse token via MSAL (the URL may come from the config)
+      if (args['auth']) {
+        ({ url, token } = await acquireDataverseAuth(args, url, token, 'activate'));
+      }
+
       if (!id || !url || !token || Number.isNaN(statecode) || Number.isNaN(statuscode)) {
-        console.error('Required: --id, --url, --token or DATAVERSE_TOKEN, --state, --status');
+        console.error('Required: --id, --url (or --auth with config), --token or DATAVERSE_TOKEN or --auth, --state, --status');
         process.exit(2);
       }
       const client = new DataverseClient({ baseUrl: url, token });

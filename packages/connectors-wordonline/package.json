@@ -44,7 +44,8 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@flowforger/connectors-shared": "^0.1.0",
@@ -52,6 +53,7 @@
     "jszip": "^3.10.1"
   },
   "devDependencies": {
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "tsx": "^4.21.0"
   }
 }

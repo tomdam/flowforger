@@ -58,6 +58,27 @@ const CONNECTOR_RESOURCE_MAP: Record<string, string> = {
   dataverse: 'dataverse',
 };
 
+/** Connectors whose token the user passed explicitly (--sp-token, --graph-token, ...). */
+export function connectorsForExplicitTokens(args: {
+  spToken?: boolean;
+  dvToken?: boolean;
+  graphToken?: boolean;
+  wordToken?: boolean;
+  excelToken?: boolean;
+  onedriveToken?: boolean;
+}): Set<string> {
+  const out = new Set<string>();
+  for (const [name, key] of Object.entries(CONNECTOR_RESOURCE_MAP)) {
+    if (key === 'sharepoint' && args.spToken) out.add(name);
+    if (key === 'dataverse' && args.dvToken) out.add(name);
+    if (key === 'graph' && args.graphToken) out.add(name);
+    if (args.wordToken && name.startsWith('wordonline')) out.add(name);
+    if (args.excelToken && name.startsWith('excelonline')) out.add(name);
+    if (args.onedriveToken && name.startsWith('onedrive')) out.add(name);
+  }
+  return out;
+}
+
 // Scope subsumption rules: if both exist, keep only the broader one
 const SUBSUMPTION_RULES: Array<[string, string]> = [
   ['Mail.Read', 'Mail.ReadWrite'],
@@ -197,10 +218,14 @@ function applySubsumption(scopes: string[]): string[] {
  *
  * Returns a Map where keys are resource URLs (e.g., 'https://graph.microsoft.com')
  * and values are deduplicated scope arrays.
+ *
+ * `opts.skipConnectors` names connectors whose token the user passed explicitly;
+ * they are left out, so their resource need not be configured.
  */
 export async function resolveRequiredScopes(
   ir: FlowIR,
-  authConfig: AuthConfig
+  authConfig: AuthConfig,
+  opts?: { skipConnectors?: Set<string> }
 ): Promise<Map<string, string[]>> {
   const connectorOps = collectConnectorNodes(ir.nodes);
 
@@ -220,6 +245,7 @@ export async function resolveRequiredScopes(
   };
 
   for (const [connectorName, operations] of opsByConnector) {
+    if (opts?.skipConnectors?.has(connectorName)) continue;
     const resourceKey = CONNECTOR_RESOURCE_MAP[connectorName];
     if (!resourceKey) continue; // Unknown connector, skip
 

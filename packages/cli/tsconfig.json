@@ -24,6 +24,7 @@
     { "path": "../connectors-teams" },
     { "path": "../connectors-onedrive" },
     { "path": "../dataverse-sdk" },
+    { "path": "../cloud-run" },
     { "path": "../debug-node" },
     { "path": "../dsl-native" },
     { "path": "../dsl-language-service" },

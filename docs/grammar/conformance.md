@@ -518,6 +518,29 @@ after the previous one, so only flows with explicit `@runAfter` can break this r
 
 ---
 
+## R20 — A Select map that is not an object is one expression 🟠
+
+`ctx.select(name, from, map)` with a non-object map is the designer's text mode, which the designer
+parses as JSON. A template literal compiles to `@{...}` text, and the designer marks the action
+"Enter a valid JSON". The cloud saves and runs it. Write the map as one expression, usually
+`ctx.concat(...)`, which writes every value type the same way `@{...}` does.
+
+*Origin:* designer error on a pushed flow (Oct 2026); `concat` vs `@{...}` measured in
+`conformance/flows/expressions.ff.ts`.
+*Enforced by:* `SELECT_MAP_TEXT` (warning) in `@flowforger/validator` for IR and Logic Apps JSON.
+
+---
+
+## R21 — Pagination threshold at most 5,000 🟠
+
+`@runtimeConfig {"paginationPolicy":{"minimumItemCount":N}}` takes N up to 5,000 on Microsoft 365
+licenses and up to 100,000 with a premium plan. Above the owner's limit the designer marks the setting invalid.
+
+*Origin:* [Power Automate request limits](https://learn.microsoft.com/power-automate/limits-and-config).
+*Enforced by:* `PAGINATION_THRESHOLD` (warning) in `@flowforger/validator`.
+
+---
+
 ### Quick reference
 
 | Rule | Summary | Severity |
@@ -541,3 +564,5 @@ after the previous one, so only flows with explicit `@runAfter` can break this r
 | R17 | Stay inside the definition limits (80-char names, 500 actions, 25 cases, 250 variables, 50 parameters, 8192-char expressions, concurrency/retry/recurrence ranges) | 🔴 |
 | R18 | No `.push()` / `=` / string `+=` on variables inside a parallel `for...of` (add `repetitions: 1`) | 🟠 |
 | R19 | Read only actions on the `@runAfter` path (no parallel branch, other `if` branch or enclosing block) | 🔴 |
+| R20 | A non-object Select map is one expression (`ctx.concat(...)`, not a template literal) | 🟠 |
+| R21 | Pagination `minimumItemCount` at most 5,000 (100,000 with a premium plan) | 🟠 |

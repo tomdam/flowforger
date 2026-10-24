@@ -42,6 +42,11 @@ export const LIMITS = {
   /** Parameters per workflow (Consumption). */
   parametersPerFlow: 50,
   /**
+   * Pagination threshold (runtimeConfiguration.paginationPolicy.minimumItemCount): 5,000 on the
+   * Low performance profile (Microsoft 365 / seeded licenses), 100,000 at most with a premium plan.
+   */
+  paginationItems: { low: 5_000, max: 100_000 },
+  /**
    * Recurrence interval maximum per frequency (minimum is always 1): the cloud caps the period at
    * 500 days ("The recurrence frequency cannot be greater than '500.00:00:00'").
    */
@@ -105,6 +110,10 @@ interface Rec {
   conditionText?: string;
   /** Select / Filter array / Table: item() refers to the current element of `from`, no loop needed. */
   allowsItem?: boolean;
+  /** A Select's map (`inputs.select`) as authored. */
+  selectMap?: unknown;
+  /** runtimeConfiguration.paginationPolicy.minimumItemCount as authored. */
+  paginationItems?: unknown;
   /** The enclosing scope/condition/switch/loop, if any. */
   parent?: Rec;
   /** Path of the sibling group (container branch) this action is in. */
@@ -336,6 +345,29 @@ function runRules(m: Model): ValidationIssue[] {
       }
       if (rk === 'virtualagent' && tk !== undefined && !['virtualagent', 'skills'].includes(tk)) {
         warn('RESPONSE_KIND', `Response '${r.name}' is a VirtualAgent (Copilot) response but the trigger kind is '${tk}'; it pairs with a VirtualAgent trigger.`, r.path);
+      }
+    }
+    if (typeof r.selectMap === 'string') {
+      const t = r.selectMap.trim();
+      if (!t.startsWith('@') || t.startsWith('@{') || t.startsWith('@@')) {
+        warn('SELECT_MAP_TEXT',
+          `Select '${r.name}' maps each item to the text ${JSON.stringify(r.selectMap.length > 60 ? r.selectMap.slice(0, 60) + '…' : r.selectMap)}. ` +
+          `The designer reads a text-mode map as JSON and flags the action with "Enter a valid JSON". ` +
+          `Make the map one expression: ctx.concat('…', ctx.item()?.['x'], '…') in the DSL (@concat(...)) instead of a template literal or @{...} text.`,
+          r.path);
+      }
+    }
+    if (r.paginationItems !== undefined) {
+      const n = r.paginationItems;
+      const { low, max } = LIMITS.paginationItems;
+      if (!isInt(n) || n < 1 || n > max) {
+        warn('PAGINATION_THRESHOLD',
+          `'${r.name}' sets paginationPolicy.minimumItemCount to ${JSON.stringify(n)}; the threshold must be a whole number from 1 to ${max.toLocaleString('en-US')}, ` +
+          `and at most ${low.toLocaleString('en-US')} unless the flow owner has a premium Power Automate plan.`, r.path);
+      } else if (n > low) {
+        warn('PAGINATION_THRESHOLD',
+          `'${r.name}' sets paginationPolicy.minimumItemCount to ${n}. Above ${low.toLocaleString('en-US')} the designer reports the setting as invalid ` +
+          `unless the flow owner has a premium Power Automate plan (up to ${max.toLocaleString('en-US')}); use ${low} or less for a flow that runs on Microsoft 365 licenses.`, r.path);
       }
     }
     if (r.targets !== undefined && !definedVars.has(lower(r.targets))) {
@@ -968,11 +1000,13 @@ function irModel(ir: FlowIR): Model {
         retryPolicy: anyN.retryPolicy,
         parent,
         groupPath: path,
+        paginationItems: anyN.runtimeConfiguration?.paginationPolicy?.minimumItemCount,
       };
       if (n.type === 'action') {
         const k = anyN.kind as string;
         rec.scanValue = anyN.inputs;
         if (k === 'select' || k === 'filterarray' || k === 'createcsvtable' || k === 'createhtmltable') rec.allowsItem = true;
+        if (k === 'select') rec.selectMap = anyN.inputs?.select;
         if (k === 'response') { rec.kind = 'response'; rec.responseKind = anyN.inputs?.kind; }
         else if (k === 'terminate') { rec.kind = 'terminate'; rec.terminate = { runStatus: anyN.inputs?.runStatus, hasRunError: anyN.inputs?.runError !== undefined }; }
         else if (k === 'initializevariable') {
@@ -1105,8 +1139,10 @@ function laModel(def: any, definition: any): Model {
         retryPolicy: action.inputs?.retryPolicy,
         parent,
         groupPath: path,
+        paginationItems: action.runtimeConfiguration?.paginationPolicy?.minimumItemCount,
       };
       if (type === 'select' || type === 'query' || type === 'table') rec.allowsItem = true;
+      if (type === 'select') rec.selectMap = action.inputs?.select;
       if (type === 'response') rec.responseKind = typeof action.kind === 'string' ? action.kind : undefined;
       if (type === 'terminate') rec.terminate = { runStatus: action.inputs?.runStatus, hasRunError: action.inputs?.runError !== undefined };
       if (type === 'initializevariable') {

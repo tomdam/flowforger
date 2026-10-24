@@ -75,6 +75,43 @@ describe('structure rules in validateFlowIR', () => {
     assert.equal(codes(validateFlowIR(makeIR([ok])), 'FOREACH_CONCURRENCY').length, 0);
   });
 
+  it('Select with a text map that is not one expression → SELECT_MAP_TEXT warning (the designer shows "Enter a valid JSON")', () => {
+    const select = (name: string, map: any) => ({ id: `act_${name}`, type: 'action', name, kind: 'select', inputs: { from: '@createArray(1)', select: map } });
+    const r = validateFlowIR(makeIR([
+      select('Interpolated', "@{item()?['Name']} (@{item()?['Type']})"),
+      select('Html', "<tr><td>@{item()?['ID']}</td></tr>"),
+      select('Plain', 'abc'),
+      select('Expression', "@item()?['Id']"),
+      select('Concat', "@concat(item()?['Name'], ' (', item()?['Type'], ')')"),
+      select('Object', { name: "@{item()?['Name']} (@{item()?['Type']})" }),
+    ]));
+    const w = codes(r, 'SELECT_MAP_TEXT');
+    assert.deepEqual(w.map((i) => i.path), ['nodes.Interpolated', 'nodes.Html', 'nodes.Plain']);
+    assert.ok(w.every((i) => i.level === 'warning'));
+    assert.match(w[0].message, /ctx\.concat/);
+
+    const la = validateLogicApps({
+      properties: { definition: {
+        triggers: { manual: { type: 'Request', kind: 'Http', inputs: {} } },
+        actions: {
+          Bad: { type: 'Select', inputs: { from: '@createArray(1)', select: "@{item()} x" } },
+          Good: { type: 'Select', inputs: { from: '@createArray(1)', select: '@string(item())' }, runAfter: { Bad: ['Succeeded'] } },
+        },
+      } },
+    });
+    assert.deepEqual(codes(la, 'SELECT_MAP_TEXT').map((i) => i.path), ['definition.actions.Bad']);
+  });
+
+  it('pagination threshold above 5000 → PAGINATION_THRESHOLD warning, above 100000 or not a whole number too', () => {
+    const getItems = (name: string, n: any) => ({ id: `con_${name}`, type: 'connector', name, connector: 'sharepoint', operation: 'GetItems', params: {}, runtimeConfiguration: { paginationPolicy: { minimumItemCount: n } } });
+    const r = validateFlowIR(makeIR([getItems('Ok', 5000), getItems('Premium', 20000), getItems('TooMany', 100001), getItems('Fraction', 1.5)]));
+    const w = codes(r, 'PAGINATION_THRESHOLD');
+    assert.deepEqual(w.map((i) => i.path), ['nodes.Premium', 'nodes.TooMany', 'nodes.Fraction']);
+    assert.ok(w.every((i) => i.level === 'warning'));
+    assert.match(w[0].message, /5,000/);
+    assert.equal(LIMITS.paginationItems.low, 5000);
+  });
+
   it('trigger concurrency outside 1-100 → TRIGGER_CONCURRENCY', () => {
     const trig = { ...httpTrigger, runtimeConfiguration: { concurrency: { runs: 0 } } };
     assert.equal(codes(validateFlowIR(makeIR([compose('A')], {}, trig)), 'TRIGGER_CONCURRENCY').length, 1);

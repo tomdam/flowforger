@@ -647,6 +647,31 @@ What the cloud accepts (measured in `conformance/save-rules/runafter-path.mjs`):
 
 `flowforger validate` reports it as **DSL048** (error); the IR / JSON validators report `EXPR_RUNAFTER_PATH` and `EXPR_SELF_REFERENCE`.
 
+### 14. Settings the designer rejects: a Select text map must be one expression, pagination is at most 5,000
+
+`push` saves these and the flow runs, but the Power Automate designer marks the action as an error as soon as someone opens the flow:
+
+**A Select map that is not an object must be one expression.** An object map (`{ Name: ..., Type: ... }`) is the designer's key/value mode, and template literals inside its values are fine. Any other map is text mode, and the designer parses it as JSON. One expression (`ctx.item()?.['Id']`, `ctx.concat(...)`) is accepted. A template literal compiles to `@{...}` text, and the designer shows **"Enter a valid JSON"** ("Geben Sie eine gültige JSON ein.").
+
+```typescript
+// ❌ compiles to "@{item()?['Name']} (@{item()?['Type']})": "Enter a valid JSON"
+await ctx.select('Owner_labels', ctx.body('Owners'), `${ctx.item()?.['Name']} (${ctx.item()?.['Type']})`);
+
+// ✅ one expression: @concat(item()?['Name'], ' (', item()?['Type'], ')')
+await ctx.select('Owner_labels', ctx.body('Owners'), ctx.concat(ctx.item()?.['Name'], ' (', ctx.item()?.['Type'], ')'));
+
+// ✅ HTML rows: the same, with the markup as string arguments
+await ctx.select('Html_rows', ctx.variables('rows'), ctx.concat(
+  '<tr><td>', ctx.item()?.['ID'], '</td><td><a href="', ctx.item()?.['Url'], '">', ctx.item()?.['Title'], '</a></td></tr>'
+));
+```
+
+`concat()` writes null, numbers, booleans and objects exactly as `@{...}` does (measured in `conformance/flows/expressions.ff.ts`), so the output is the same. When plain columns are enough, `ctx.createHtmlTable()` builds the whole table with no Select.
+
+**`paginationPolicy.minimumItemCount` is at most 5,000** unless the flow owner has a premium Power Automate plan (then up to 100,000). Above the owner's limit the designer shows the Pagination setting as invalid. Use 5000 unless you know the flow runs under a premium license. A list that can grow past the threshold is then read only in part, so filter on the server (`$filter` on an indexed column) or page with a `do...while` loop instead of raising the number.
+
+`flowforger validate` reports these as `SELECT_MAP_TEXT` and `PAGINATION_THRESHOLD` (warnings). They are IR-level checks, so for a `.ff.ts` they appear after a clean DSL pass. Fix them before you push.
+
 ## Control Flow Summary
 
 | Pattern | JSDoc Annotation | JS Syntax |
@@ -679,5 +704,5 @@ See [Connectors Reference](connectors.md) for all operations and parameters. Eve
 - [DSL Syntax Reference](dsl-syntax.md) - Triggers, actions, variables, control flow, expressions
 - [Connectors Reference](connectors.md) - All connector operations and parameters
 - [Examples](examples.md) - Common flow patterns
-- [Formal Grammar & Conformance](https://github.com/tomdam/flowforger/blob/main/docs/grammar/README.md) - EBNF for the recognized subset and JSDoc tags, the 17 conformance rules (spec-style restatement of this file), and a fully-annotated [canonical example](https://github.com/tomdam/flowforger/blob/main/docs/grammar/canonical-example.ff.ts)
+- [Formal Grammar & Conformance](https://github.com/tomdam/flowforger/blob/main/docs/grammar/README.md) - EBNF for the recognized subset and JSDoc tags, the 21 conformance rules (spec-style restatement of this file), and a fully-annotated [canonical example](https://github.com/tomdam/flowforger/blob/main/docs/grammar/canonical-example.ff.ts)
 

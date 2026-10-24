@@ -661,7 +661,8 @@ export interface FlowContext {
   join(name: string, from: any[], joinWith: string): Promise<string>;
 
   /**
-   * Select/map array elements.
+   * Select/map array elements. `selectMap` is an object, or ONE expression for an array of values:
+   * `ctx.concat(...)`, never a template literal (the designer shows "Enter a valid JSON" on `@{...}` text).
    */
   select<T = any>(name: string, from: any[], selectMap: any): Promise<T[]>;
 

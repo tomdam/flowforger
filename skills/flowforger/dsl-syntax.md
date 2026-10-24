@@ -152,6 +152,35 @@ await ctx.compose('SimpleValue', 'text value');
 await ctx.compose('FromTrigger', ctx.triggerBody()?.['data']);
 ```
 
+### Data Operations (Select, Filter array, Join, tables)
+
+```typescript
+// Filter array: the condition as a TypeScript expression or a raw expression string
+await ctx.filterArray('Active_items', ctx.body('Get_items')?.['value'], ctx.item()?.['Status']?.['Value'] === 'Active');
+await ctx.filterArray('Not_current', ctx.body('Get_users')?.['value'], "@not(equals(item()?['Type']?['Value'], 'Current'))");
+
+// Select with an object map (key/value mode): template literals in the values are fine
+await ctx.select('Rows', ctx.body('Active_items'), {
+  ID: ctx.item()?.['ID'],
+  Label: `${ctx.item()?.['Title']} (${ctx.item()?.['ID']})`,
+});
+
+// Select with a text map (an array of values): the map must be ONE expression
+await ctx.select('Ids', ctx.body('Active_items'), ctx.item()?.['ID']);
+await ctx.select('Labels', ctx.body('Active_items'), ctx.concat(ctx.item()?.['Title'], ' (', ctx.item()?.['ID'], ')'));
+// ❌ not a template literal: it compiles to @{...} text and the designer shows "Enter a valid JSON"
+
+// Join, CSV / HTML table
+await ctx.join('Label_text', ctx.body('Labels'), ', ');
+await ctx.createHtmlTable('Report_table', ctx.body('Rows'));
+await ctx.createCsvTable('Report_csv', ctx.body('Active_items'), [
+  { header: 'ID', value: ctx.item()?.['ID'] },
+  { header: 'Title', value: ctx.item()?.['Title'] },
+]);
+```
+
+Read their results with `ctx.body('Name')`. A text-mode Select map that is not one expression is reported as `SELECT_MAP_TEXT` by `flowforger validate` ([Critical Rule 14](SKILL.md#14-settings-the-designer-rejects-a-select-text-map-must-be-one-expression-pagination-is-at-most-5000)).
+
 ### HTTP Request
 
 ```typescript
@@ -429,6 +458,8 @@ await ctx.connectors.dataverse.ListRecords('AllAccounts', {
 }, 'shared_commondataserviceforapps');
 // read it as ctx.body('AllAccounts')?.['value'] — never `const rows = await ctx....` (DSL032: the binding is dropped)
 ```
+
+**N is at most 5,000** unless the flow owner has a premium Power Automate plan (then up to 100,000). Above the owner's limit the designer marks the setting invalid (`PAGINATION_THRESHOLD` warning in `flowforger validate`; [Critical Rule 14](SKILL.md#14-settings-the-designer-rejects-a-select-text-map-must-be-one-expression-pagination-is-at-most-5000)).
 
 The local engine applies it the way the cloud does (measured by `conformance/flows/paging.ff.ts`): whole pages are followed until at least N items are collected (no cut, so N=150 on 100-item pages gives 200), and the output is `{ value: [...] }` without `@odata.nextLink`. Only the SharePoint and Dataverse connectors follow pages locally; on other connectors the setting is kept in the compiled flow but a local run returns the first page. A FetchXml query's paging cookie is never followed, locally or in the cloud.
 

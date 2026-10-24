@@ -838,8 +838,10 @@ interface FlowContext {
    * Select action - maps each array element to a new shape.
    * @param name Unique name for this action
    * @param from Source array
-   * @param selectMap Mapping object (values may reference item())
+   * @param selectMap Mapping object (values may reference item()), or ONE expression for an array of values —
+   *   ctx.concat(...), never a template literal (the designer shows "Enter a valid JSON" on such text)
    * @example await ctx.select('PickNames', users, { name: ctx.item()?.['displayName'] }); // then reference via ctx.body('PickNames')
+   * @example await ctx.select('Labels', users, ctx.concat(ctx.item()?.['displayName'], ' (', ctx.item()?.['mail'], ')'));
    */
   select<T = any>(name: string, from: any[], selectMap: any): Promise<T[]>;
   /** Filter an array. 'where' accepts either a raw PA expression string (e.g. "@and(equals(item()?['type'], 'X'), ...)") or a TypeScript expression (e.g. ctx.item()?.['type'] === 'X' && ctx.item()?.['isEnabled']). */

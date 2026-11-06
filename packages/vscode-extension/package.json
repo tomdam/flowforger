@@ -1,6 +1,6 @@
 {
   "name": "flowforger-vscode",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Power Automate & Logic Apps flows as TypeScript — IntelliSense, local debugging, and compilation to Logic Apps JSON",
   "keywords": [
@@ -23,7 +23,7 @@
   },
   "main": "./dist/extension.js",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.90.0"
   },
   "displayName": "FlowForger",
   "publisher": "flowforger",
@@ -230,7 +230,7 @@
   "dependencies": {
     "vscode-languageclient": "^9.0.1",
     "@vscode/debugadapter": "^1.68.0",
-    "@azure/msal-node": "^5.1.1",
+    "@azure/msal-node": "^7.1.2",
     "@flowforger/debug-core": "^0.1.0",
     "@flowforger/debug-node": "^0.1.0",
     "@flowforger/dsl-language-service": "^0.1.0",
@@ -249,7 +249,7 @@
     "@flowforger/connectors-onedrive": "^0.1.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^2.22.0",
     "esbuild": "^0.28.1",
     "typescript": "^5.3.0"

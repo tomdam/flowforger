@@ -471,7 +471,7 @@ Add both `Read` and `ReadWrite` where both are listed: consent is per permission
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 20
 
 ## License
 

@@ -6,7 +6,7 @@ The one thing every command that talks to Microsoft 365 (`--auth`, `init`, `pull
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - Access to a Power Platform / Dataverse environment
 - Permission to create an app registration in your tenant. Any user can, unless your tenant restricts it. Granting **admin consent** (Step 3) needs a Global Administrator, Privileged Role Administrator, or Cloud Application Administrator, so if that is not you, have the permission list from Step 3 ready to hand to an admin.
 

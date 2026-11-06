@@ -17,7 +17,7 @@ await build({
   bundle: true,
   outfile: join(__dirname, 'dist/bundle.cjs'),
   platform: 'node',
-  target: 'node18',
+  target: 'node20',
   format: 'cjs',
   // The source file already contains a shebang — strip it via define wouldn't work,
   // so we handle it: esbuild preserves the shebang from the entry point automatically

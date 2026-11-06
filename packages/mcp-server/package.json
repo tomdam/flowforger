@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^3.25.0",
+    "zod": "^4.6.6",
     "@flowforger/ir": "^0.1.0",
     "@flowforger/engine": "^0.1.0",
     "@flowforger/dsl-native": "^0.1.0",

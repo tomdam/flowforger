@@ -54,8 +54,8 @@ export function registerTools(server: McpServer, manager: SessionManager): void 
       inputSchema: {
         file: z.string().describe('Path to the .ff.ts flow file (absolute, or relative to the server cwd)'),
         triggerPayload: z.unknown().optional().describe('Trigger input body'),
-        variables: z.record(z.unknown()).optional().describe('Initial variable values'),
-        parameters: z.record(z.unknown()).optional().describe('Flow parameter overrides'),
+        variables: z.record(z.string(), z.unknown()).optional().describe('Initial variable values'),
+        parameters: z.record(z.string(), z.unknown()).optional().describe('Flow parameter overrides'),
         breakpoints: z.array(breakpointSchema).optional().describe('Breakpoints to set before running'),
         stopOnEntry: z.boolean().optional().describe('Pause before the first node (default true)'),
         mode: z.enum(['replay', 'live']).optional().describe('replay (default) reuses the cassette; live re-records'),

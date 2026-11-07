@@ -1,0 +1,4 @@
+{
+  "statusCode": 200,
+  "body": { "args": { "base": "EUR", "quote": "USD", "rate": "1.25" } }
+}

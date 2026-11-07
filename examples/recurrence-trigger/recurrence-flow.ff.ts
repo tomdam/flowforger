@@ -1,8 +1,10 @@
 /**
  * Example: Daily Notification Flow
  *
- * Demonstrates a Recurrence trigger that fires daily at a specific time,
- * with variable initialization, compose, increment, and append-to-array actions.
+ * A Recurrence trigger that fires every day at 09:00 Eastern time, followed by a
+ * counter variable, an array variable and two Compose actions. Everything after the
+ * trigger is connector-free, so the flow runs locally without credentials (a local
+ * run fires the trigger once instead of waiting for the schedule).
  */
 
 @Flow('daily-notification-flow')
@@ -17,21 +19,25 @@ class DailyNotificationFlow {
 
   @Action()
   async run(ctx: FlowContext) {
+    /** @action Initialize_counter */
     let counter: number = 0;
 
+    /** @action Initialize_messages */
     let messages: any[] = [];
 
     await ctx.compose('CreateMessage', {
       title: 'Daily Notification',
-      timestamp: ctx.eval(`@utcNow()`),
-      message: ctx.eval(`@concat("This is your daily notification #", string(add(variables("counter"), 1)))`),
+      timestamp: ctx.utcNow(),
+      message: ctx.concat('This is your daily notification #', ctx.string(ctx.add(ctx.variables('counter'), 1))),
     });
 
+    /** @action Increment_counter */
     counter += 1;
 
-    messages.push(ctx.eval(`@outputs("CreateMessage")`));
+    /** @action Append_message */
+    messages.push(ctx.outputs('CreateMessage'));
 
-    await ctx.compose('LogNotification', ctx.eval(`@concat("Sent notification at ", string(utcNow()))`));
+    await ctx.compose('LogNotification', ctx.concat('Sent notification at ', ctx.utcNow()));
   }
 
   constructor(ctx: FlowContext) {

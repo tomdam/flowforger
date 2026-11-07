@@ -488,7 +488,9 @@ ctx.eval("@union(someArray, createArray())")
 ctx.eval("@union(someArray, json('[]'))")
 ```
 
-`createArray()` requires **at least one argument** in Power Automate. Always use `json('[]')` for an empty-array literal in expressions.
+`createArray()` requires **at least one argument** in Power Automate. Always use `json('[]')` for an empty-array literal inside a `ctx.eval()` expression.
+
+In DSL code an empty array literal is fine: `x ?? []`, `ctx.union(a, [])` and `ctx.equals(x, [])` compile to `json('[]')` (a non-empty literal compiles to `createArray(...)`). Measured in the cloud by `conformance/flows/coalesce-empty.ff.ts`: `coalesce(x, createArray())` fails exactly when the fallback is reached, which is the case `?? []` exists for; `coalesce(x, json('[]'))` works on both paths.
 
 ### Other performance levers used together
 

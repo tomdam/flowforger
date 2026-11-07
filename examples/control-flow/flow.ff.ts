@@ -1,8 +1,9 @@
 /**
  * Example: Control Flow Demo
  *
- * Demonstrates scope (grouped actions), if/else branching, and foreach iteration
- * over a variable, in a single small flow.
+ * Demonstrates a scope (grouped actions), if/else branching on a variable, and a
+ * foreach over an array variable, in one small flow. The actions are Compose
+ * actions, so the flow runs locally without network access or credentials.
  */
 
 @Flow('control-flow-demo')
@@ -12,27 +13,33 @@ class ControlFlowDemo {
 
   @Action()
   async run(ctx: FlowContext) {
+    /** @action Initialize_x */
     let x: number = 1;
+
+    /** @action Initialize_items */
     let items: any[] = [];
 
-    await ctx.http('First', { method: 'GET', url: 'https://example.com' });
+    await ctx.compose('First', 'runs before the scope');
 
+    // A scope groups actions; it needs @type scope because a bare block is ambiguous
     /** @action ScopeOne @type scope */
     {
-      await ctx.http('InnerA', { method: 'GET', url: 'https://example.com' });
-      await ctx.http('InnerB', { method: 'GET', url: 'https://example.com' });
+      await ctx.compose('InnerA', 'first action in the scope');
+      await ctx.compose('InnerB', 'second action in the scope');
     }
 
+    // A TypeScript comparison compiles to the Condition action's expression
     /** @action CheckX */
-    if (ctx.eval(`@equals(variables('x'), 1)`)) {
-      await ctx.http('ThenA', { method: 'GET', url: 'https://example.com' });
+    if (ctx.variables('x') === 1) {
+      await ctx.compose('ThenA', 'x is 1');
     } else {
-      await ctx.http('ElseA', { method: 'GET', url: 'https://example.com' });
+      await ctx.compose('ElseA', 'x is not 1');
     }
 
+    // A for...of over an array compiles to Apply to each; `item` is the current element
     /** @action LoopItems */
-    for (const _item of ctx.variables('items') ?? []) {
-      await ctx.http('PerItem', { method: 'GET', url: 'https://example.com' });
+    for (const item of ctx.variables('items') ?? []) {
+      await ctx.compose('PerItem', { item: item, doubled: ctx.mul(item, 2) });
     }
   }
 

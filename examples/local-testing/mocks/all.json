@@ -1,0 +1,10 @@
+{
+  "Get_exchange_rate": {
+    "statusCode": 200,
+    "body": { "args": { "base": "EUR", "quote": "USD", "rate": "1.25" } }
+  },
+  "Send_reminders": {
+    "statusCode": 200,
+    "body": { "json": { "reminders": [], "sentAt": "mocked" } }
+  }
+}

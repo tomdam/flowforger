@@ -1,8 +1,10 @@
 /**
  * Example: Expression Functions Demo
  *
- * Demonstrates property-path access, action/output/body references, trigger and
- * parameter access, and conditional logic using Power Automate expression functions.
+ * The three ways to read earlier data in a flow — outputs(), body() and actions() —
+ * plus trigger and parameter access and property paths. Several actions appear
+ * twice: once with a typed ctx helper and once as a raw Power Automate expression in
+ * ctx.eval(). Both forms compile to the same expression; pick whichever reads better.
  */
 
 @Flow('expression-functions-demo')
@@ -17,22 +19,36 @@ class ExpressionFunctionsDemo {
       status: 'active',
     });
 
-    await ctx.compose('ExtractUserName', ctx.eval(`@body('GetUserData').user.name`));
-    await ctx.compose('CheckStatus', ctx.eval(`@actions('GetUserData').status`));
-    await ctx.compose('GetUserEmail', ctx.eval(`@outputs('GetUserData').user.email`));
+    // outputs('X') is the value of a Compose. These two lines compile to the same thing.
+    await ctx.compose('ExtractUserName', ctx.outputs('GetUserData')?.['user']?.['name']);
+    await ctx.compose('ExtractUserEmail', ctx.eval(`@outputs('GetUserData')?['user']?['email']`));
+
+    // actions('X') is the run record of an action: status, code, startTime, inputs, outputs, error
+    await ctx.compose('CheckStatus', ctx.eval(`@actions('GetUserData')?['status']`));
+
+    // body('X') is outputs('X')?['body']: the response of an HTTP, connector or child-flow call
+    await ctx.http('CallHttpBin', { method: 'GET', url: 'https://httpbin.org/get?demo=1' });
+    await ctx.compose('ExtractQueryArg', ctx.body('CallHttpBin')?.['args']?.['demo']);
+    await ctx.compose('ExtractStatusCode', ctx.eval(`@outputs('CallHttpBin')?['statusCode']`));
+
+    // The trigger: triggerBody() is the payload, triggerOutputs() has headers and body
     await ctx.compose('GetTriggerData', ctx.triggerBody());
+    await ctx.compose('GetTriggerHeaders', ctx.eval(`@triggerOutputs()?['headers']`));
+
+    // A flow parameter, by the exact key used in ctx.flow.parameters below
     await ctx.compose('GetParameter', ctx.parameters('myParam'));
 
+    // Comparisons and string functions over property paths
     /** @action CheckAge */
-    if (ctx.eval(`@greater(body('GetUserData').user.age, 25)`)) {
-      await ctx.compose('AgeMessage', ctx.eval(`@concat('User is older than 25: ', body('GetUserData').user.name)`));
+    if (ctx.greater(ctx.outputs('GetUserData')?.['user']?.['age'], 25)) {
+      await ctx.compose('AgeMessage', ctx.concat('User is older than 25: ', ctx.outputs('GetUserData')?.['user']?.['name']));
     } else {
-      await ctx.compose('AgeMessage2', ctx.eval(`@concat('User is 25 or younger: ', body('GetUserData').user.name)`));
+      await ctx.compose('AgeMessageYoung', ctx.eval(`@concat('User is 25 or younger: ', outputs('GetUserData')?['user']?['name'])`));
     }
 
     /** @action CheckSuccess */
-    if (ctx.eval(`@equals(actions('GetUserData').status, 'Succeeded')`)) {
-      await ctx.compose('SuccessMessage', `'GetUserData action succeeded!'`);
+    if (ctx.eval(`@equals(actions('GetUserData')?['status'], 'Succeeded')`)) {
+      await ctx.compose('SuccessMessage', 'GetUserData action succeeded!');
     }
   }
 

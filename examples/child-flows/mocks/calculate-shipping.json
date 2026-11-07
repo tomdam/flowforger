@@ -1,0 +1,4 @@
+{
+  "statusCode": 200,
+  "body": { "cost": 9.99, "region": "EU", "carrier": "Mocked Carrier" }
+}

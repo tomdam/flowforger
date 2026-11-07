@@ -1,0 +1,9 @@
+{
+  "customer": { "id": "acme", "region": "EU" },
+  "lines": [
+    { "sku": "KB-100", "quantity": 2, "unitPrice": 49.5 },
+    { "sku": "", "quantity": 1, "unitPrice": 10 },
+    { "sku": "MS-7", "quantity": 0, "unitPrice": 19.99 },
+    { "sku": "HD-27", "quantity": 1, "unitPrice": 189 }
+  ]
+}

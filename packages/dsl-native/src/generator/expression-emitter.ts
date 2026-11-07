@@ -25,6 +25,8 @@ export interface EmitContext {
   /** generator.expressionFidelity === 'relaxed': skip cosmetic-only bailouts
    *  (canonical-casing guards) and emit native DSL with normalized casing. */
   relaxedFidelity?: boolean;
+  /** The node the current emit started from (an expression's root, or a template part's). */
+  rootNode?: ExprNode;
 }
 
 export class EmitBailout extends Error {
@@ -234,6 +236,10 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
       if (args.length === 1) return ctxCall('string', args, ec);
       break;
     case 'json':
+      // json('[]') is how the transformer writes an empty array literal inside an expression;
+      // give the literal back. Not at the root: a bare `[]` action argument is a literal
+      // value, not an expression, so the expression text would be lost on the way back.
+      if (args.length === 1 && args[0].kind === 'str' && args[0].value === '[]' && node !== ec.rootNode) return '[]';
       if (args.length === 1) return ctxCall('json', args, ec);
       break;
     case 'bool':
@@ -278,6 +284,9 @@ function emitCall(node: Extract<ExprNode, { kind: 'call' }>, ec: EmitContext): s
       break;
 
     case 'createarray':
+      // `[]` compiles to json('[]'), so a bare createArray() (a run-time failure the flow
+      // may be probing on purpose) has no literal form: keep the expression verbatim.
+      if (args.length === 0) throw new EmitBailout('createArray() has no literal form');
       return `[${args.map(a => emitNode(a, ec)).join(', ')}]`;
 
     // Math

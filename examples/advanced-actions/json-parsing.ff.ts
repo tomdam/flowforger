@@ -43,7 +43,8 @@ class JsonParsing {
           await ctx.compose('AgeCategoryMinor', 'minor');
         }
 
-        validRecords = ctx.eval(`@union(variables('validRecords'), createArray(outputs('TransformedRecord')))`);
+        /** @action Append_valid_record */
+        validRecords.push(ctx.outputs('TransformedRecord'));
       } else {
         // Record is invalid — capture error
         await ctx.compose('ErrorEntry', {
@@ -51,7 +52,8 @@ class JsonParsing {
           reason: 'Missing required field: name'
         });
 
-        errorMessages = ctx.eval(`@union(variables('errorMessages'), createArray(outputs('ErrorEntry')))`);
+        /** @action Append_error */
+        errorMessages.push(ctx.outputs('ErrorEntry'));
       }
     }
 

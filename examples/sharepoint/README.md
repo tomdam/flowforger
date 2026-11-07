@@ -16,84 +16,84 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get Items** (`GetItems`)
 - Retrieve multiple items from a SharePoint list
 - Example: `get-items.ff.ts`
-- DSL: `.spGetItems(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetItems('Name', { ... }, 'shared_sharepointonline')`
 
 **Get Item by ID** (`GetItemById`)
 - Retrieve a single list item by ID
-- DSL: `.spGetItemById(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetItemById('Name', { ... }, 'shared_sharepointonline')`
 
 **Create Item** (`CreateItem`)
 - Create a new item in a SharePoint list
 - Example: `create-item.ff.ts`
-- DSL: `.spCreateItem(name, params)`
+- DSL: `ctx.connectors.sharepoint.CreateItem('Name', { ... }, 'shared_sharepointonline')`
 
 **Update Item** (`UpdateItem`)
 - Update an existing list item
 - Example: `update-item.ff.ts`
-- DSL: `.spUpdateItem(name, params)`
+- DSL: `ctx.connectors.sharepoint.UpdateItem('Name', { ... }, 'shared_sharepointonline')`
 
 **Delete Item** (`DeleteItem`)
 - Delete a list item
 - Example: `delete-item.ff.ts`
-- DSL: `.spDeleteItem(name, params)`
+- DSL: `ctx.connectors.sharepoint.DeleteItem('Name', { ... }, 'shared_sharepointonline')`
 
 ### File Operations (Phase 1)
 
 **Create File** (`CreateFile`)
 - Upload a file to a SharePoint document library
 - Example: `create-file.ff.ts`
-- DSL: `.spCreateFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.CreateFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset` (site URL), `folderPath`, `name`, `body` (file content)
 - These are flat parameters — do **not** nest them under a `parameters: { ... }` object. The DSL flattens a nested object to `parameters/folderPath` etc., and Power Automate rejects the flow on save with `WorkflowOperationParametersExtraParameter: The API operation does not contain a definition for parameter 'parameters'`.
 
 **Get File Content** (`GetFileContent`)
 - Retrieve file content by file ID
 - Example: `get-file-content.ff.ts`
-- DSL: `.spGetFileContent(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFileContent('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id` (file unique ID)
 - Returns: `{ $content: base64, $contentType: string }`
 
 **Get File Content by Path** (`GetFileContentByPath`)
 - Retrieve file content by server-relative path
-- DSL: `.spGetFileContentByPath(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFileContentByPath('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `path` (server-relative path)
 - Returns: `{ $content: base64, $contentType: string }`
 
 **Update File** (`UpdateFile`)
 - Replace file content
-- DSL: `.spUpdateFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.UpdateFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id` (file unique ID), `body` (new content)
 
 **Delete File** (`DeleteFile`)
 - Delete a file from library
-- DSL: `.spDeleteFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.DeleteFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id` (file unique ID)
 
 **Copy File** (`CopyFile`)
 - Copy a file to another location
 - Example: `copy-file.ff.ts`
-- DSL: `.spCopyFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.CopyFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id`, `destSiteUrl`, `destFolderPath`
 
 **Move File** (`MoveFile`)
 - Move a file to another location
-- DSL: `.spMoveFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.MoveFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id`, `destSiteUrl`, `destFolderPath`
 
 **Get File Metadata** (`GetFileMetadata`)
 - Get file properties by ID
-- DSL: `.spGetFileMetadata(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFileMetadata('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `id`
 - Returns: File properties including Name, UniqueId, ServerRelativeUrl, Length, TimeCreated, TimeLastModified
 
 **Get File Metadata by Path** (`GetFileMetadataByPath`)
 - Get file properties by path
-- DSL: `.spGetFileMetadataByPath(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFileMetadataByPath('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `path`
 
 **Create Folder** (`CreateNewFolder`)
 - Create a folder in a list/library
-- DSL: `.spCreateFolder(name, params)`
+- DSL: `ctx.connectors.sharepoint.CreateFolder('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `table` (list GUID), `parameters/path` (folder path)
 
 ### File Properties Operations (Phase 2)
@@ -101,20 +101,20 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get File Properties** (`GetFileProperties`)
 - Get library column values for a file
 - Example: `get-file-properties.ff.ts`
-- DSL: `.spGetFileProperties(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFileProperties('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId` (library GUID), `itemId` (list item ID)
 - Returns: All column values including Title, FileLeafRef, Created, Modified, Author, etc.
 
 **Update File Properties** (`UpdateFileProperties`)
 - Update library column values for a file (metadata only, not file content)
 - Example: `update-file-properties.ff.ts`
-- DSL: `.spUpdateFileProperties(name, params)`
+- DSL: `ctx.connectors.sharepoint.UpdateFileProperties('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`, `fields` (object with column values)
 
 **Get Files (Properties Only)** (`GetFilesPropertiesOnly`)
 - Get all file/folder properties with advanced filtering and sorting
 - Example: `get-files-properties-only.ff.ts`
-- DSL: `.spGetFilesPropertiesOnly(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetFilesPropertiesOnly('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`
 - Optional params: `filter` (OData filter), `orderby`, `top`, `skip`, `folderPath`, `includeNestedItems`
 - Returns: Array of list items with File and Folder expanded
@@ -122,7 +122,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get Item Changes** (`GetItemChanges`)
 - Get version history and audit trail for a file
 - Example: `get-item-changes.ff.ts`
-- DSL: `.spGetItemChanges(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetItemChanges('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`
 - Optional params: `since` (date), `until` (date)
 - Returns: Array of version history entries with timestamps and field changes
@@ -132,7 +132,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Add Attachment** (`AddAttachment`)
 - Add a file attachment to a list item
 - Example: `add-attachment.ff.ts`
-- DSL: `.spAddAttachment(name, params)`
+- DSL: `ctx.connectors.sharepoint.AddAttachment('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`, `fileName`, `content` (file data)
 - Returns: Attachment metadata including FileName and ServerRelativeUrl
 - Note: Maximum 90MB per attachment
@@ -140,19 +140,19 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get Attachments** (`GetAttachments`)
 - Get list of all attachments for a list item
 - Example: `get-attachments.ff.ts`
-- DSL: `.spGetAttachments(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetAttachments('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`
 - Returns: Array of attachment metadata (FileName, ServerRelativeUrl)
 
 **Get Attachment Content** (`GetAttachmentContent`)
 - Download attachment file content
-- DSL: `.spGetAttachmentContent(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetAttachmentContent('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`, `attachmentId` (filename)
 - Returns: `{ $content: base64, $contentType: string }`
 
 **Delete Attachment** (`DeleteAttachment`)
 - Remove an attachment from a list item
-- DSL: `.spDeleteAttachment(name, params)`
+- DSL: `ctx.connectors.sharepoint.DeleteAttachment('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `listId`, `itemId`, `attachmentId` (filename)
 
 ### Check In/Out & Version Control Operations (Phase 4)
@@ -160,21 +160,21 @@ means, where to find it, and which mechanism to use in a production flow.
 **Check Out File** (`CheckOutFile`)
 - Lock a file for editing, preventing others from making changes
 - Example: `checkout-checkin-workflow.ff.ts`
-- DSL: `.spCheckOutFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.CheckOutFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `fileId`
 - Note: File remains locked until checked in or checkout is discarded
 
 **Check In File** (`CheckInFile`)
 - Release file lock and make changes visible to others
 - Example: `checkout-checkin-workflow.ff.ts`
-- DSL: `.spCheckInFile(name, params)`
+- DSL: `ctx.connectors.sharepoint.CheckInFile('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `fileId`
 - Optional params: `comment` (check-in comment), `checkInType` (0=Minor, 1=Major, 2=Overwrite, default=1)
 
 **Discard Check Out** (`DiscardCheckOut`)
 - Cancel checkout without saving changes
 - Example: `discard-checkout.ff.ts`
-- DSL: `.spDiscardCheckOut(name, params)`
+- DSL: `ctx.connectors.sharepoint.DiscardCheckOut('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `fileId`
 - Note: All changes made while checked out will be lost
 
@@ -183,7 +183,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Create Sharing Link** (`CreateSharingLink`)
 - Generate a shareable link for a file or folder
 - Examples: `create-sharing-link.ff.ts`, `sharing-workflow.ff.ts`
-- DSL: `.spCreateSharingLink(name, params)`
+- DSL: `ctx.connectors.sharepoint.CreateSharingLink('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `itemId`, `linkType` (view/edit/embed)
 - Optional params:
   - `scope` - 'anonymous' (anyone), 'organization' (org only), 'users' (specific people), default='anonymous'
@@ -198,7 +198,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Grant Access** (`GrantAccess`)
 - Share a file or folder with specific users or groups
 - Examples: `grant-access.ff.ts`, `sharing-workflow.ff.ts`
-- DSL: `.spGrantAccess(name, params)`
+- DSL: `ctx.connectors.sharepoint.GrantAccess('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `itemId`, `recipients`, `roleValue`
 - Parameters:
   - `recipients` - Email addresses (string or semicolon-separated list)
@@ -215,7 +215,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Stop Sharing** (`StopSharing`)
 - Remove all sharing permissions from a file or folder
 - Examples: `stop-sharing.ff.ts`, `sharing-workflow.ff.ts`
-- DSL: `.spStopSharing(name, params)`
+- DSL: `ctx.connectors.sharepoint.StopSharing('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `itemId`
 - Note: Removes all sharing links and permissions for the item
 
@@ -224,7 +224,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Set Content Approval Status** (`SetContentApprovalStatus`)
 - Approve or reject a file/item in a list with content approval enabled
 - Examples: `set-approval-status.ff.ts`, `content-approval-workflow.ff.ts`, `approval-integration.ff.ts`
-- DSL: `.spSetContentApprovalStatus(name, params)`
+- DSL: `ctx.connectors.sharepoint.SetContentApprovalStatus('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `table` (list/library ID), `itemId`, `approvalStatus`
 - Optional params: `comments` - Approval/rejection comments
 - Approval status values:
@@ -238,7 +238,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get Content Approval Status** (`GetContentApprovalStatus`)
 - Retrieve approval status and metadata for an item
 - Examples: `get-approval-status.ff.ts`, `content-approval-workflow.ff.ts`, `approval-integration.ff.ts`
-- DSL: `.spGetContentApprovalStatus(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetContentApprovalStatus('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `table` (list/library ID), `itemId`
 - Returns: Item with moderation fields:
   - `_ModerationStatus` - Numeric status (0-3)
@@ -253,7 +253,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get Lists** (`GetLists` / `GetAllListsAndLibraries`)
 - Retrieve all lists and libraries in a SharePoint site
 - Examples: `get-lists.ff.ts`, `advanced-workflow.ff.ts`
-- DSL: `.spGetLists(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetLists('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset` (site URL)
 - Optional params: `filter` (OData filter), `select` (specific fields)
 - Returns: Array of lists with metadata:
@@ -271,7 +271,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Get List Views** (`GetListViews`)
 - Retrieve all views for a specific list or library
 - Examples: `get-list-views.ff.ts`, `advanced-workflow.ff.ts`
-- DSL: `.spGetListViews(name, params)`
+- DSL: `ctx.connectors.sharepoint.GetListViews('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `table` (list ID)
 - Returns: Array of views with metadata:
   - `Id` - View GUID
@@ -287,7 +287,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Resolve Person** (`ResolvePerson`)
 - Look up user information by email or login name
 - Examples: `resolve-person.ff.ts`, `advanced-workflow.ff.ts`
-- DSL: `.spResolvePerson(name, params)`
+- DSL: `ctx.connectors.sharepoint.ResolvePerson('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `email` or `loginName`
 - Returns: User information:
   - `Id` - User ID in SharePoint
@@ -301,7 +301,7 @@ means, where to find it, and which mechanism to use in a production flow.
 **Send HTTP Request** (`SendHttpRequest` / `HttpRequest`)
 - Execute custom HTTP requests to SharePoint REST API
 - Examples: `send-http-request.ff.ts`, `advanced-workflow.ff.ts`
-- DSL: `.spSendHttpRequest(name, params)`
+- DSL: `ctx.connectors.sharepoint.SendHttpRequest('Name', { ... }, 'shared_sharepointonline')`
 - Required params: `dataset`, `uri` (relative API path)
 - Optional params:
   - `method` - HTTP method (GET, POST, PATCH, DELETE, default: GET)

@@ -1,185 +1,58 @@
 # Expression Functions Example
 
-This example demonstrates the comprehensive expression functions in FlowForger that allow workflows to reference action outputs, manipulate strings, perform math operations, and work with collections.
+How a flow reads data produced earlier: the reference functions, property paths, and the two ways of writing an expression in the DSL.
 
-## Expression Functions
+## Files
 
-### Action Reference Functions
+- [flow.ff.ts](flow.ff.ts) — Compose, HTTP, trigger and parameter reads, with a typed helper and a raw expression side by side
 
-- **`actions('actionName')`** - Get complete action data (status, outputs, error)
-  ```typescript
-  "@actions('GetUserData').status" // Returns: "Succeeded"
-  ```
+## The reference functions
 
-- **`body('actionName')`** - Get action output body
-  ```typescript
-  "@body('GetUserData').user.name" // Returns: "John Doe"
-  ```
+| Function | Returns | Read it with |
+|---|---|---|
+| `outputs('X')` | The action's outputs. For a Compose that is the value itself; for an HTTP, connector or child-flow call it is `{ statusCode, headers, body }` | `ctx.outputs('X')` |
+| `body('X')` | `outputs('X')?['body']` — the response of an HTTP, connector or child-flow call | `ctx.body('X')` |
+| `actions('X')` | The run record: `name`, `status`, `code`, `startTime`, `endTime`, `inputs`, `outputs`, `error` | `ctx.eval("@actions('X')?['status']")` |
+| `triggerBody()` | The trigger payload | `ctx.triggerBody()` |
+| `triggerOutputs()` | `{ headers, body }` of the trigger | `ctx.eval("@triggerOutputs()?['headers']")` |
+| `trigger()` | The trigger's run record (it has no `body` of its own; the payload is under `outputs.body`) | `ctx.eval("@trigger()?['startTime']")` |
+| `parameters('Name')` | A flow parameter, by the exact key used in `ctx.flow.parameters` | `ctx.parameters('Name')` |
+| `variables('name')` | A variable | `ctx.variables('name')` |
 
-- **`outputs('actionName')`** - Alias for body()
-  ```typescript
-  "@outputs('GetUserData').user.email" // Returns: "john@example.com"
-  ```
+`outputs()` and `body()` are not aliases: `body()` only exists for actions whose outputs have a `body`. Use `ctx.outputs()` for Compose results and `ctx.body()` for HTTP, connector and child-flow results.
 
-### Trigger Reference Functions
+## Property paths
 
-- **`trigger()`** - Get the trigger's run record (`name`, `inputs`, `outputs`, `startTime`, `status`, ...)
-  ```typescript
-  "@trigger().outputs.body" // Returns trigger input (trigger() itself has no body)
-  ```
-
-- **`triggerBody()`** - Get trigger body directly
-  ```typescript
-  "@triggerBody()" // Returns trigger input
-  ```
-
-- **`triggerOutputs()`** - Alias for triggerBody()
-  ```typescript
-  "@triggerOutputs().message" // Access trigger properties
-  ```
-
-### Workflow Reference Functions
-
-- **`workflow()`** - Get workflow metadata
-  ```typescript
-  "@workflow().name" // Returns: "expression-functions-demo"
-  ```
-
-- **`parameters('paramName')`** - Get workflow parameter
-  ```typescript
-  "@parameters('myParam')" // Returns parameter definition/value
-  ```
-
-### String Functions
-
-- **`indexOf(text, searchText)`** - Find position of substring
-  ```typescript
-  "@indexOf('Hello World', 'World')" // Returns: 6
-  ```
-
-- **`lastIndexOf(text, searchText)`** - Find last position of substring
-  ```typescript
-  "@lastIndexOf('Hello World World', 'World')" // Returns: 12
-  ```
-
-- **`guid()`** - Generate a unique GUID
-  ```typescript
-  "@guid()" // Returns: "3414a5fd-fef5-4405-a5ca-67bfca312b6e"
-  ```
-
-- **`base64(text)`** - Base64 encode a string
-  ```typescript
-  "@base64('Hello World')" // Returns: "SGVsbG8gV29ybGQ="
-  ```
-
-- **`base64ToString(base64)`** - Decode a base64 string
-  ```typescript
-  "@base64ToString('SGVsbG8gV29ybGQ=')" // Returns: "Hello World"
-  ```
-
-- **`uriComponent(text)`** - URL encode a string
-  ```typescript
-  "@uriComponent('Hello World!')" // Returns: "Hello%20World%21"
-  ```
-
-- **`uriComponentToString(encoded)`** - URL decode a string
-  ```typescript
-  "@uriComponentToString('Hello%20World%21')" // Returns: "Hello World!"
-  ```
-
-### Math Functions
-
-- **`int(value)`** - Convert to integer (truncate)
-  ```typescript
-  "@int(3.7)" // Returns: 3
-  ```
-
-- **`float(value)`** - Convert to float
-  ```typescript
-  "@float('3.14')" // Returns: 3.14
-  ```
-
-- **No `abs`, `ceil`, `floor` or `round`** - Power Automate has none of these; a flow that
-  calls one fails at run time ("The template function 'round' is not defined or not valid"),
-  and FlowForger fails the same way. To round, format and convert back:
-  ```typescript
-  "@int(formatNumber(3.6, 'F0'))" // Returns: 4 (standard formats round half to even: 2.5 → 2)
-  ```
-
-### Collection Functions
-
-- **`createArray(value1, value2, ...)`** - Create an array from values
-  ```typescript
-  "@createArray('a', 'b', 'c')" // Returns: ["a","b","c"]
-  ```
-
-- **`range(start, count)`** - Generate a range of integers
-  ```typescript
-  "@range(1, 5)" // Returns: [1,2,3,4,5]
-  ```
-
-## Property Path Navigation
-
-All expression functions support dot notation for accessing nested properties:
+Use the null-safe form, `?['key']`, in expressions and `?.['key']` in the DSL: a missing property then reads as null instead of failing the action.
 
 ```typescript
-"@body('GetUserData').user.name"          // Access nested object
-"@actions('GetData').outputs.items[0]"    // Access array elements
-"@trigger().outputs.body.request.headers" // Access nested paths
+ctx.outputs('GetUserData')?.['user']?.['name']            // @outputs('GetUserData')?['user']?['name']
+ctx.eval(`@body('CallHttpBin')?['args']?['demo']`)
+ctx.eval(`@first(body('GetItems')?['value'])?['Title']`)
 ```
 
-## Complex Expressions
+## Typed helpers or `ctx.eval()`
 
-Functions can be nested and combined:
+`ctx.concat(...)`, `ctx.greater(...)`, `ctx.length(...)` and the other helpers compile to the matching Power Automate function, with the arguments transformed the same way. `ctx.eval("@...")` passes an expression through verbatim. Both appear in the flow for the same reads; they produce identical Logic Apps JSON. Write `@expr` to keep the value's type and `@{expr}` only when you want text.
 
-```typescript
-"@concat(base64ToString('SGVsbG8='), ' ', 'World')"  // "Hello World"
-"@add(div(10, 4), 1)"                                // 3 (div of two integers is integer division)
-"@length(createArray(1, 2, 3, 4, 5))"                // 5
-"@indexOf(toLower('HELLO WORLD'), 'world')"          // 6
-```
+The engine evaluates expressions the way the cloud does (integer division, `True`/`False` in text, case-insensitive `indexOf`, dates with seven fraction digits), so a value you see in the local trace is the value the deployed flow computes. Functions the cloud does not have, such as `round()`, fail locally too.
 
 ## Running
 
 See [examples/README.md](../README.md) for CLI install/setup.
 
 ```bash
-# Run locally (compiles DSL → IR on the fly)
 npx flowforger run examples/expression-functions/flow.ff.ts
 
-# Or from local source (after `npm run build` at repo root)
-node packages/cli/dist/index.js run examples/expression-functions/flow.ff.ts
+# Pass a trigger payload to see it under GetTriggerData
+npx flowforger run examples/expression-functions/flow.ff.ts --in payload.json
 ```
 
-## Example Flow
+Expected outputs in the trace:
 
-The example flow demonstrates:
-
-1. **Action output references**: Getting data from previous actions
-2. **Property path navigation**: Accessing nested object properties
-3. **Action status checking**: Conditional logic based on action success/failure
-4. **Trigger data access**: Using data from the workflow trigger
-5. **Parameter access**: Reading workflow parameters
-6. **Complex expressions**: Combining multiple functions with string operations
-
-## Expected Output
-
-When you run the flow, you should see:
-
-- `ExtractUserName`: "John Doe" (from action output property path)
-- `CheckStatus`: "Succeeded" (from action status)
-- `GetUserEmail`: "john@example.com" (using outputs() alias)
-- `GetTriggerData`: Full trigger object
-- `AgeMessage`: "User is older than 25: John Doe" (conditional + concat)
-- `SuccessMessage`: "'GetUserData action succeeded!'" (conditional based on action status)
-
-## Implementation Details
-
-These expression functions are now supported in:
-
-- **Engine** (`@flowforger/engine`): Evaluates expressions during local execution
-- **DSL** (`@flowforger/dsl-native`): Supports native TypeScript expressions that transform to Power Automate expressions
-- **Emitter** (`@flowforger/emitter-logicapps`): Preserves expressions when generating Logic Apps JSON
-- **Generator** (`@flowforger/dsl-native`): `generateNativeDslFromLogicApps()` preserves expressions when reverse-engineering
-
-This makes FlowForger workflows much more powerful and enables real-world workflow patterns where actions depend on outputs from previous steps.
+- `ExtractUserName` and `ExtractUserEmail`: `John Doe`, `john@example.com`
+- `CheckStatus`: `Succeeded`
+- `ExtractQueryArg`: `1` (httpbin echoes the query string); `ExtractStatusCode`: `200`
+- `GetParameter`: `default value`
+- `AgeMessage`: `User is older than 25: John Doe`
+- `SuccessMessage`: `GetUserData action succeeded!`

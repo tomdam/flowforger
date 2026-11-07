@@ -201,7 +201,7 @@ export function parseExpressionToTypeScript(
     return ctxEval(expression, false);
   }
   try {
-    return { code: emitNode(node, ec), success: true };
+    return { code: emitNode(node, { ...ec, rootNode: node }), success: true };
   } catch (err) {
     if (err instanceof EmitBailout) {
       // Canonical-casing guard: regeneration would lose source casing.
@@ -359,7 +359,7 @@ export function parseStringToTemplateLiteral(
         .replace(/`/g, '\\`')
         .replace(/\$/g, '\\$');
     } else {
-      templateContent += '${' + emitNode(part.node, ec) + '}';
+      templateContent += '${' + emitNode(part.node, { ...ec, rootNode: part.node }) + '}';
     }
   }
 

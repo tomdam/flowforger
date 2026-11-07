@@ -31,16 +31,15 @@ class ComplexControlFlow {
       });
 
       // ===== Switch on region to apply different rules =====
+      // Cases need no `break`: the transformer compiles each case as its own branch
       /** @action RouteByRegion */
       switch (batch?.['region']) {
         /** @action CaseUS */
         case 'US':
           await ctx.compose('TaxRate_US', 0.08);
-          break;
         /** @action CaseEU */
         case 'EU':
           await ctx.compose('TaxRate_EU', 0.20);
-          break;
         default:
           await ctx.compose('TaxRate_Other', 0.10);
       }
@@ -82,8 +81,9 @@ class ComplexControlFlow {
               await ctx.compose('AutoApproved', true);
             }
 
-            // Append to processed
-            processedOrders = ctx.eval(`@union(variables('processedOrders'), createArray(outputs('OrderTotal')))`);
+            // Append to processed (AppendToArrayVariable)
+            /** @action Append_processed_order */
+            processedOrders.push(ctx.outputs('OrderTotal'));
           } else {
             // Invalid order
             await ctx.compose('InvalidOrder', {
@@ -91,7 +91,8 @@ class ComplexControlFlow {
               reason: 'Missing productId or invalid quantity'
             });
 
-            failedOrders = ctx.eval(`@union(variables('failedOrders'), createArray(outputs('InvalidOrder')))`);
+            /** @action Append_invalid_order */
+            failedOrders.push(ctx.outputs('InvalidOrder'));
           }
         }
 
@@ -102,7 +103,8 @@ class ComplexControlFlow {
             error: 'Unexpected error during processing'
           });
 
-          failedOrders = ctx.eval(`@union(variables('failedOrders'), createArray(outputs('OrderError')))`);
+          /** @action Append_failed_order */
+          failedOrders.push(ctx.outputs('OrderError'));
         }
 
         /** @action FinallyOrder @type scope @runAfter TryProcessOrder: Succeeded, Failed, Skipped */

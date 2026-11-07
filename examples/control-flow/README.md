@@ -1,6 +1,6 @@
 # Control Flow Example
 
-Minimal demonstration of FlowForger's control-flow constructs and the JSDoc annotations that name them.
+Minimal demonstration of FlowForger's control-flow constructs and the JSDoc annotations that name them. The actions are Compose actions, so the flow runs offline.
 
 ## Files
 
@@ -22,8 +22,8 @@ Note: `@type` is only required for **scope** (a bare block is ambiguous); if/for
 See [examples/README.md](../README.md) for CLI install/setup.
 
 ```bash
-# vars.json provides the 'x' and 'items' variables the flow branches and loops on
+# vars.json overrides the 'x' and 'items' variables the flow branches and loops on
 npx flowforger run examples/control-flow/flow.ff.ts --vars examples/control-flow/vars.json
 ```
 
-With `x = 1`, the if branch runs `ThenA`; the foreach fires `PerItem` once per entry in `items`.
+With `x = 1` the if branch runs `ThenA`; the foreach runs `PerItem` once per entry in `items`, and the trace shows each iteration with its item. Run it without `--vars` to see the else branch and an empty loop.

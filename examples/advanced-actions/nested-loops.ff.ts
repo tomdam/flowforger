@@ -35,7 +35,8 @@ class NestedLoops {
 
         totalCount = totalCount + 1;
 
-        summaries = ctx.eval(`@union(variables('summaries'), createArray(outputs('EmployeeSummary')))`);
+        /** @action Append_summary */
+        summaries.push(ctx.outputs('EmployeeSummary'));
       }
     }
 

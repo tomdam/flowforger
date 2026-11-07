@@ -14,6 +14,7 @@ import {
   nodeKind,
   skippedByBranch,
   skippedByParent,
+  skippedNoItems,
   skippedByRunAfter,
   switchCaseTypeMismatch,
   switchValueInvalid,
@@ -518,6 +519,24 @@ function deepEvalValue(value: any, ctx: RunContext): any {
     return result;
   }
   return value;
+}
+
+/**
+ * The amount an Increment/Decrement variable action adds: its `value` evaluated (a literal
+ * number, or an expression such as `@body('X')?['lineTotal']`), 1 when no value is given.
+ * A value that is not a number fails the action; the cloud's exact message for that case
+ * has not been measured.
+ */
+function incrementAmount(inputs: { name: string; value?: unknown }, ctx: RunContext): number {
+  if (inputs.value === undefined || inputs.value === null) return 1;
+  const amount = deepEvalValue(inputs.value, ctx);
+  if (typeof amount !== 'number' || Number.isNaN(amount)) {
+    throw new Error(
+      `The variable '${inputs.name}' cannot be incremented with a value of type '${amount === null ? 'Null' : typeof amount}'. ` +
+        `Increment and decrement variable take a numeric value.`,
+    );
+  }
+  return amount;
 }
 
 /**
@@ -1166,7 +1185,7 @@ async function executeNodeInner(
         };
       } else if (action.kind === 'incrementvariable') {
         const inputs = action.inputs as any;
-        const increment = typeof inputs.value === 'number' ? inputs.value : 1;
+        const increment = incrementAmount(inputs, ctx);
         ctx.variables[inputs.name] = (ctx.variables[inputs.name] || 0) + increment;
         return {
           status: 'Succeeded',
@@ -1175,7 +1194,7 @@ async function executeNodeInner(
         };
       } else if (action.kind === 'decrementvariable') {
         const inputs = action.inputs as any;
-        const decrement = typeof inputs.value === 'number' ? inputs.value : 1;
+        const decrement = incrementAmount(inputs, ctx);
         ctx.variables[inputs.name] = (ctx.variables[inputs.name] || 0) - decrement;
         return {
           status: 'Succeeded',
@@ -1634,10 +1653,17 @@ async function executeNodeInner(
           _childFailed: result.status === 'Failed',
         };
       } catch (err: any) {
+        // A failing condition fails the If BadRequest/InvalidTemplate; both branches are
+        // recorded as Skipped (ActionDependencyFailed), as the cloud does.
+        const outcome = conditionInvalid(node.name, err.message);
+        ctx.scopeResults?.set(node.name, []);
+        const skipped = [...(ifNode.actions || []), ...(ifNode.elseActions || [])];
         return {
           status: 'Failed',
-          error: new Error(`Failed to evaluate condition: ${err.message}`),
+          error: new Error(outcome.cloudError!.message),
+          ...outcome,
           variables: { ...ctx.variables },
+          _childTrace: skipChildren(skipped, c => skippedByParent(c.name, node.name, 'Failed', outcome.code), ctx, node.name),
         };
       }
     }
@@ -1650,10 +1676,16 @@ async function executeNodeInner(
       try {
         items = evalExpression(itemsExpr, ctx);
       } catch (err: any) {
+        // The cloud fails the loop BadRequest/InvalidTemplate and records its body as Skipped
+        // (ActionDependencyFailed), as for any block whose header fails.
+        const outcome = conditionInvalid(node.name, err.message);
+        ctx.scopeResults?.set(node.name, []);
         return {
           status: 'Failed',
-          error: new Error(`Failed to evaluate foreach items: ${err.message}`),
+          error: new Error(outcome.cloudError!.message),
+          ...outcome,
           variables: { ...ctx.variables },
+          _childTrace: skipChildren(foreachNode.actions || [], c => skippedByParent(c.name, node.name, 'Failed', outcome.code), ctx, node.name),
         };
       }
       const itemsArray = Array.isArray(items) ? items : [];
@@ -1768,12 +1800,18 @@ async function executeNodeInner(
       const status: StepResult['status'] = iterations.some(it => it.status === 'Failed') ? 'Failed' : 'Succeeded';
       const outputs = { itemCount: itemsArray.length };
       ctx.actions.set(node.name, { status, outputs });
+      // A loop with no items records its body as Skipped ("there are no items to repeat"),
+      // so actions('X') answers a Skipped record as in the cloud (coalesce-empty.ff.ts).
+      const noItems = itemsArray.length === 0
+        ? { _childTrace: skipChildren(foreachNode.actions || [], c => skippedNoItems(c.name), ctx, node.name) }
+        : {};
 
       return {
         status,
         outputs,
         variables: { ...ctx.variables },
         iterations,
+        ...noItems,
         ...(terminateSignal ? { status: 'Cancelled' as const, _terminate: terminateSignal, _runError: runError, ...SKIPPED_BY_TERMINATE } : {}),
         ...(stoppedBefore ? { status: 'Cancelled' as const, _stopped: true } : {}),
       };

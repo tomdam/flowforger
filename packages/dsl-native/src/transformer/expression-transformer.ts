@@ -119,7 +119,10 @@ export function transformExpression(node: Expression, ctx: TransformContext, isR
     case SyntaxKind.ArrayLiteralExpression: {
       const arr = node.asKindOrThrow(SyntaxKind.ArrayLiteralExpression);
       const elements = arr.getElements().map(e => transformExpression(e, ctx, false));
-      const result = `createArray(${elements.join(', ')})`;
+      // createArray() takes at least one argument, and the cloud checks the count before
+      // evaluating anything, so an empty literal (`x ?? []`) is json('[]') instead
+      // (measured by conformance/flows/coalesce-empty.ff.ts).
+      const result = elements.length === 0 ? `json('[]')` : `createArray(${elements.join(', ')})`;
       return isRoot ? `@${result}` : result;
     }
 

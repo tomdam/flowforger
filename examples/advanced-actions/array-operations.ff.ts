@@ -1,9 +1,9 @@
 /**
  * Example: Array Operations
  *
- * Demonstrates array variable initialization, appending items in loops,
- * union/intersection of arrays, filtering with conditionals, and
- * building result sets from multiple sources.
+ * Demonstrates array variable initialization, appending items in a loop with
+ * .push() (AppendToArrayVariable), union/intersection of arrays, filtering with
+ * conditionals, and building result sets from multiple sources.
  */
 
 @Flow('ArrayOperations')
@@ -27,15 +27,18 @@ class ArrayOperations {
     for (const task of ctx.outputs('AllTasks') ?? []) {
       /** @action CheckPriority */
       if (task?.['priority'] === 'high') {
-        // Append to high priority array
-        highPriority = ctx.eval(`@union(variables('highPriority'), createArray(items('CategorizeLoop')))`);
+        // Append to high priority array (AppendToArrayVariable)
+        /** @action Append_high_priority */
+        highPriority.push(task);
       } else {
         // Append to low priority array
-        lowPriority = ctx.eval(`@union(variables('lowPriority'), createArray(items('CategorizeLoop')))`);
+        /** @action Append_low_priority */
+        lowPriority.push(task);
       }
 
       // Track all processed IDs
-      processedIds = ctx.eval(`@union(variables('processedIds'), createArray(items('CategorizeLoop')?['id']))`);
+      /** @action Append_processed_id */
+      processedIds.push(task?.['id']);
     }
 
 

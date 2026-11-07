@@ -24,6 +24,7 @@ const TEMPLATES = {
   runAfter:
     "The execution of template action '{0}' is skipped: the 'runAfter' condition for action '{1}' is not satisfied. Expected status values '{2}' and actual value '{3}'.",
   branch: "The execution of template action '{0}' skipped: the branching condition for this action is not satisfied.",
+  noItems: "The execution of template action '{0}' is skipped: there are no items to repeat.",
   dependency:
     "The execution of template action '{0}' is skipped: dependant action '{1}' completed with status '{2}' and code '{3}'.",
   template: "Unable to process template language expressions in action '{0}' inputs at line '{1}' and column '{2}': '{3}'.",
@@ -133,6 +134,11 @@ export function skippedByParent(name: string, parent: string, parentStatus: stri
     code: 'ActionSkipped',
     cloudError: cloudError('ActionDependencyFailed', TEMPLATES.dependency, name, parent, parentStatus, parentCode ?? 'NotSpecified'),
   };
+}
+
+/** Skipped because the enclosing loop had no items ("there are no items to repeat"). */
+export function skippedNoItems(name: string): Outcome {
+  return { code: 'ActionSkipped', cloudError: cloudError('ActionConditionFailed', TEMPLATES.noItems, name) };
 }
 
 /** Skipped because a Terminate ended the run first. */

@@ -442,7 +442,7 @@ The CLI scans the flow for connector operations and requests only the minimum Az
 
 - **First run**: prompts for device code login
 - **Subsequent runs**: fully silent using cached refresh tokens (~90 day lifetime)
-- **Cache location**: `~/.flowforger/token-cache.json` (encrypted at rest via OS-level protection — DPAPI on Windows, Keychain on macOS, libsecret on Linux)
+- **Cache location**: `~/.flowforger/token-cache.encrypted.json` (AES-256-GCM, with the key kept in the OS credential store — Windows Credential Manager, macOS Keychain, Secret Service on Linux)
 
 Graph API scopes are implicit (no config needed). SharePoint and Dataverse require resource URLs because they're org-specific.
 

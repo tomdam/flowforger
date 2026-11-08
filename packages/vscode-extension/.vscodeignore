@@ -9,3 +9,7 @@ tsconfig.json
 *.txt
 ../**
 !server/dist/index.js
+# tsc -b emits loose dist/*.js, tests and a tsbuildinfo here; only the esbuild bundle is loaded
+dist/**
+!dist/extension.js
+*.tsbuildinfo

@@ -23,7 +23,8 @@ await build({
   // so we handle it: esbuild preserves the shebang from the entry point automatically
   // ts-morph is too large to bundle (~40MB with TypeScript compiler)
   // It stays as a regular npm dependency
-  external: ['ts-morph', 'typescript', '@azure/msal-node-extensions', '@azure/msal-node-runtime'],
+  // @napi-rs/keyring loads a per-platform native binary, so it must stay a real dependency.
+  external: ['ts-morph', 'typescript', '@napi-rs/keyring'],
   // Silence warnings about dynamic requires in node_modules
   logLevel: 'warning',
   // moduleDir() only reads import.meta.url in the ESM dev build; the CJS bundle

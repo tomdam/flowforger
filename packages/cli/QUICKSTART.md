@@ -179,14 +179,16 @@ In CI, add `--no-create` to any push that should fail rather than quietly create
 | `*.ff.ts` | Flow source code in TypeScript DSL |
 | `*.ir.json` | Intermediate representation (optional, for debugging) |
 | `clientdata.json` | Compiled Logic Apps JSON (what Dataverse expects) |
-| `~/.flowforger/token-cache.json` | Cached refresh tokens, encrypted for the current OS user (DPAPI on Windows, Keychain on macOS, libsecret on Linux). With `FLOWFORGER_TOKEN_CACHE=file`, `token-cache.plaintext.json` instead (unencrypted, 0600) |
+| `~/.flowforger/token-cache.encrypted.json` | Cached refresh tokens, encrypted for the current OS user with a key kept in the OS credential store (Windows Credential Manager, macOS Keychain, Secret Service on Linux). With `FLOWFORGER_TOKEN_CACHE=file`, `token-cache.plaintext.json` instead (unencrypted, 0600) |
 
 The token cache is readable by anything running as your user account, which is the same protection level as the Azure CLI or your browser's sign-in. Copied to another machine or user it is unreadable. To revoke it, delete the file, or revoke the user's sessions in Entra ID.
 
+Versions up to 0.5.2 kept the cache in `~/.flowforger/token-cache.json`, which this version cannot read: the first `--auth` command deletes it and asks you to sign in once more.
+
 ## Common issues
 
-**Linux: "The encrypted token cache used by --auth could not be loaded: libsecret-1.so.0 ..."**
-- `--auth` stores tokens through libsecret on Linux. Install it (`sudo apt-get install libsecret-1-0` on Debian/Ubuntu, `sudo dnf install libsecret` on Fedora), or skip `--auth` and pass tokens explicitly (`--graph-token`, `--sp-token`, `--dv-token`). Every other command works without it.
+**Linux: "The encrypted token cache used by --auth could not be loaded: ..."**
+- On Linux the cache key is kept by the Secret Service, so a keyring daemon (GNOME Keyring, KWallet or KeePassXC) must be running on the session D-Bus. Servers, containers and CI usually have none: set `export FLOWFORGER_TOKEN_CACHE=file` (see below), or skip `--auth` and pass tokens explicitly (`--graph-token`, `--sp-token`, `--dv-token`). Every other command works without it.
 
 **Linux: "Waiting for the system keyring" / "The system keyring did not respond within 120s ..."**
 - The keyring is locked. On a desktop (and in WSL, which shows it on the Windows desktop) an unlock prompt opens: enter your keyring password there. With no session to show it (SSH, CI, WSL without a GUI) it never answers. Either unlock it, or keep the token cache in a plain file readable only by you: `export FLOWFORGER_TOKEN_CACHE=file` (stored as `~/.flowforger/token-cache.plaintext.json`, mode 0600, **not** encrypted), then sign in once more.

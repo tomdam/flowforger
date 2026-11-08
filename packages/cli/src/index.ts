@@ -173,10 +173,17 @@ function loadAuthConfig(args: Record<string, any>): AuthConfig {
   try {
     raw = JSON.parse(readFileSync(resolve(configPath), 'utf-8'));
   } catch {
-    throw new Error(`--auth requires a config file. Not found: ${configPath}`);
+    throw new Error(
+      `--auth requires a config file. Not found: ${configPath}\n` +
+        `Run 'flowforger init' to create one, or pass --config <path>. ` +
+        `Setup guide: https://docs.flowforger.net/getting-started/app-registration`
+    );
   }
   if (!raw.auth) {
-    throw new Error(`--auth requires an 'auth' section in ${configPath}`);
+    throw new Error(
+      `--auth requires an 'auth' section in ${configPath}. ` +
+        `See https://docs.flowforger.net/getting-started/app-registration`
+    );
   }
   return raw.auth as AuthConfig;
 }
@@ -456,6 +463,11 @@ Notes:
     * --workflows-dir: Directory for convention-based lookup (default: ./flows/)
     * --strict-workflows: Fail on missing or erroring child workflows (default: false)
     * --cache-workflows: Save Dataverse-fetched workflows to disk cache
+
+Documentation: https://docs.flowforger.net
+  Getting started (app registration, init, pull, run, push): https://docs.flowforger.net/getting-started/installation
+  CLI reference: https://docs.flowforger.net/cli/reference
+  Issues: https://github.com/tomdam/flowforger/issues
 `);
 }
 

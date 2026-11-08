@@ -2,6 +2,8 @@
 
 Build Power Automate and Logic Apps flows as TypeScript — with IntelliSense, local debugging, and compilation to Logic Apps JSON.
 
+📖 **Documentation: [docs.flowforger.net](https://docs.flowforger.net)** — [extension guide](https://docs.flowforger.net/tools/vscode-extension), [DSL reference](https://docs.flowforger.net/dsl/overview), [getting started](https://docs.flowforger.net/getting-started/installation)
+
 ## Features
 
 - **IntelliSense**: Autocomplete for `ctx.*` methods, connectors, action names, and variables
@@ -20,7 +22,7 @@ FlowForger DSL files use the `.ff.ts` extension.
 
 ## Connecting to Your Environment
 
-Schema completions, **FlowForger: Connect Data Sources**, and `--auth` debug sessions sign in through an app registration in your own Microsoft Entra ID tenant, read from the `auth` section of `flowforger.config.json` in your workspace. FlowForger ships no built-in client ID. If you have not set one up yet, the [CLI Quickstart](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md) walks through it, and `flowforger init` writes the config file. The extension keeps its own token cache at `~/.flowforger/vscode-token-cache.json` and never prompts for sign-in while you type.
+Schema completions, **FlowForger: Connect Data Sources**, and `--auth` debug sessions sign in through an app registration in your own Microsoft Entra ID tenant, read from the `auth` section of `flowforger.config.json` in your workspace. FlowForger ships no built-in client ID. If you have not set one up yet, the [app registration guide](https://docs.flowforger.net/getting-started/app-registration) walks through it, and `flowforger init` writes the config file. The extension keeps its own token cache at `~/.flowforger/vscode-token-cache.json` and never prompts for sign-in while you type.
 
 ## Quick Start
 
@@ -81,6 +83,11 @@ class HelloFlow {
 None — the language server, compiler, emitter, and debugger are fully bundled with the extension. No workspace setup or Node.js installation required.
 
 For command-line workflows (CI, deployment), see the [flowforger CLI](https://www.npmjs.com/package/flowforger) on npm.
+
+## Documentation and support
+
+- Documentation: [docs.flowforger.net](https://docs.flowforger.net) — the [extension guide](https://docs.flowforger.net/tools/vscode-extension) covers debugging, Edit & Continue, schema completions and the MCP server
+- Source and issues: [github.com/tomdam/flowforger](https://github.com/tomdam/flowforger)
 
 ## License
 

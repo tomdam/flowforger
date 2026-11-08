@@ -2,6 +2,8 @@
 
 Get from zero to pulling, running, and pushing Power Automate flows from your terminal in about 10 minutes.
 
+> The same walkthrough, with screenshots and the rest of the documentation around it, is online at **[docs.flowforger.net](https://docs.flowforger.net/getting-started/installation)**.
+
 The one thing every command that talks to Microsoft 365 (`--auth`, `init`, `pull`, `push`) needs is an **app registration in your own Microsoft Entra ID tenant**. FlowForger is open source and does not ship a built-in client ID, so you register one, once, and point the CLI at it. Steps 1 to 3 cover that.
 
 ## Prerequisites

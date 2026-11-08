@@ -4,6 +4,8 @@ A TypeScript DSL for authoring, compiling, validating, and deploying **Microsoft
 
 Write flows as TypeScript classes, compile to Logic Apps JSON, run locally, and push to Dataverse.
 
+📖 **Documentation: [docs.flowforger.net](https://docs.flowforger.net)** — [getting started](https://docs.flowforger.net/getting-started/installation), [CLI reference](https://docs.flowforger.net/cli/reference), [DSL reference](https://docs.flowforger.net/dsl/overview), [local testing guide](https://docs.flowforger.net/guides/local-testing)
+
 ## Install
 
 ```bash
@@ -467,11 +469,17 @@ The CLI requests only the permissions a given flow uses. `flowforger scopes <flo
 | Word Online, Excel Online, OneDrive | Microsoft Graph | `Files.ReadWrite` |
 | `listCallbackUrl()` | Microsoft Flow Service (`7df0a125-d3be-4c96-aa54-591f83ff541c`) | `User` |
 
-Add both `Read` and `ReadWrite` where both are listed: consent is per permission, and a read-only flow requests the narrower one. Step-by-step portal instructions and troubleshooting are in the [Quickstart](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md).
+Add both `Read` and `ReadWrite` where both are listed: consent is per permission, and a read-only flow requests the narrower one. Step-by-step portal instructions and troubleshooting are in the [app registration guide](https://docs.flowforger.net/getting-started/app-registration) (also shipped as [QUICKSTART.md](https://github.com/tomdam/flowforger/blob/main/packages/cli/QUICKSTART.md)).
 
 ## Requirements
 
 - Node.js >= 20
+
+## Documentation and support
+
+- Documentation: [docs.flowforger.net](https://docs.flowforger.net)
+- Source and issues: [github.com/tomdam/flowforger](https://github.com/tomdam/flowforger)
+- VS Code extension: [FlowForger on the Marketplace](https://marketplace.visualstudio.com/items?itemName=FlowForger.flowforger-vscode)
 
 ## License
 

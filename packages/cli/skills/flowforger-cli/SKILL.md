@@ -9,7 +9,7 @@ description: Use when installing, configuring, or operating the flowforger CLI â
 
 `flowforger` is a self-contained CLI for Power Automate / Logic Apps workflows: pull flows from Dataverse as TypeScript DSL (`.ff.ts`), edit, compile, run locally, and push back. **No npm packages are needed in the consuming project** â€” `.ff.ts` files are transformed by the CLI itself, never by `tsc`, and imports in them are dead weight (omit them).
 
-Run `flowforger --help` for full flag reference. This skill covers what `--help` does not.
+Run `flowforger --help` for full flag reference. This skill covers what `--help` does not. The online documentation is at **https://docs.flowforger.net**: [CLI reference](https://docs.flowforger.net/cli/reference), [installation and app registration](https://docs.flowforger.net/getting-started/installation), [local testing with mocks and dry runs](https://docs.flowforger.net/guides/local-testing), [deploying](https://docs.flowforger.net/guides/deploying), [cloud runs](https://docs.flowforger.net/guides/cloud-runs), [MCP server](https://docs.flowforger.net/tools/mcp-server). Fetch a page when a flag or error is not covered here.
 
 ## Command Quick Reference
 

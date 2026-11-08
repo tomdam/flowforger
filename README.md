@@ -2,6 +2,8 @@
 
 **Build, run, and emit Microsoft Power Automate and Azure Logic Apps workflows in TypeScript.**
 
+📖 **Documentation: [docs.flowforger.net](https://docs.flowforger.net)** — [getting started](https://docs.flowforger.net/getting-started/installation), [DSL reference](https://docs.flowforger.net/dsl/overview), [CLI reference](https://docs.flowforger.net/cli/reference), [connectors](https://docs.flowforger.net/connectors/sharepoint), [for AI agents](https://docs.flowforger.net/for-ai-agents)
+
 FlowForger lets you author Power Automate / Logic Apps flows as TypeScript code, run them locally with a built-in engine, and compile them to the same `clientdata.json` format the Power Automate portal produces — so you can deploy them straight to Dataverse. It also works in reverse: pull an existing flow from your environment and get readable TypeScript back.
 
 ```ts
@@ -124,6 +126,17 @@ node packages/cli/dist/index.js run flow.ff.ts --auth
 ```
 
 See individual package READMEs under [packages/](packages/) for connector-specific setup.
+
+## Documentation
+
+The full documentation lives at **[docs.flowforger.net](https://docs.flowforger.net)**:
+
+- [Getting started](https://docs.flowforger.net/getting-started/installation) — install, the app registration, and a first pull/run/push
+- [DSL reference](https://docs.flowforger.net/dsl/overview) — triggers, actions, variables, control flow, expressions, diagnostics, and how the local engine follows the cloud's semantics
+- [Guides](https://docs.flowforger.net/guides/local-testing) — local testing with mocks and dry runs, deploying, replaying cloud runs
+- [CLI reference](https://docs.flowforger.net/cli/reference) — every command and flag
+- [Connectors](https://docs.flowforger.net/connectors/sharepoint) — SharePoint, Dataverse, Microsoft 365, HTTP, and how outputs and failures look
+- [For AI agents](https://docs.flowforger.net/for-ai-agents) — a compact reference, plus [`/llms.txt`](https://docs.flowforger.net/llms.txt) and [`/llms-full.txt`](https://docs.flowforger.net/llms-full.txt)
 
 ## Editor and AI tooling
 

@@ -29,8 +29,22 @@ jobs:
           node-version: 22
 
       # No lockfile is committed, so this is `npm install` rather than `npm ci`.
+      #
+      # Retried because keytar (a hard dependency of @azure/msal-node-extensions)
+      # downloads a prebuilt binary at install time; when that download times out
+      # it falls back to node-gyp, which needs the libsecret headers we deliberately
+      # do not install on Ubuntu (see the bundle check below). A transient timeout
+      # must not fail the run.
       - name: Install
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            npm install --no-audit --no-fund && exit 0
+            echo "npm install failed (attempt $attempt of 3); retrying in 30s"
+            rm -rf node_modules
+            sleep 30
+          done
+          exit 1
 
       - name: Build
         run: npm run build

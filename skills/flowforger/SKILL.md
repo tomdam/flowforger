@@ -254,7 +254,7 @@ myArray = ctx.eval(`@union(variables('myArray'), createArray(outputs('Item')))`)
 | `await ctx.http('Name', {...})` | HTTP request |
 | `await ctx.response('Name', status, body)` | HTTP response (for PowerApp/VirtualAgent responses, pass `schema` as the 5th arg and `'PowerApp'`/`'VirtualAgent'` as the 6th — every property under `schema.properties` must include `"x-ms-dynamically-added": true` or the maker-portal designer hides the output; see [dsl-syntax.md](dsl-syntax.md#response)) |
 | `await ctx.terminate('Name', status)` | End flow (never use `return`; only pass `{ code, message }` for `'Failed'`) |
-| `await ctx.connectorWebhook('Name', {...})` | Webhook connector action (e.g., Approvals) |
+| `await ctx.connectorWebhook('Name', 'approvals', 'StartAndWaitForAnApproval', {...}, 'shared_approvals')` | Webhook connector action (e.g., Approvals); arguments are positional, not an options object |
 | `ctx.triggerBody()` | Get trigger body |
 | `ctx.body('ActionName')` | Get action body (HTTP/connectors) |
 | `ctx.outputs('ActionName')` | Get action outputs (Compose actions) |

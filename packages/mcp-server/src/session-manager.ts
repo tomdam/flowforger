@@ -79,7 +79,7 @@ export interface SessionManagerDeps {
   /** Override the cassette directory (tests pass a temp dir). */
   cassetteRoot?: string;
   defaultBudget?: number;
-  /** Resolve tokens lazily on first start; returns extra connector options. */
+  /** Resolve tokens for a flow's connectors on every start; the results are merged across starts. */
   resolveAuth?: (ir: FlowIR) => Promise<ConnectorOptions>;
 }
 
@@ -142,7 +142,12 @@ export class SessionManager {
 
     let connectorOptions = this.deps.connectorOptions;
     if (this.deps.resolveAuth) {
-      this.authCache ??= await this.deps.resolveAuth(source.ir);
+      // Per start, not once per process: the scopes are derived from THIS flow's
+      // connectors, so a later flow needing another connector gets its token too.
+      // Earlier tokens are kept for connectors this flow does not use (silent
+      // MSAL acquisition is cached, so the repeat is cheap).
+      const fresh = await this.deps.resolveAuth(source.ir);
+      this.authCache = { ...(this.authCache || {}), ...fresh };
       connectorOptions = { ...connectorOptions, ...this.authCache };
     }
 

@@ -550,24 +550,21 @@ await ctx.connectors.wordonline.ConvertWordDocumentToPdf('ActionName', {
 
 Access via `ctx.connectors.approvals` | Connection: `shared_approvals`
 
-> **Note:** Approvals use webhook callbacks. Use `ctx.connectorWebhook()` instead of `ctx.connectors.approvals` for `StartAndWaitForAnApproval`. Approvals cannot be executed locally with the engine.
+> **Note:** Approvals use webhook callbacks. Use `ctx.connectorWebhook()` instead of `ctx.connectors.approvals` for `StartAndWaitForAnApproval`. Its arguments are **positional** — `ctx.connectorWebhook(actionName, connector, operation, params, connectionReferenceName?, authentication?)`; an object form such as `ctx.connectorWebhook('Name', { connector, operation, params })` is not supported. Approvals cannot be executed locally with the engine.
 
 ### StartAndWaitForAnApproval (via connectorWebhook)
 ```typescript
-await ctx.connectorWebhook('WaitForApproval', {
-  connector: 'approvals',
-  operation: 'StartAndWaitForAnApproval',
-  params: {
-    approvalType: 'Basic',                    // or 'CustomResponse'
+await ctx.connectorWebhook('WaitForApproval', 'approvals', 'StartAndWaitForAnApproval', {
+  approvalType: 'Basic',                      // or 'CustomResponse'
+  WebhookApprovalCreationInput: {
     title: 'Approve expense report',
     assignedTo: 'approver@example.com',       // semicolon-separated for multiple
     details: 'Please review the attached expense report.',
     requestor: 'submitter@example.com',
     enableNotifications: true,
     enableReassignment: true
-  },
-  connectionReferenceName: 'shared_approvals'
-});
+  }
+}, 'shared_approvals');
 
 // Check approval result — use inline, e.g. in an if condition:
 // ctx.body('WaitForApproval')?.['outcome'] === 'Approve'
@@ -584,14 +581,9 @@ await ctx.connectors.approvals.CreateAnApproval('CreateApproval', {
 
 ### WaitForAnApproval
 ```typescript
-await ctx.connectorWebhook('WaitForResult', {
-  connector: 'approvals',
-  operation: 'WaitForAnApproval',
-  params: {
-    approvalId: ctx.body('CreateApproval')?.['approvalId']
-  },
-  connectionReferenceName: 'shared_approvals'
-});
+await ctx.connectorWebhook('WaitForResult', 'approvals', 'WaitForAnApproval', {
+  approvalId: ctx.body('CreateApproval')?.['approvalId']
+}, 'shared_approvals');
 ```
 
 ---

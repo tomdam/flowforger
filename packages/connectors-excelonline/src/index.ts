@@ -7,7 +7,7 @@
  * API Reference: https://learn.microsoft.com/en-us/connectors/excelonlinebusiness/
  *
  * Operations:
- * - GetItems (ListRows): List rows present in a table
+ * - GetItems (ListRows, GetRows): List rows present in a table
  * - GetItem (GetRow): Get a row using a key column
  * - AddRowV2 (AddRow): Add a new row into the Excel table
  * - PatchItem (UpdateRow): Update a row using a key column
@@ -55,6 +55,7 @@ export class ExcelOnlineConnector extends BaseHttpClient implements BaseConnecto
       // List/Get operations
       case 'GetItems':
       case 'ListRows':
+      case 'GetRows':
         return this.listRows(normalizedInputs, ctx);
 
       case 'GetItem':

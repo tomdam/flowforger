@@ -75,7 +75,8 @@ export class Office365GroupsConnector extends BaseHttpClient implements BaseConn
         return this.deleteGroupEvent(p, ctx);
 
       // ---- Graph HTTP ----
-      case 'HttpRequest': case 'httpRequest':
+      // HttpRequestV2 is the cloud id ("Send an HTTP request V2"); HttpRequest is the deprecated one.
+      case 'HttpRequest': case 'HttpRequestV2': case 'httpRequest':
         return this.httpRequest(p, ctx);
 
       default:

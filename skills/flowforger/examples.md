@@ -397,17 +397,17 @@ async run(ctx: FlowContext) {
     requestedBy: ctx.triggerBody()?.['email']
   });
 
-  await ctx.connectorWebhook('WaitForManagerApproval', {
-    connector: 'approvals',
-    operation: 'StartAndWaitForAnApproval',
-    params: {
-      approvalType: 'Basic',
+  // Positional arguments: (actionName, connector, operation, params, connectionReferenceName)
+  await ctx.connectorWebhook('WaitForManagerApproval', 'approvals', 'StartAndWaitForAnApproval', {
+    approvalType: 'Basic',
+    WebhookApprovalCreationInput: {
       title: ctx.eval(`Approve: @{triggerBody()?['title']}`),
       assignedTo: ctx.parameters('ApproverEmail'),
-      details: ctx.eval(`Amount: $@{triggerBody()?['amount']}`)
-    },
-    connectionReferenceName: 'shared_approvals'
-  });
+      details: ctx.eval(`Amount: $@{triggerBody()?['amount']}`),
+      enableNotifications: true,
+      enableReassignment: true
+    }
+  }, 'shared_approvals');
 
   /** @action CheckApprovalOutcome */
   if (ctx.body('WaitForManagerApproval')?.['outcome'] === 'Approve') {

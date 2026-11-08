@@ -268,9 +268,10 @@ export function getDiagnostics(
     diagnostics.push(...checkActionPlacement(sourceFile));
   }
 
-  // Check definition limits (DSL039-DSL042)
+  // Check definition limits (DSL039-DSL042) and an inline retryPolicy in ctx.http inputs (DSL043)
   if (opts.checkLimits) {
     diagnostics.push(...checkLimits(sourceFile, index));
+    diagnostics.push(...checkHttpRetryPolicyInputs(sourceFile));
   }
 
   // Check response kind vs trigger and @RecurrenceTrigger options (DSL044-DSL046)
@@ -1521,6 +1522,85 @@ function isoDurationMs(value: unknown): number | undefined {
 }
 
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
+
+/** Marks an object-literal property whose value is not a plain literal (an expression, a call). */
+const NON_LITERAL = Symbol('non-literal');
+
+/**
+ * The plain JSON value of a literal expression: strings, numbers (incl. negative), booleans,
+ * null and nested object literals. Anything else is NON_LITERAL; inside an object such a
+ * property is left out and its key recorded, so callers can tell "absent" from "dynamic".
+ */
+function literalValue(expr: ts.Expression): unknown {
+  if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
+  if (ts.isNumericLiteral(expr)) return Number(expr.text);
+  if (ts.isPrefixUnaryExpression(expr) && expr.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(expr.operand)) {
+    return -Number(expr.operand.text);
+  }
+  if (expr.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (expr.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (expr.kind === ts.SyntaxKind.NullKeyword) return null;
+  if (ts.isObjectLiteralExpression(expr)) return literalObject(expr).value;
+  return NON_LITERAL;
+}
+
+function literalObject(obj: ts.ObjectLiteralExpression): { value: Record<string, unknown>; dynamic: Set<string> } {
+  const value: Record<string, unknown> = {};
+  const dynamic = new Set<string>();
+  for (const p of obj.properties) {
+    if (!ts.isPropertyAssignment(p)) continue;
+    const key = ts.isIdentifier(p.name) || ts.isStringLiteral(p.name) ? p.name.text : undefined;
+    if (key === undefined) continue;
+    const v = literalValue(p.initializer);
+    if (v === NON_LITERAL) dynamic.add(key);
+    else value[key] = v;
+  }
+  return { value, dynamic };
+}
+
+/**
+ * DSL043 for a `retryPolicy` written inline in `ctx.http('X', { ..., retryPolicy: {...} })`
+ * inputs — the same value checks as the @retryPolicy JSDoc annotation (type, count, and ISO 8601
+ * intervals from PT5S to P1D; a number of milliseconds is not accepted by the cloud). Only literal
+ * values are checked: a dynamic `type` skips the policy, a dynamic count/interval skips that key.
+ */
+function checkHttpRetryPolicyInputs(sourceFile: ts.SourceFile): Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === 'ctx' &&
+      node.expression.name.text === 'http' &&
+      node.arguments.length >= 2 &&
+      ts.isObjectLiteralExpression(node.arguments[1])
+    ) {
+      const prop = node.arguments[1].properties.find(
+        (p): p is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(p) && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && p.name.text === 'retryPolicy',
+      );
+      if (prop && ts.isObjectLiteralExpression(prop.initializer)) {
+        const { value, dynamic } = literalObject(prop.initializer);
+        if (!dynamic.has('type')) {
+          const range = getNodeRange(sourceFile, prop);
+          for (const detail of annotationValueProblems('retryPolicy', value)) {
+            diagnostics.push({
+              code: DiagnosticCodes.DSL043.code,
+              severity: DiagnosticCodes.DSL043.severity,
+              message: `Invalid retryPolicy in ctx.http inputs: ${detail}`,
+              range,
+              source: 'flowforger',
+            });
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return diagnostics;
+}
 
 /**
  * Value checks for parsed JSDoc annotations (DSL043): @runtimeConfig concurrency, @retryPolicy

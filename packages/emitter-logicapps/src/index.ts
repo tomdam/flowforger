@@ -26,15 +26,175 @@ const IR_TO_PA_OPERATIONS: Record<string, Record<string, string>> = {
     'MoveFile': 'MoveFileAsync',
     'CopyFolder': 'CopyFolderAsync',
     'MoveFolder': 'MoveFolderAsync',
+    // Local names of the SharePoint connector whose cloud ids differ
+    // (learn.microsoft.com/connectors/sharepointonline, "Operation ID").
+    'DiscardCheckOut': 'DiscardFileCheckOut',
+    'ExtractFolder': 'ExtractFolderV2',
+    'GetListViews': 'GetTableViews',
+    'SetContentApprovalStatus': 'SetApprovalStatus',
+    'ResolvePerson': 'SearchForUser',
+  },
+  // Dataverse ("Microsoft Dataverse", shared_commondataserviceforapps): the local
+  // connector accepts friendly row names; the cloud ids are the *Record/GetItem ones.
+  dataverse: {
+    'ListRows': 'ListRecords',
+    'listRows': 'ListRecords',
+    'CreateRow': 'CreateRecord',
+    'UpdateRow': 'UpdateOnlyRecord',
+    // "Upsert a row" is UpdateRecord in the cloud (a PATCH without If-Match).
+    'UpsertRow': 'UpdateRecord',
+    'UpsertRecord': 'UpdateRecord',
+    'DeleteRow': 'DeleteRecord',
+    'RetrieveRow': 'GetItem',
+    'RetrieveRecord': 'GetItem',
+    'GetRecord': 'GetItem',
+    'GetRow': 'GetItem',
+    'GetItemById': 'GetItem',
+    'AssociateRecords': 'AssociateEntities',
+    'DisassociateRecords': 'DisassociateEntities',
+    'GetFileContent': 'GetEntityFileImageFieldContent',
+    'UploadFileContent': 'UpdateEntityFileImageFieldContent',
+    'ExecuteBatch': 'ExecuteChangeset',
+    'RelevanceSearch': 'GetRelevantRows',
+  },
+  // Excel Online (Business). Keyed by the canonical connector name; the DSL's
+  // `ctx.connectors.excelonline` is canonicalised before the lookup.
+  excelonlinebusiness: {
+    'ListRows': 'GetItems',
+    'GetRows': 'GetItems',
+    'GetRow': 'GetItem',
+    // AddRow is the deprecated cloud id; the maker portal emits AddRowV2 (same parameters).
+    'AddRow': 'AddRowV2',
+    'UpdateRow': 'PatchItem',
+    'DeleteRow': 'DeleteItem',
+    'GetWorksheets': 'GetAllWorksheets',
+    'AddKeyColumn': 'CreateIdColumn',
+    'RunScript': 'RunScriptProd',
+    'RunScriptFromLibrary': 'RunScriptProdV2',
+  },
+  // Word Online (Business)
+  wordonlinebusiness: {
+    'PopulateWordTemplate': 'CreateFileItem',
+    'PopulateAWordTemplate': 'CreateFileItem',
+    'ConvertToPdf': 'GetFilePDF',
+    'ConvertWordDocumentToPdf': 'GetFilePDF',
+  },
+  // Office 365 Groups. AddMemberToGroup/RemoveMemberFromGroup/ListGroupMembers are
+  // already the cloud ids (`AddUserToGroup` belongs to the Azure AD connector).
+  office365groups: {
+    // "Send an HTTP request" is deprecated in the cloud; V2 takes the same parameters.
+    'HttpRequest': 'HttpRequestV2',
+    'CreateGroupEvent': 'CreateCalendarEventV2',
+    'UpdateGroupEvent': 'UpdateCalendarEvent',
+    'DeleteGroupEvent': 'CalendarDeleteItem_V2',
   },
   office365: {
-    // Power Automate uses an underscore before the version suffix.
+    // Local/typed names → the id the designer writes today. Verified against the
+    // "Operation ID:" of each action on https://learn.microsoft.com/en-us/connectors/office365/
+    // and against pulled flows. Real ids — current or deprecated (GetEmailsV2, SendEmail,
+    // ForwardEmail, Flag, MarkAsRead, GetAttachment, CalendarGetTables, …) — are deliberately
+    // absent, so a pulled flow re-emits with the id it was pulled with.
+    // -- mail --
+    'ReplyToEmailV2': 'ReplyToV3',
+    'ReplyToEmail': 'ReplyToV3',
+    'replyToEmail': 'ReplyToV3',
+    'ForwardEmailV2': 'ForwardEmail_V2',
+    'forwardEmail': 'ForwardEmail_V2',
+    'DeleteEmailV2': 'DeleteEmail_V2',
+    'deleteEmail': 'DeleteEmail_V2',
+    'MoveEmailV2': 'MoveV2',
+    'MoveEmail': 'MoveV2',
+    'moveEmail': 'MoveV2',
+    'MarkAsReadV3': 'MarkAsRead_V3',
+    'markAsRead': 'MarkAsRead_V3',
+    'FlagV2': 'Flag_V2',
+    'flagEmail': 'Flag_V2',
+    'GetAttachmentV2': 'GetAttachment_V2',
+    'getAttachment': 'GetAttachment_V2',
     'ExportEmailV2': 'ExportEmail_V2',
+    'exportEmail': 'ExportEmail_V2',
+    'sendEmail': 'SendEmailV2',
+    'getEmails': 'GetEmailsV3',
+    'getEmail': 'GetEmailV2',
+    // -- calendar --
+    'CreateEventV4': 'V4CalendarPostItem',
+    'CreateEvent': 'V4CalendarPostItem',
+    'createEvent': 'V4CalendarPostItem',
+    'UpdateEventV4': 'V4CalendarPatchItem',
+    'UpdateEvent': 'V4CalendarPatchItem',
+    'updateEvent': 'V4CalendarPatchItem',
+    'GetEventsV4': 'V4CalendarGetItems',
+    'GetEvents': 'V4CalendarGetItems',
+    'getEvents': 'V4CalendarGetItems',
+    'GetEventV4': 'V3CalendarGetItem',
+    'GetEvent': 'V3CalendarGetItem',
+    'getEvent': 'V3CalendarGetItem',
+    'DeleteEventV4': 'CalendarDeleteItem_V2',
+    'DeleteEvent': 'CalendarDeleteItem_V2',
+    'deleteEvent': 'CalendarDeleteItem_V2',
+    'RespondToEventV2': 'RespondToEvent_V2',
+    'respondToEvent': 'RespondToEvent_V2',
+    'GetCalendars': 'CalendarGetTables_V2',
+    'getCalendars': 'CalendarGetTables_V2',
+    'getCalendarList': 'CalendarGetTables_V2',
+    'FindMeetingTimesV2': 'FindMeetingTimes_V2',
+    'findMeetingTimes': 'FindMeetingTimes_V2',
+    // -- contacts --
+    'GetContactsV2': 'ContactGetItems_V2',
+    'GetContacts': 'ContactGetItems_V2',
+    'getContacts': 'ContactGetItems_V2',
+    'GetContactV2': 'ContactGetItem_V2',
+    'GetContact': 'ContactGetItem_V2',
+    'getContact': 'ContactGetItem_V2',
+    'CreateContactV2': 'ContactPostItem_V2',
+    'CreateContact': 'ContactPostItem_V2',
+    'createContact': 'ContactPostItem_V2',
+    'UpdateContactV2': 'ContactPatchItem_V2',
+    'UpdateContact': 'ContactPatchItem_V2',
+    'updateContact': 'ContactPatchItem_V2',
+    'DeleteContactV2': 'ContactDeleteItem_V2',
+    'DeleteContact': 'ContactDeleteItem_V2',
+    'deleteContact': 'ContactDeleteItem_V2',
+    'GetContactFolders': 'ContactGetTablesV2',
+    'getContactFolders': 'ContactGetTablesV2',
+    'httpRequest': 'HttpRequest',
   },
 };
 
+/**
+ * Connector-name aliases: the DSL property (`ctx.connectors.excelonline`) → the
+ * name the cloud connector is known by (`shared_excelonlinebusiness`). A pulled
+ * flow already carries the canonical name, so the mapping is identity for it.
+ */
+const CONNECTOR_NAME_ALIASES: Record<string, string> = {
+  excelonline: 'excelonlinebusiness',
+  wordonline: 'wordonlinebusiness',
+  onedrive: 'onedriveforbusiness',
+};
+
+/** The cloud connector name for an IR connector name (identity for canonical names). */
+export function canonicalConnectorName(connector: string): string {
+  return CONNECTOR_NAME_ALIASES[connector] ?? connector;
+}
+
+/**
+ * The `config.connections` entry for a connector, keyed by either its alias or
+ * its canonical name (`flowforger init` writes the DSL property name as the key).
+ */
+function configConnection(connector: string, config?: EmitterConfig): EmitterConnectionRef | undefined {
+  const connections = config?.connections;
+  if (!connections) return undefined;
+  if (connections[connector]) return connections[connector];
+  const canonical = canonicalConnectorName(connector);
+  if (connections[canonical]) return connections[canonical];
+  for (const [alias, target] of Object.entries(CONNECTOR_NAME_ALIASES)) {
+    if (target === canonical && connections[alias]) return connections[alias];
+  }
+  return undefined;
+}
+
 function mapIrOperationToPa(connector: string, operation: string): string {
-  return IR_TO_PA_OPERATIONS[connector]?.[operation] ?? operation;
+  return IR_TO_PA_OPERATIONS[canonicalConnectorName(connector)]?.[operation] ?? operation;
 }
 
 /**
@@ -692,16 +852,102 @@ function denormalizeO365EventParams(params: any): any {
  * Denormalize Office365 parameters based on operation type
  */
 function denormalizeO365Params(operation: string, params: any): any {
+  // `operation` is the *cloud* operationId (this runs after mapIrOperationToPa).
+  // Local DSL key → the flattened key the designer writes, per cloud id, verified
+  // against https://learn.microsoft.com/en-us/connectors/office365/ and pulled flows
+  // (e.g. ReplyToV3 nests under replyParameters/, V4CalendarPostItem under item/,
+  // MarkAsRead_V3 under body/). Keys already in cloud form pass through; an explicit
+  // cloud key wins over its local alias, and the local key is dropped (the cloud
+  // connector rejects keys outside its swagger). Ids whose nesting could not be
+  // verified (Flag_V2's flagStatus, RespondToEvent_V2's Comment/SendResponse,
+  // FindMeetingTimes_V2, contact fields, HttpRequest) are left as authored.
+  const odata: Record<string, string> = { filter: '$filter', orderBy: '$orderby', orderby: '$orderby', top: '$top', skip: '$skip' };
+  const eventItem: Record<string, string> = {
+    calendarId: 'table',
+    eventId: 'id',
+    subject: 'item/subject',
+    body: 'item/body',
+    start: 'item/start',
+    end: 'item/end',
+    timeZone: 'item/timeZone',
+    location: 'item/location',
+    requiredAttendees: 'item/requiredAttendees',
+    optionalAttendees: 'item/optionalAttendees',
+    resourceAttendees: 'item/resourceAttendees',
+    importance: 'item/importance',
+    isAllDay: 'item/isAllDay',
+    reminderMinutes: 'item/reminderMinutesBeforeStart',
+    reminderMinutesBeforeStart: 'item/reminderMinutesBeforeStart',
+    isReminderOn: 'item/isReminderOn',
+    showAs: 'item/showAs',
+    responseRequested: 'item/responseRequested',
+    sensitivity: 'item/sensitivity',
+    categories: 'item/categories',
+    recurrence: 'item/recurrence',
+    selectedDaysOfWeek: 'item/selectedDaysOfWeek',
+    recurrenceEnd: 'item/recurrenceEnd',
+    numberOfOccurences: 'item/numberOfOccurences',
+  };
+  const contactRef: Record<string, string> = { folderId: 'folder', contactId: 'id' };
+  const replyParams: Record<string, string> = {
+    body: 'replyParameters/Body',
+    comment: 'replyParameters/Body',
+    replyAll: 'replyParameters/ReplyAll',
+    to: 'replyParameters/To',
+    cc: 'replyParameters/Cc',
+    bcc: 'replyParameters/Bcc',
+    subject: 'replyParameters/Subject',
+    importance: 'replyParameters/Importance',
+    attachments: 'replyParameters/Attachments',
+  };
+  const aliasesByCloudId: Record<string, Record<string, string>> = {
+    ReplyToV3: replyParams,
+    ForwardEmail_V2: { messageId: 'message_id', to: 'body/ToRecipients', comment: 'body/Comment' },
+    MoveV2: { destinationId: 'folderPath' },
+    MarkAsRead_V3: { isRead: 'body/isRead' },
+    V4CalendarPostItem: eventItem,
+    V4CalendarPatchItem: eventItem,
+    V4CalendarGetItems: { calendarId: 'table', ...odata },
+    GetEventsCalendarViewV3: { startDateTime: 'startDateTimeUtc', endDateTime: 'endDateTimeUtc', ...odata },
+    V3CalendarGetItem: { calendarId: 'table', eventId: 'id' },
+    CalendarDeleteItem_V2: { calendarId: 'calendar', eventId: 'event' },
+    RespondToEvent_V2: { eventId: 'event_id' },
+    ContactGetItems_V2: { folderId: 'folder', ...odata },
+    ContactGetItem_V2: contactRef,
+    ContactPatchItem_V2: contactRef,
+    ContactDeleteItem_V2: contactRef,
+    ContactPostItem_V2: { folderId: 'folder' },
+  };
+
+  if (operation === 'SharedMailboxSendEmailV2') {
+    const p = denormalizeO365EmailParams(params);
+    for (const local of ['from', 'mailboxAddress', 'MailboxAddress', 'emailMessage/From']) {
+      if (!(local in p)) continue;
+      if (!('emailMessage/MailboxAddress' in p)) p['emailMessage/MailboxAddress'] = p[local];
+      delete p[local];
+    }
+    return p;
+  }
+
+  const aliases = aliasesByCloudId[operation];
+  if (aliases) {
+    const p = { ...(params || {}) };
+    for (const [from, to] of Object.entries(aliases)) {
+      if (!(from in p)) continue;
+      if (!(to in p)) p[to] = p[from];
+      delete p[from];
+    }
+    return p;
+  }
+
   const op = operation.toLowerCase();
 
   // Operations that compose an outgoing email — params are nested under emailMessage/...
-  // (Send, Reply, Forward variants). Get/Move/Mark/Flag/Delete operations keep
-  // params at the top level.
-  if (op.startsWith('send') || op.startsWith('reply') || op.startsWith('forward')) {
+  if (op.startsWith('send')) {
     return denormalizeO365EmailParams(params);
   }
 
-  // Calendar operations
+  // Remaining calendar operations (deprecated ids not in the table above)
   if (op.includes('event') || op.includes('calendar') || op.includes('meeting')) {
     return denormalizeO365EventParams(params);
   }
@@ -814,9 +1060,10 @@ function denormalizeOneDriveParams(_operation: string, params: Record<string, an
   return params;
 }
 
-function resolveConnection(connector: string, config?: EmitterConfig): EmitterConnectionRef {
-  const fromCfg = config?.connections?.[connector];
+function resolveConnection(rawConnector: string, config?: EmitterConfig): EmitterConnectionRef {
+  const fromCfg = configConnection(rawConnector, config);
   if (fromCfg) return fromCfg;
+  const connector = canonicalConnectorName(rawConnector);
   if (connector === 'sharepoint') {
     return { referenceName: 'shared_sharepointonline', apiId: '/providers/Microsoft.PowerApps/apis/shared_sharepointonline' };
   }
@@ -1339,7 +1586,9 @@ function emitActionsContainer(nodes: Node[], config?: EmitterConfig): Record<str
       }
       applyMetadata(def, node, includeMetadata);
     } else if (node.type === 'connector') {
-      const c = node as any;
+      // Canonicalise the connector name once (excelonline → excelonlinebusiness, ...) so the
+      // operation map, the parameter denormalisers, apiId and the connection lookup all agree.
+      const c = { ...(node as any), connector: canonicalConnectorName((node as any).connector) };
 
       // Check if this is a legacy ApiConnection format
       // Can be stored in c.legacyApiConnection or c.params.__legacyApiConnection (for DSL roundtrip)
@@ -1461,7 +1710,7 @@ function emitActionsContainer(nodes: Node[], config?: EmitterConfig): Record<str
         applyMetadata(def, node, includeMetadata);
       }
     } else if (node.type === 'connectorwebhook') {
-      const c = node as any;
+      const c = { ...(node as any), connector: canonicalConnectorName((node as any).connector) };
 
       // Check for legacy ApiConnectionWebhook format
       const legacyInfo = c.params?.__legacyApiConnectionWebhook || c.legacyApiConnectionWebhook;
@@ -1579,19 +1828,19 @@ function collectUsedConnectors(nodes: Node[]): Set<string> {
     // Check triggers
     if (node.type === 'trigger' && (node as TriggerNode).kind === 'connector') {
       const inputs = (node as TriggerNode).inputs as any;
-      usedConnectors.add(inputs.connector);
+      usedConnectors.add(canonicalConnectorName(inputs.connector));
     }
 
     // Check connector actions
     if (node.type === 'connector') {
       const connectorNode = node as any;
-      usedConnectors.add(connectorNode.connector);
+      usedConnectors.add(canonicalConnectorName(connectorNode.connector));
     }
 
     // Check webhook connector actions
     if (node.type === 'connectorwebhook') {
       const connectorNode = node as any;
-      usedConnectors.add(connectorNode.connector);
+      usedConnectors.add(canonicalConnectorName(connectorNode.connector));
     }
 
     // Recursively check nested nodes in control structures
@@ -1788,8 +2037,9 @@ function buildConnectionReferences(
 
   // Phase 2: Add connection references from config (only if not already covered by explicit refs)
   for (const [connectorName, connConfig] of Object.entries(connections)) {
-    // Only include this connection if it's actually used in the flow (or if we're not filtering)
-    if (usedConnectors && !usedConnectors.has(connectorName)) {
+    // Only include this connection if it's actually used in the flow (or if we're not filtering).
+    // usedConnectors holds canonical names; the config key may be the alias (`excelonline`).
+    if (usedConnectors && !usedConnectors.has(canonicalConnectorName(connectorName))) {
       continue;
     }
 
@@ -1819,8 +2069,8 @@ function buildConnectionReferences(
   // Phase 3: Auto-generate connection references for used connectors not in config and not explicitly named
   if (usedConnectors) {
     for (const connectorName of usedConnectors) {
-      // Skip if already added from config
-      const connConfig = connections[connectorName];
+      // Skip if already added from config (under the alias or the canonical key)
+      const connConfig = configConnection(connectorName, config);
       if (connConfig) continue;
 
       // Auto-generate connection reference for this connector
@@ -1990,7 +2240,8 @@ export function emitLogicAppsJson(flow: FlowIR, config?: EmitterConfig) {
 
     applyDescriptionAndMetadata(triggerDef[triggerName], trigger, includeMetadata);
   } else if (trigger.kind === 'connector') {
-    const connInputs = trigger.inputs as any;
+    // Canonicalise the connector name (onedrive → onedriveforbusiness, ...) as for actions.
+    const connInputs = { ...(trigger.inputs as any), connector: canonicalConnectorName((trigger.inputs as any).connector) };
 
     // Check if this is a legacy ApiConnection trigger
     // Can be stored in connInputs.legacyApiConnection or connInputs.params.__legacyApiConnection (for DSL roundtrip)

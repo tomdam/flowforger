@@ -90,7 +90,7 @@ interface HttpInputs {
   retryPolicy?: {
     type: 'none' | 'fixed' | 'exponential';
     count?: number;
-    /** ISO 8601 duration ('PT10S'), or milliseconds. */
+    /** ISO 8601 duration only, from 'PT5S' to 'P1D' (e.g. 'PT10S'); a number of milliseconds is rejected by the cloud. */
     interval?: string | number;
     minimumInterval?: string;
     maximumInterval?: string;
@@ -244,35 +244,103 @@ interface SharePointConnector {
   [operationName: string]: ConnectorOperation;
 }
 
-/** Office 365 connector operations */
+/**
+ * Office 365 Outlook connector operations.
+ *
+ * The un-annotated members are the cloud operation ids the Power Automate designer
+ * writes (https://learn.microsoft.com/en-us/connectors/office365/); the "local alias"
+ * members are older FlowForger names that the emitter rewrites to the cloud id.
+ */
 interface Office365Connector {
-  /** Send an email (V2) */
+  // ---- mail ----
+  /** Send an email (V2): emailMessage/To, Subject, Body, Cc, Bcc, Importance, Attachments */
   SendEmailV2: ConnectorOperation;
-  /** Send an email */
+  /** Send an email (deprecated cloud id) */
   SendEmail: ConnectorOperation;
-  /** Get emails (V2) */
+  /** Send an email from a shared mailbox (V2): emailMessage/MailboxAddress + the SendEmailV2 message */
+  SharedMailboxSendEmailV2: ConnectorOperation;
+  /** Get emails (V3): folderPath, top, fetchOnlyUnread, searchQuery, includeAttachments, mailboxAddress */
+  GetEmailsV3: ConnectorOperation;
+  /** Get emails (V2) (deprecated cloud id) */
   GetEmailsV2: ConnectorOperation;
-  /** Get emails */
+  /** Get emails (deprecated cloud id) */
   GetEmails: ConnectorOperation;
-  /** Get a single email by ID */
+  /** Get email (V2): messageId, mailboxAddress, includeAttachments */
   GetEmailV2: ConnectorOperation;
-  /** Reply to an email */
+  /** Reply to email (V3): messageId, replyParameters/Body, replyParameters/ReplyAll, … */
+  ReplyToV3: ConnectorOperation;
+  /** Local alias of ReplyToV3 */
   ReplyToEmailV2: ConnectorOperation;
-  /** Forward an email */
+  /** Forward an email (V2): message_id, body/ToRecipients, body/Comment */
+  ForwardEmail_V2: ConnectorOperation;
+  /** Local alias of ForwardEmail_V2 */
   ForwardEmailV2: ConnectorOperation;
-  /** Delete an email */
-  DeleteEmailV2: ConnectorOperation;
+  /** Delete email (V2): messageId, mailboxAddress */
   DeleteEmail_V2: ConnectorOperation;
-  /** Move an email */
+  /** Local alias of DeleteEmail_V2 */
+  DeleteEmailV2: ConnectorOperation;
+  /** Move email (V2): messageId, folderPath, mailboxAddress */
+  MoveV2: ConnectorOperation;
+  /** Local alias of MoveV2 */
   MoveEmailV2: ConnectorOperation;
-  /** Create a calendar event */
+  /** Mark as read or unread (V3): messageId, body/isRead */
+  MarkAsRead_V3: ConnectorOperation;
+  /** Local alias of MarkAsRead_V3 */
+  MarkAsReadV3: ConnectorOperation;
+  /** Flag email (V2): messageId, flagStatus */
+  Flag_V2: ConnectorOperation;
+  /** Get Attachment (V2): messageId, attachmentId */
+  GetAttachment_V2: ConnectorOperation;
+  /** Local alias of GetAttachment_V2 */
+  GetAttachmentV2: ConnectorOperation;
+  /** Export email (V2): messageId */
+  ExportEmail_V2: ConnectorOperation;
+  /** Local alias of ExportEmail_V2 */
+  ExportEmailV2: ConnectorOperation;
+  // ---- calendar ----
+  /** Create event (V4): table (calendar id), item/subject, item/start, item/end, item/timeZone, … */
+  V4CalendarPostItem: ConnectorOperation;
+  /** Local alias of V4CalendarPostItem */
   CreateEventV4: ConnectorOperation;
-  /** Get calendar events */
-  GetEventsV4: ConnectorOperation;
-  /** Update a calendar event */
+  /** Update event (V4): table, id, item/… */
+  V4CalendarPatchItem: ConnectorOperation;
+  /** Local alias of V4CalendarPatchItem */
   UpdateEventV4: ConnectorOperation;
-  /** Delete a calendar event */
+  /** Get events (V4): table, $filter, $orderby, $top, $skip */
+  V4CalendarGetItems: ConnectorOperation;
+  /** Local alias of V4CalendarGetItems */
+  GetEventsV4: ConnectorOperation;
+  /** Get calendar view of events (V3): calendarId, startDateTimeUtc, endDateTimeUtc, $filter, $orderby, $top */
+  GetEventsCalendarViewV3: ConnectorOperation;
+  /** Get event (V3): table, id */
+  V3CalendarGetItem: ConnectorOperation;
+  /** Local alias of V3CalendarGetItem */
+  GetEventV4: ConnectorOperation;
+  /** Delete event (V2): calendar, event */
+  CalendarDeleteItem_V2: ConnectorOperation;
+  /** Local alias of CalendarDeleteItem_V2 */
   DeleteEventV4: ConnectorOperation;
+  /** Respond to an event invite (V2): event_id, response */
+  RespondToEvent_V2: ConnectorOperation;
+  /** Get calendars (V2) */
+  CalendarGetTables_V2: ConnectorOperation;
+  /** Find meeting times (V2) */
+  FindMeetingTimes_V2: ConnectorOperation;
+  // ---- contacts ----
+  /** Get contacts (V2): folder, $filter, $orderby, $top */
+  ContactGetItems_V2: ConnectorOperation;
+  /** Get contact (V2): folder, id */
+  ContactGetItem_V2: ConnectorOperation;
+  /** Create contact (V2): folder + contact fields */
+  ContactPostItem_V2: ConnectorOperation;
+  /** Update contact (V2): folder, id + contact fields */
+  ContactPatchItem_V2: ConnectorOperation;
+  /** Delete contact (V2): folder, id */
+  ContactDeleteItem_V2: ConnectorOperation;
+  /** Get contact folders (V2) */
+  ContactGetTablesV2: ConnectorOperation;
+  /** Send an HTTP request (Graph): Uri, Method, Body, ContentType */
+  HttpRequest: ConnectorOperation;
   /** Allow any other operation name */
   [operationName: string]: ConnectorOperation;
 }
@@ -345,7 +413,9 @@ interface Office365GroupsConnector {
   UpdateGroupEvent: ConnectorOperation;
   /** Delete a calendar event */
   DeleteGroupEvent: ConnectorOperation;
-  /** Send a custom HTTP request to Graph API */
+  /** Send a custom HTTP request to Graph API (V2, cloud id) */
+  HttpRequestV2: ConnectorOperation;
+  /** Send a custom HTTP request to Graph API (local alias of HttpRequestV2) */
   HttpRequest: ConnectorOperation;
   /** Allow any other operation name */
   [operationName: string]: ConnectorOperation;
@@ -353,9 +423,13 @@ interface Office365GroupsConnector {
 
 /** Word Online connector operations */
 interface WordOnlineConnector {
-  /** Populate a Word template with data */
+  /** Populate a Microsoft Word template (cloud id) */
+  CreateFileItem: ConnectorOperation;
+  /** Convert Word document to PDF (cloud id) */
+  GetFilePDF: ConnectorOperation;
+  /** Populate a Word template with data (local alias of CreateFileItem) */
   PopulateAWordTemplate: ConnectorOperation;
-  /** Convert a Word document to PDF */
+  /** Convert a Word document to PDF (local alias of GetFilePDF) */
   ConvertWordDocumentToPdf: ConnectorOperation;
   /** Allow any other operation name */
   [operationName: string]: ConnectorOperation;
@@ -363,15 +437,37 @@ interface WordOnlineConnector {
 
 /** Excel Online connector operations */
 interface ExcelOnlineConnector {
+  /** List rows present in a table (cloud id) */
+  GetItems: ConnectorOperation;
+  /** Get a row (cloud id) */
+  GetItem: ConnectorOperation;
+  /** Add a row into a table (cloud id) */
+  AddRowV2: ConnectorOperation;
+  /** Update a row (cloud id) */
+  PatchItem: ConnectorOperation;
+  /** Delete a row (cloud id) */
+  DeleteItem: ConnectorOperation;
   /** Get tables from a workbook */
   GetTables: ConnectorOperation;
-  /** Get rows from a table */
+  /** Get worksheets (cloud id) */
+  GetAllWorksheets: ConnectorOperation;
+  /** Create a table */
+  CreateTable: ConnectorOperation;
+  /** Create a worksheet */
+  CreateWorksheet: ConnectorOperation;
+  /** Add a key column to a table (cloud id) */
+  CreateIdColumn: ConnectorOperation;
+  /** Run an Office Script (cloud id) */
+  RunScriptProd: ConnectorOperation;
+  /** Run an Office Script from a SharePoint library (cloud id) */
+  RunScriptProdV2: ConnectorOperation;
+  /** Get rows from a table (local alias of GetItems) */
   GetRows: ConnectorOperation;
-  /** Add a row to a table */
+  /** Add a row to a table (local alias of AddRowV2) */
   AddRow: ConnectorOperation;
-  /** Update a row in a table */
+  /** Update a row in a table (local alias of PatchItem) */
   UpdateRow: ConnectorOperation;
-  /** Delete a row from a table */
+  /** Delete a row from a table (local alias of DeleteItem) */
   DeleteRow: ConnectorOperation;
   /** Get cell values from a worksheet range */
   GetRange: ConnectorOperation;

@@ -869,7 +869,7 @@ const stoppedBeforeByRun = new WeakMap<RunContext, { nodeId: string; name: strin
 
 /** Nodes whose `onBeforeExecute` call waits until their inputs are resolved. */
 function resolvesInputsBeforeHook(node: Node): boolean {
-  if (node.type === 'connector') return true;
+  if (node.type === 'connector' || node.type === 'connectorwebhook') return true;
   const kind = (node as any).kind;
   return node.type === 'action' && (kind === 'http' || kind === 'workflow');
 }
@@ -1575,28 +1575,48 @@ async function executeNodeInner(
     if (node.type === 'connectorwebhook') {
       const c = (node as any);
       const conn = connectors[c.connector];
+      // Resolve the parameters' expressions first, exactly like a plain connector action: the
+      // connector (or the simulated run) must see values, not expression text, and the trace
+      // records what would have been sent. A parameter that finds nothing is null, as in the cloud.
+      let evaluatedParams: any;
+      try {
+        evaluatedParams = missingAsNull(evaluateParams(c.params, ctx));
+      } catch (err: any) {
+        return { status: 'Failed', error: err, variables: { ...ctx.variables } };
+      }
+      recordCurrentActionInputs(ctx, evaluatedParams);
+      if (await stopsBefore(node, ctx, options, evaluatedParams)) {
+        return { status: 'Cancelled', _stopped: true, inputs: evaluatedParams, variables: { ...ctx.variables } };
+      }
+      const mockedWebhook = mockedResult(node, ctx, options, evaluatedParams);
+      if (mockedWebhook) return mockedWebhook;
       if (!conn) {
         // For webhooks, if connector not available, log a warning but continue (simulated success)
         ctx.log({ type: 'webhook-simulation', connector: c.connector, operation: c.operation, message: 'Webhook action simulated (connector not provided)' });
         const simOutput = { body: { simulated: true, message: 'Webhook action cannot be executed locally' } };
+        ctx.actions.set(c.name, { status: 'Succeeded', inputs: evaluatedParams, outputs: simOutput });
         return {
           status: 'Succeeded',
+          inputs: evaluatedParams,
           outputs: simOutput,
           variables: { ...ctx.variables },
         };
       }
       try {
-        const rawOutput = await conn.invoke(c.operation, c.params, ctx);
+        const rawOutput = await conn.invoke(c.operation, evaluatedParams, ctx);
         // Wrap in 'body' property to match Power Automate behavior
         const outputs = { body: rawOutput };
+        ctx.actions.set(c.name, { status: 'Succeeded', inputs: evaluatedParams, outputs });
         return {
           status: 'Succeeded',
+          inputs: evaluatedParams,
           outputs,
           variables: { ...ctx.variables },
         };
       } catch (err: any) {
         return {
           status: 'Failed',
+          inputs: evaluatedParams,
           error: err,
           variables: { ...ctx.variables },
         };

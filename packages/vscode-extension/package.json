@@ -72,16 +72,6 @@
           "default": true,
           "description": "Enable FlowForger language features"
         },
-        "flowforger.diagnostics.enable": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable diagnostic reporting"
-        },
-        "flowforger.diagnostics.showUnusedWarnings": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show warnings for unused actions and variables"
-        },
         "flowforger.trace.server": {
           "type": "string",
           "enum": [

@@ -39,7 +39,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --import tsx --test src/__tests__/trigger-catalog-enums.test.ts"
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@flowforger/ir": "^0.1.0"

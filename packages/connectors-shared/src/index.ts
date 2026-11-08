@@ -16,6 +16,9 @@ export {
   connector,
 } from './metadata.js';
 
+// Re-export file content shaping (shared by SharePoint and OneDrive)
+export { type FileContentEnvelope, type FileContentResult, toCloudFileContent } from './file-content.js';
+
 // Re-export trigger catalog
 export {
   type ConnectorTriggerType,

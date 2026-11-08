@@ -55,6 +55,21 @@ export interface SendEmailInputs {
   from?: string;
 }
 
+export interface ReplyToEmailInputs {
+  messageId: string;
+  /** The reply text (the designer's replyParameters/Body) */
+  body: string;
+  replyAll?: boolean;
+  mailboxAddress?: string;
+  /** Overrides of the reply's recipients/subject/importance (replyParameters/To, …) */
+  to?: string | string[] | EmailRecipient[];
+  cc?: string | string[] | EmailRecipient[];
+  bcc?: string | string[] | EmailRecipient[];
+  subject?: string;
+  importance?: 'low' | 'normal' | 'high' | string;
+  attachments?: EmailAttachment[];
+}
+
 export interface GetEmailsInputs {
   /** Folder ID or well-known name (inbox, drafts, sentitems, deleteditems) */
   folderPath?: string;
@@ -143,6 +158,110 @@ export interface ContactInputs {
 // Re-export HttpError for consumers
 export { HttpError };
 
+/**
+ * Every accepted operation spelling → the cloud operationId it stands for.
+ *
+ * The keys are what a flow may carry: the ids the Power Automate designer writes
+ * today (verified against https://learn.microsoft.com/en-us/connectors/office365/
+ * — each action's "Operation ID:" — and against pulled flows), their deprecated
+ * predecessors, and the local/typed aliases FlowForger exposed before the cloud
+ * ids were adopted (`ReplyToEmailV2`, `CreateEventV4`, `getEmails`, …). The
+ * emitter maps the aliases to the same cloud ids, so a flow authored either way
+ * runs locally and deploys identically.
+ */
+export const OFFICE365_OPERATION_ALIASES: Record<string, string> = {
+  // ---- mail: send ----
+  SendEmailV2: 'SendEmailV2', SendEmail: 'SendEmailV2', sendEmail: 'SendEmailV2',
+  SharedMailboxSendEmailV2: 'SharedMailboxSendEmailV2', SharedMailboxSendEmail: 'SharedMailboxSendEmailV2',
+  // ---- mail: read ----
+  GetEmailsV3: 'GetEmailsV3', GetEmailsV2: 'GetEmailsV3', GetEmails: 'GetEmailsV3', getEmails: 'GetEmailsV3',
+  GetEmailV2: 'GetEmailV2', GetEmail: 'GetEmailV2', getEmail: 'GetEmailV2',
+  GetAttachment_V2: 'GetAttachment_V2', GetAttachmentV2: 'GetAttachment_V2', GetAttachment: 'GetAttachment_V2', getAttachment: 'GetAttachment_V2',
+  ExportEmail_V2: 'ExportEmail_V2', ExportEmailV2: 'ExportEmail_V2', ExportEmail: 'ExportEmail_V2', exportEmail: 'ExportEmail_V2',
+  GetMailFolders: 'GetMailFolders', getMailFolders: 'GetMailFolders',
+  // ---- mail: reply / forward ----
+  ReplyToV3: 'ReplyToV3', ReplyToV2: 'ReplyToV3', ReplyTo: 'ReplyToV3',
+  ReplyToEmailV2: 'ReplyToV3', ReplyToEmail: 'ReplyToV3', replyToEmail: 'ReplyToV3',
+  ForwardEmail_V2: 'ForwardEmail_V2', ForwardEmailV2: 'ForwardEmail_V2', ForwardEmail: 'ForwardEmail_V2', forwardEmail: 'ForwardEmail_V2',
+  // ---- mail: write ----
+  DeleteEmail_V2: 'DeleteEmail_V2', DeleteEmailV2: 'DeleteEmail_V2', DeleteEmail: 'DeleteEmail_V2', deleteEmail: 'DeleteEmail_V2',
+  MoveV2: 'MoveV2', Move: 'MoveV2', MoveEmailV2: 'MoveV2', MoveEmail: 'MoveV2', moveEmail: 'MoveV2',
+  MarkAsRead_V3: 'MarkAsRead_V3', MarkAsRead_V2: 'MarkAsRead_V3', MarkAsRead: 'MarkAsRead_V3', MarkAsReadV3: 'MarkAsRead_V3', markAsRead: 'MarkAsRead_V3',
+  Flag_V2: 'Flag_V2', Flag: 'Flag_V2', FlagV2: 'Flag_V2', flagEmail: 'Flag_V2',
+  // ---- calendar ----
+  V4CalendarPostItem: 'V4CalendarPostItem', V3CalendarPostItem: 'V4CalendarPostItem', V2CalendarPostItem: 'V4CalendarPostItem', CalendarPostItem: 'V4CalendarPostItem',
+  CreateEventV4: 'V4CalendarPostItem', CreateEvent: 'V4CalendarPostItem', createEvent: 'V4CalendarPostItem',
+  V4CalendarPatchItem: 'V4CalendarPatchItem', V3CalendarPatchItem: 'V4CalendarPatchItem', V2CalendarPatchItem: 'V4CalendarPatchItem', CalendarPatchItem: 'V4CalendarPatchItem',
+  UpdateEventV4: 'V4CalendarPatchItem', UpdateEvent: 'V4CalendarPatchItem', updateEvent: 'V4CalendarPatchItem',
+  V4CalendarGetItems: 'V4CalendarGetItems', V3CalendarGetItems: 'V4CalendarGetItems', V2CalendarGetItems: 'V4CalendarGetItems', CalendarGetItems: 'V4CalendarGetItems',
+  GetEventsV4: 'V4CalendarGetItems', GetEvents: 'V4CalendarGetItems', getEvents: 'V4CalendarGetItems',
+  GetEventsCalendarViewV3: 'GetEventsCalendarViewV3', GetEventsCalendarViewV2: 'GetEventsCalendarViewV3', GetEventsCalendarView: 'GetEventsCalendarViewV3',
+  V3CalendarGetItem: 'V3CalendarGetItem', V2CalendarGetItem: 'V3CalendarGetItem', CalendarGetItem: 'V3CalendarGetItem',
+  GetEventV4: 'V3CalendarGetItem', GetEvent: 'V3CalendarGetItem', getEvent: 'V3CalendarGetItem',
+  CalendarDeleteItem_V2: 'CalendarDeleteItem_V2', CalendarDeleteItem: 'CalendarDeleteItem_V2',
+  DeleteEventV4: 'CalendarDeleteItem_V2', DeleteEvent: 'CalendarDeleteItem_V2', deleteEvent: 'CalendarDeleteItem_V2',
+  RespondToEvent_V2: 'RespondToEvent_V2', RespondToEvent: 'RespondToEvent_V2', RespondToEventV2: 'RespondToEvent_V2', respondToEvent: 'RespondToEvent_V2',
+  CalendarGetTables_V2: 'CalendarGetTables_V2', CalendarGetTables: 'CalendarGetTables_V2',
+  GetCalendars: 'CalendarGetTables_V2', getCalendars: 'CalendarGetTables_V2', getCalendarList: 'CalendarGetTables_V2',
+  FindMeetingTimes_V2: 'FindMeetingTimes_V2', FindMeetingTimes: 'FindMeetingTimes_V2', FindMeetingTimesV2: 'FindMeetingTimes_V2', findMeetingTimes: 'FindMeetingTimes_V2',
+  // ---- contacts ----
+  ContactGetItems_V2: 'ContactGetItems_V2', ContactGetItems: 'ContactGetItems_V2', GetContactsV2: 'ContactGetItems_V2', GetContacts: 'ContactGetItems_V2', getContacts: 'ContactGetItems_V2',
+  ContactGetItem_V2: 'ContactGetItem_V2', ContactGetItem: 'ContactGetItem_V2', GetContactV2: 'ContactGetItem_V2', GetContact: 'ContactGetItem_V2', getContact: 'ContactGetItem_V2',
+  ContactPostItem_V2: 'ContactPostItem_V2', ContactPostItem: 'ContactPostItem_V2', CreateContactV2: 'ContactPostItem_V2', CreateContact: 'ContactPostItem_V2', createContact: 'ContactPostItem_V2',
+  ContactPatchItem_V2: 'ContactPatchItem_V2', ContactPatchItem: 'ContactPatchItem_V2', UpdateContactV2: 'ContactPatchItem_V2', UpdateContact: 'ContactPatchItem_V2', updateContact: 'ContactPatchItem_V2',
+  ContactDeleteItem_V2: 'ContactDeleteItem_V2', ContactDeleteItem: 'ContactDeleteItem_V2', DeleteContactV2: 'ContactDeleteItem_V2', DeleteContact: 'ContactDeleteItem_V2', deleteContact: 'ContactDeleteItem_V2',
+  ContactGetTablesV2: 'ContactGetTablesV2', ContactGetTables: 'ContactGetTablesV2', GetContactFolders: 'ContactGetTablesV2', getContactFolders: 'ContactGetTablesV2',
+  // ---- user / advanced ----
+  GetMyProfile: 'GetMyProfile', getMyProfile: 'GetMyProfile',
+  HttpRequest: 'HttpRequest', httpRequest: 'HttpRequest',
+};
+
+/**
+ * Flatten the designer's `prefix/key` parameters (`item/subject`, `body/isRead`,
+ * `replyParameters/Body`) to bare keys. Keys with other prefixes, and bare keys,
+ * are kept as they are.
+ */
+function stripPrefixes(inputs: Record<string, unknown>, prefixes: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(inputs)) {
+    const slash = key.indexOf('/');
+    if (slash > 0 && prefixes.includes(key.slice(0, slash))) {
+      const bare = key.slice(slash + 1);
+      if (out[bare] === undefined) out[bare] = value;
+    } else if (out[key] === undefined) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/** Copy `from` onto `to` when the handler's own key is not set; the local key is left in place. */
+function alias(inputs: Record<string, unknown>, from: string, to: string): void {
+  if (inputs[to] === undefined && inputs[from] !== undefined) inputs[to] = inputs[from];
+}
+
+function aliasAll(inputs: Record<string, unknown>, pairs: Record<string, string>): Record<string, unknown> {
+  for (const [from, to] of Object.entries(pairs)) alias(inputs, from, to);
+  return inputs;
+}
+
+const ODATA_ALIASES: Record<string, string> = { $top: 'top', $filter: 'filter', $orderby: 'orderBy', $skip: 'skip' };
+
+/** The designer's `item/*` keys for V4CalendarPostItem/PatchItem → the handler's `CalendarEventInputs`. */
+const EVENT_ALIASES: Record<string, string> = {
+  table: 'calendarId',
+  id: 'eventId',
+  reminderMinutesBeforeStart: 'reminderMinutes',
+};
+
+/** RespondToEvent_V2's designer values ("Accept", "Tentatively accept", "Decline") → Graph action names. */
+function normalizeEventResponse(value: unknown): 'accept' | 'tentativelyAccept' | 'decline' {
+  const v = String(value ?? '').replace(/\s+/g, '').toLowerCase();
+  if (v === 'decline') return 'decline';
+  if (v === 'tentativelyaccept' || v === 'tentative') return 'tentativelyAccept';
+  return 'accept';
+}
+
 export class Office365Connector extends BaseHttpClient implements BaseConnector {
   constructor(opts: Office365ConnectorOptions) {
     super(
@@ -154,148 +273,182 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
   async invoke(operation: string, inputs: unknown, ctx: RunContext): Promise<unknown> {
     ctx.log?.({ type: 'office365.invoke', operation, inputs });
 
-    switch (operation) {
-      // Email operations
-      case 'SendEmailV2':
-      case 'SendEmail':
-      case 'sendEmail':
-        return this.sendEmail(this.transformEmailInputs(inputs as Record<string, unknown>), ctx);
+    const cloudOp = OFFICE365_OPERATION_ALIASES[operation];
+    if (!cloudOp) {
+      throw new Error(`Office365Connector: unknown operation '${operation}'`);
+    }
+    const raw = (inputs && typeof inputs === 'object' ? inputs : {}) as Record<string, unknown>;
 
-      case 'GetEmailsV2':
-      case 'GetEmails':
-      case 'getEmails':
-        return this.getEmails(inputs as GetEmailsInputs, ctx);
+    switch (cloudOp) {
+      // ============= Email =============
+      case 'SendEmailV2':
+        return this.sendEmail(this.transformEmailInputs(raw), ctx);
+
+      case 'SharedMailboxSendEmailV2': {
+        // "Send an email from a shared mailbox (V2)": the sending mailbox travels as
+        // emailMessage/MailboxAddress; everything else is the SendEmailV2 message.
+        const email = this.transformEmailInputs(raw);
+        const mailbox = (raw['emailMessage/MailboxAddress'] ?? raw['MailboxAddress'] ?? raw['mailboxAddress'] ?? email.from) as string | undefined;
+        return this.sendEmail({ ...email, from: mailbox }, ctx);
+      }
+
+      case 'GetEmailsV3':
+        // GetEmailsV3's keys (folderPath, top, fetchOnlyUnread, searchQuery,
+        // includeAttachments, mailboxAddress) are the handler's own.
+        return this.getEmails(raw as unknown as GetEmailsInputs, ctx);
 
       case 'GetEmailV2':
-      case 'GetEmail':
-      case 'getEmail':
-        return this.getEmail(inputs as { messageId: string; mailboxAddress?: string; includeAttachments?: boolean }, ctx);
+        return this.getEmail(raw as { messageId: string; mailboxAddress?: string; includeAttachments?: boolean }, ctx);
 
-      case 'ReplyToEmailV2':
-      case 'ReplyToEmail':
-      case 'replyToEmail':
-        return this.replyToEmail(inputs as { messageId: string; body: string; replyAll?: boolean; mailboxAddress?: string }, ctx);
+      case 'ReplyToV3': {
+        // Designer: messageId, mailboxAddress, replyParameters/{To,Cc,Bcc,Subject,Body,ReplyAll,Importance,Attachments}.
+        const p = stripPrefixes(raw, ['replyParameters']);
+        aliasAll(p, { Body: 'body', ReplyAll: 'replyAll', To: 'to', Cc: 'cc', Bcc: 'bcc', Subject: 'subject', Importance: 'importance', Attachments: 'attachments', comment: 'body' });
+        return this.replyToEmail(p as unknown as ReplyToEmailInputs, ctx);
+      }
 
-      case 'ForwardEmailV2':
-      case 'ForwardEmail':
-      case 'forwardEmail':
-        return this.forwardEmail(inputs as { messageId: string; to: string | string[]; comment?: string; mailboxAddress?: string }, ctx);
+      case 'ForwardEmail_V2': {
+        // Designer: message_id, mailboxAddress, body/ToRecipients, body/Comment.
+        const p = stripPrefixes(raw, ['body']);
+        aliasAll(p, { message_id: 'messageId', ToRecipients: 'to', Comment: 'comment' });
+        return this.forwardEmail(p as { messageId: string; to: string | string[]; comment?: string; mailboxAddress?: string }, ctx);
+      }
 
-      case 'DeleteEmailV2':
-      case 'DeleteEmail':
-      case 'deleteEmail':
-        return this.deleteEmail(inputs as { messageId: string; mailboxAddress?: string }, ctx);
+      case 'DeleteEmail_V2':
+        return this.deleteEmail(raw as { messageId: string; mailboxAddress?: string }, ctx);
 
-      case 'MoveEmailV2':
-      case 'MoveEmail':
-      case 'moveEmail':
-        return this.moveEmail(inputs as { messageId: string; destinationId: string; mailboxAddress?: string }, ctx);
+      case 'MoveV2': {
+        // Designer: messageId, folderPath (a folder id, or a well-known name), mailboxAddress.
+        const p = aliasAll({ ...raw }, { folderPath: 'destinationId' });
+        return this.moveEmail(p as { messageId: string; destinationId: string; mailboxAddress?: string }, ctx);
+      }
 
-      case 'MarkAsReadV3':
-      case 'MarkAsRead':
-      case 'markAsRead':
-        return this.markAsRead(inputs as { messageId: string; isRead?: boolean; mailboxAddress?: string }, ctx);
+      case 'MarkAsRead_V3': {
+        // Designer: messageId, mailboxAddress, body/isRead (Learn lists the key as a bare isRead).
+        const p = stripPrefixes(raw, ['body']);
+        return this.markAsRead(p as { messageId: string; isRead?: boolean; mailboxAddress?: string }, ctx);
+      }
 
-      case 'GetAttachmentV2':
-      case 'GetAttachment':
-      case 'getAttachment':
-        return this.getAttachment(inputs as { messageId: string; attachmentId: string; mailboxAddress?: string }, ctx);
+      case 'GetAttachment_V2':
+        return this.getAttachment(raw as { messageId: string; attachmentId: string; mailboxAddress?: string }, ctx);
 
-      case 'ExportEmailV2':
-      case 'ExportEmail':
-      case 'exportEmail':
-        return this.exportEmail(inputs as { messageId: string; mailboxAddress?: string }, ctx);
+      case 'ExportEmail_V2':
+        return this.exportEmail(raw as { messageId: string; mailboxAddress?: string }, ctx);
 
       case 'GetMailFolders':
-      case 'getMailFolders':
-        return this.getMailFolders(inputs as { mailboxAddress?: string }, ctx);
+        return this.getMailFolders(raw as { mailboxAddress?: string }, ctx);
 
-      case 'Flag':
-      case 'flagEmail':
-        return this.flagEmail(inputs as { messageId: string; flagStatus: 'flagged' | 'complete' | 'notFlagged'; mailboxAddress?: string }, ctx);
+      case 'Flag_V2': {
+        // Learn: messageId, mailboxAddress, flagStatus (the designer's nesting is unverified, so
+        // body/ and flag/ prefixes are accepted too).
+        const p = stripPrefixes(raw, ['body', 'flag']);
+        return this.flagEmail(p as { messageId: string; flagStatus: 'flagged' | 'complete' | 'notFlagged'; mailboxAddress?: string }, ctx);
+      }
 
-      // Calendar operations
-      case 'CreateEventV4':
-      case 'CreateEvent':
-      case 'createEvent':
-        return this.createEvent(inputs as CalendarEventInputs, ctx);
+      // ============= Calendar =============
+      case 'V4CalendarPostItem': {
+        // Designer: table (calendar id), item/{subject,start,end,timeZone,location,requiredAttendees,...}.
+        const p = aliasAll(stripPrefixes(raw, ['item', 'body']), EVENT_ALIASES);
+        return this.createEvent(p as unknown as CalendarEventInputs, ctx);
+      }
 
-      case 'GetEventsV4':
-      case 'GetEvents':
-      case 'getEvents':
-        return this.getEvents(inputs as { calendarId?: string; startDateTime?: string; endDateTime?: string; top?: number; filter?: string; orderBy?: string }, ctx);
+      case 'V4CalendarPatchItem': {
+        const p = aliasAll(stripPrefixes(raw, ['item', 'body']), EVENT_ALIASES);
+        return this.updateEvent(p as unknown as { eventId: string; calendarId?: string } & Partial<CalendarEventInputs>, ctx);
+      }
 
-      case 'GetEventV4':
-      case 'GetEvent':
-      case 'getEvent':
-        return this.getEvent(inputs as { eventId: string; calendarId?: string }, ctx);
+      case 'V4CalendarGetItems': {
+        // Designer: table, $filter, $orderby, $top, $skip.
+        const p = aliasAll({ ...raw }, { table: 'calendarId', ...ODATA_ALIASES });
+        return this.getEvents(p as { calendarId?: string; startDateTime?: string; endDateTime?: string; top?: number; filter?: string; orderBy?: string }, ctx);
+      }
 
-      case 'UpdateEventV4':
-      case 'UpdateEvent':
-      case 'updateEvent':
-        return this.updateEvent(inputs as { eventId: string; calendarId?: string } & Partial<CalendarEventInputs>, ctx);
+      case 'GetEventsCalendarViewV3': {
+        // Designer: calendarId, startDateTimeUtc, endDateTimeUtc, $filter, $orderby, $top, $skip, search.
+        const p = aliasAll({ ...raw }, { startDateTimeUtc: 'startDateTime', endDateTimeUtc: 'endDateTime', ...ODATA_ALIASES });
+        return this.getEvents(p as { calendarId?: string; startDateTime?: string; endDateTime?: string; top?: number; filter?: string; orderBy?: string }, ctx);
+      }
 
-      case 'DeleteEventV4':
-      case 'DeleteEvent':
-      case 'deleteEvent':
-        return this.deleteEvent(inputs as { eventId: string; calendarId?: string }, ctx);
+      case 'V3CalendarGetItem': {
+        // Designer: table, id.
+        const p = aliasAll({ ...raw }, { table: 'calendarId', id: 'eventId' });
+        return this.getEvent(p as { eventId: string; calendarId?: string }, ctx);
+      }
 
-      case 'RespondToEventV2':
-      case 'RespondToEvent':
-      case 'respondToEvent':
-        return this.respondToEvent(inputs as { eventId: string; response: 'accept' | 'tentativelyAccept' | 'decline'; comment?: string; sendResponse?: boolean }, ctx);
+      case 'CalendarDeleteItem_V2': {
+        // Designer: calendar, event.
+        const p = aliasAll({ ...raw }, { calendar: 'calendarId', event: 'eventId', table: 'calendarId', id: 'eventId' });
+        return this.deleteEvent(p as { eventId: string; calendarId?: string }, ctx);
+      }
 
-      case 'GetCalendars':
-      case 'getCalendars':
+      case 'RespondToEvent_V2': {
+        // Learn: event_id, response, Comment, SendResponse.
+        const p = aliasAll(stripPrefixes(raw, ['body']), { event_id: 'eventId', Comment: 'comment', SendResponse: 'sendResponse' });
+        p.response = normalizeEventResponse(p.response);
+        return this.respondToEvent(p as { eventId: string; response: 'accept' | 'tentativelyAccept' | 'decline'; comment?: string; sendResponse?: boolean }, ctx);
+      }
+
+      case 'CalendarGetTables_V2':
         return this.getCalendars(ctx);
 
-      case 'CalendarGetTables':
-      case 'getCalendarList':
-        return this.getCalendars(ctx);
+      case 'FindMeetingTimes_V2': {
+        // Learn: RequiredAttendees, OptionalAttendees, MeetingDuration, Start, End, MaxCandidates, ...
+        const p = aliasAll(stripPrefixes(raw, ['body']), {
+          RequiredAttendees: 'attendees', MeetingDuration: 'durationMinutes', Start: 'startDateTime', End: 'endDateTime', MaxCandidates: 'maxCandidates',
+        });
+        return this.findMeetingTimes(p as { attendees?: string | string[]; durationMinutes?: number; startDateTime?: string; endDateTime?: string; maxCandidates?: number }, ctx);
+      }
 
-      case 'FindMeetingTimesV2':
-      case 'FindMeetingTimes':
-      case 'findMeetingTimes':
-        return this.findMeetingTimes(inputs as { attendees?: string | string[]; durationMinutes?: number; startDateTime?: string; endDateTime?: string; maxCandidates?: number }, ctx);
+      // ============= Contacts =============
+      case 'ContactGetItems_V2': {
+        // Designer: folder, $filter, $orderby, $top, $skip.
+        const p = aliasAll({ ...raw }, { folder: 'folderId', ...ODATA_ALIASES });
+        return this.getContacts(p as { top?: number; filter?: string; orderBy?: string; folderId?: string }, ctx);
+      }
 
-      // Contact operations
-      case 'GetContactsV2':
-      case 'GetContacts':
-      case 'getContacts':
-        return this.getContacts(inputs as { top?: number; filter?: string; orderBy?: string; folderId?: string }, ctx);
+      case 'ContactGetItem_V2': {
+        const p = aliasAll({ ...raw }, { folder: 'folderId', id: 'contactId' });
+        return this.getContact(p as { contactId: string; folderId?: string }, ctx);
+      }
 
-      case 'GetContactV2':
-      case 'GetContact':
-      case 'getContact':
-        return this.getContact(inputs as { contactId: string; folderId?: string }, ctx);
+      case 'ContactPostItem_V2': {
+        const p = aliasAll(stripPrefixes(raw, ['item']), { folder: 'folderId' });
+        return this.createContact(p as unknown as ContactInputs & { folderId?: string }, ctx);
+      }
 
-      case 'CreateContactV2':
-      case 'CreateContact':
-      case 'createContact':
-        return this.createContact(inputs as ContactInputs & { folderId?: string }, ctx);
+      case 'ContactPatchItem_V2': {
+        const p = aliasAll(stripPrefixes(raw, ['item']), { folder: 'folderId', id: 'contactId' });
+        return this.updateContact(p as unknown as { contactId: string; folderId?: string } & ContactInputs, ctx);
+      }
 
-      case 'UpdateContactV2':
-      case 'UpdateContact':
-      case 'updateContact':
-        return this.updateContact(inputs as { contactId: string; folderId?: string } & ContactInputs, ctx);
+      case 'ContactDeleteItem_V2': {
+        const p = aliasAll({ ...raw }, { folder: 'folderId', id: 'contactId' });
+        return this.deleteContact(p as { contactId: string; folderId?: string }, ctx);
+      }
 
-      case 'DeleteContactV2':
-      case 'DeleteContact':
-      case 'deleteContact':
-        return this.deleteContact(inputs as { contactId: string; folderId?: string }, ctx);
-
-      case 'GetContactFolders':
-      case 'getContactFolders':
+      case 'ContactGetTablesV2':
         return this.getContactFolders(ctx);
 
-      // User profile
+      // ============= User / advanced =============
       case 'GetMyProfile':
-      case 'getMyProfile':
         return this.getMyProfile(ctx);
 
-      case 'HttpRequest':
-      case 'httpRequest':
-        return this.httpRequest(inputs as { method: string; uri: string; body?: unknown; headers?: Record<string, string> }, ctx);
+      case 'HttpRequest': {
+        // Learn: Uri, Method, Body, ContentType, CustomHeader1..5 ("Name: value").
+        const p = aliasAll({ ...raw }, { Uri: 'uri', Method: 'method', Body: 'body' });
+        const headers: Record<string, string> = { ...((p.headers as Record<string, string>) || {}) };
+        if (typeof p.ContentType === 'string' && p.ContentType) headers['Content-Type'] = p.ContentType;
+        for (let i = 1; i <= 5; i++) {
+          const h = p[`CustomHeader${i}`];
+          if (typeof h !== 'string') continue;
+          const colon = h.indexOf(':');
+          if (colon > 0) headers[h.slice(0, colon).trim()] = h.slice(colon + 1).trim();
+        }
+        return this.httpRequest(
+          { method: String(p.method ?? 'GET'), uri: String(p.uri ?? ''), body: p.body, headers: Object.keys(headers).length ? headers : undefined },
+          ctx
+        );
+      }
 
       default:
         throw new Error(`Office365Connector: unknown operation '${operation}'`);
@@ -457,11 +610,31 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
     return this.get(endpoint, ctx.log);
   }
 
-  async replyToEmail(inputs: { messageId: string; body: string; replyAll?: boolean; mailboxAddress?: string }, ctx: RunContext): Promise<{ success: boolean }> {
+  async replyToEmail(inputs: ReplyToEmailInputs, ctx: RunContext): Promise<{ success: boolean }> {
     const userPath = this.getUserPath(inputs.mailboxAddress);
     const action = inputs.replyAll ? 'replyAll' : 'reply';
     const endpoint = `${userPath}/messages/${encodeURIComponent(inputs.messageId)}/${action}`;
-    await this.post(endpoint, ctx.log, { body: { comment: inputs.body } });
+
+    // Graph's reply/replyAll take a comment plus an optional partial message that
+    // overrides recipients, subject, importance or adds attachments.
+    const message: Record<string, unknown> = {};
+    if (inputs.to) message.toRecipients = this.parseRecipients(inputs.to);
+    if (inputs.cc) message.ccRecipients = this.parseRecipients(inputs.cc);
+    if (inputs.bcc) message.bccRecipients = this.parseRecipients(inputs.bcc);
+    if (inputs.subject) message.subject = inputs.subject;
+    if (inputs.importance) message.importance = String(inputs.importance).toLowerCase();
+    if (inputs.attachments?.length) {
+      message.attachments = inputs.attachments.map(att => ({
+        '@odata.type': '#microsoft.graph.fileAttachment',
+        name: att.name ?? (att as unknown as { Name?: string }).Name,
+        contentBytes: att.contentBytes ?? (att as unknown as { ContentBytes?: string }).ContentBytes,
+        contentType: att.contentType || 'application/octet-stream',
+      }));
+    }
+
+    const body: Record<string, unknown> = { comment: inputs.body ?? '' };
+    if (Object.keys(message).length) body.message = message;
+    await this.post(endpoint, ctx.log, { body });
     return { success: true };
   }
 
@@ -570,11 +743,13 @@ export class Office365Connector extends BaseHttpClient implements BaseConnector 
 
     const queryString = params.length ? `?${params.join('&')}` : '';
 
-    const endpoint = inputs.calendarId
-      ? `/me/calendars/${encodeURIComponent(inputs.calendarId)}/events${queryString}`
-      : inputs.startDateTime && inputs.endDateTime
-        ? `/me/calendarView${queryString}`
-        : `/me/calendar/events${queryString}`;
+    // A start/end window is a calendarView (Graph ignores those parameters on /events).
+    const calendarPath = inputs.calendarId
+      ? `/me/calendars/${encodeURIComponent(inputs.calendarId)}`
+      : '/me/calendar';
+    const endpoint = inputs.startDateTime && inputs.endDateTime
+      ? (inputs.calendarId ? `${calendarPath}/calendarView${queryString}` : `/me/calendarView${queryString}`)
+      : `${calendarPath}/events${queryString}`;
 
     const result = await this.get<{ value: unknown[] }>(endpoint, ctx.log);
     return result.value || [];

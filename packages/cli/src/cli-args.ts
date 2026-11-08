@@ -76,6 +76,11 @@ export function requireStringFlag(args: Record<string, any>, key: string): strin
  * when a flag is read that is missing here, so this set cannot drift silently.
  * The set is global, not per command: a flag of another command is accepted
  * (and ignored, as before); only misspellings and single-dash flags are rejected.
+ *
+ * Deprecated no-ops kept so existing scripts do not break: `ignore-metadata`,
+ * `ignore-runafter`, `ignore-whitespace` (the parity normaliser always drops
+ * metadata and empty runAfter and always normalizes expression whitespace, so
+ * the flags never changed anything and are no longer read or documented).
  */
 export const KNOWN_FLAGS: ReadonlySet<string> = new Set([
   'all', 'artifacts-dir', 'auth', 'budget', 'bundled', 'cache-workflows', 'client-id', 'config',

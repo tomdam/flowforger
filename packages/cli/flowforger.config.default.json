@@ -17,9 +17,7 @@
       "multilineExpressions": "preserve"
     },
     "emitter": {
-      "includeMetadata": false,
-      "keyOrdering": "logical",
-      "emptyRunAfter": "preserve"
+      "includeMetadata": false
     },
     "parity": {
       "ignoreMetadata": true,
@@ -52,15 +50,21 @@
         "connectionReferenceLogicalName": "",
         "runtimeSource": "embedded"
       },
-      "excelonline": {
+      "excelonlinebusiness": {
         "referenceName": "shared_excelonlinebusiness",
         "apiId": "/providers/Microsoft.PowerApps/apis/shared_excelonlinebusiness",
         "connectionReferenceLogicalName": "",
         "runtimeSource": "embedded"
       },
-      "wordonline": {
+      "wordonlinebusiness": {
         "referenceName": "shared_wordonlinebusiness",
         "apiId": "/providers/Microsoft.PowerApps/apis/shared_wordonlinebusiness",
+        "connectionReferenceLogicalName": "",
+        "runtimeSource": "embedded"
+      },
+      "onedriveforbusiness": {
+        "referenceName": "shared_onedriveforbusiness",
+        "apiId": "/providers/Microsoft.PowerApps/apis/shared_onedriveforbusiness",
         "connectionReferenceLogicalName": "",
         "runtimeSource": "embedded"
       },

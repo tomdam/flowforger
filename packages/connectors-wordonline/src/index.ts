@@ -105,8 +105,8 @@ export class WordOnlineConnector extends BaseHttpClient implements BaseConnector
     // Handle file parameter
     if (inputs.file && !inputs.fileId) normalized.fileId = inputs.file;
 
-    // Handle template content/data for PopulateWordTemplate
-    if (operation === 'PopulateWordTemplate' || operation === 'CreateFileItem') {
+    // Handle template content/data for PopulateWordTemplate (every spelling of "Populate a Word template")
+    if (operation === 'PopulateWordTemplate' || operation === 'PopulateAWordTemplate' || operation === 'CreateFileItem') {
       const templateData: Record<string, unknown> = {};
 
       // dynamicFileSchema as a nested object (runtime format)

@@ -13,10 +13,12 @@ import { createCachePlugin } from './token-cache.js';
 import { acquireTokenSilentAnyAccount } from './auth.js';
 
 /**
- * Mapping from FlowForger connector short names to Dataverse connectorid suffixes.
+ * Mapping from FlowForger connector names to Dataverse connectorid suffixes.
  * The connectorid in Dataverse is the full path like:
  *   /providers/Microsoft.PowerApps/apis/shared_sharepointonline
- * We match on the last segment.
+ * We match on the last segment. The keys are the connector names `pull`
+ * writes into IR (so `excelonlinebusiness`, not the `excelonline` alias),
+ * since the emitter looks a connection up under the IR's connector name.
  */
 const CONNECTOR_API_MAP: Record<string, string> = {
   sharepoint: 'shared_sharepointonline',
@@ -25,8 +27,9 @@ const CONNECTOR_API_MAP: Record<string, string> = {
   office365users: 'shared_office365users',
   office365groups: 'shared_office365groups',
   approvals: 'shared_approvals',
-  excelonline: 'shared_excelonlinebusiness',
-  wordonline: 'shared_wordonlinebusiness',
+  excelonlinebusiness: 'shared_excelonlinebusiness',
+  wordonlinebusiness: 'shared_wordonlinebusiness',
+  onedriveforbusiness: 'shared_onedriveforbusiness',
   teams: 'shared_teams',
 };
 
@@ -207,10 +210,9 @@ export function generateConfig(opts: InitOptions): Record<string, any> {
         multilineExpressions: 'preserve',
         skipDefaultConstructor: false,
       },
+      // Only keys the emitter reads (keyOrdering/emptyRunAfter were never applied).
       emitter: {
         includeMetadata: false,
-        keyOrdering: 'logical',
-        emptyRunAfter: 'preserve',
       },
       parity: {
         ignoreMetadata: true,

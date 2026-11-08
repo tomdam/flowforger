@@ -732,8 +732,15 @@ class FlowForgerDebugConfigProvider implements vscode.DebugConfigurationProvider
         try {
           const envVarOverrides = await fetchEnvironmentVariableOverrides(dvUrl, dvToken, allParameters, outputChannel);
           if (Object.keys(envVarOverrides).length > 0) {
-            config.parameters = { ...(config.parameters || {}), ...envVarOverrides };
-            outputChannel.appendLine(`Resolved ${Object.keys(envVarOverrides).length} environment variable(s) from Dataverse`);
+            // Explicit launch-config `parameters` win over the environment's current
+            // values, as `--param` wins over them in the CLI.
+            const explicit = config.parameters || {};
+            const overridden = Object.keys(envVarOverrides).filter((k) => k in explicit);
+            config.parameters = { ...envVarOverrides, ...explicit };
+            outputChannel.appendLine(
+              `Resolved ${Object.keys(envVarOverrides).length} environment variable(s) from Dataverse` +
+              (overridden.length > 0 ? ` (${overridden.length} kept from the launch configuration's parameters: ${overridden.join(', ')})` : ''),
+            );
           }
         } catch (err: any) {
           outputChannel.appendLine(`Warning: Could not fetch environment variables: ${err.message}`);

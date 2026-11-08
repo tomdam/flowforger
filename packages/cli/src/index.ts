@@ -25,6 +25,7 @@ import { parseArgs, requireBooleanFlag, requireStringFlag, findUnknownFlags, Arg
 import { resolveRunParameterOverrides } from './env-var-overrides.js';
 import { printPrettyRunResult } from './pretty-trace.js';
 import { collectMocks, parseLiveFlags, createRunGuard, mockedActionsInTrace } from './run-mocks.js';
+import { resolveEmitterConfig } from './emitter-config.js';
 
 /**
  * Resolve the CLI's own package root (one level above dist/), working in both
@@ -109,16 +110,10 @@ function buildConfigFromFlags(args: Record<string, any>, baseConfig?: FlowForger
     config.generator = { ...config.generator, skipDefaultConstructor: true };
   }
 
-  // Parity flags
-  if (args['ignore-whitespace'] !== undefined) {
-    config.parity = { ...config.parity, ignoreWhitespace: true };
-  }
-  if (args['ignore-runafter'] !== undefined) {
-    config.parity = { ...config.parity, ignoreEmptyRunAfter: true };
-  }
-  if (args['ignore-metadata'] !== undefined) {
-    config.parity = { ...config.parity, ignoreMetadata: true };
-  }
+  // (`--ignore-whitespace`, `--ignore-runafter` and `--ignore-metadata` used to
+  // set `config.parity.*` here, but `normalizeDefinition` always drops
+  // metadata and empty runAfter and always normalizes expression whitespace.
+  // They stay accepted as no-ops in KNOWN_FLAGS so existing scripts keep working.)
 
   // Parser flags
   if (args['skip-metadata-fields'] !== undefined) {
@@ -150,10 +145,9 @@ function loadEmitterConfig(args: Record<string, any>, defaultPath?: string): any
   const resolved = resolve(configPath);
   if (defaultPath && !existsSync(resolved)) return undefined;
   const raw = JSON.parse(readFileSync(resolved, 'utf-8'));
-  if (raw && raw.environments && args['config-env']) {
-    return { ...(raw.global || {}), ...(raw.environments[args['config-env'] as string] || {}) };
-  }
-  return raw.global || raw;
+  // Shared by compile, push and diff: `global.emitter.*` (what `init` writes)
+  // is surfaced next to `connections`, where the emitter reads it.
+  return resolveEmitterConfig(raw, args['config-env'] as string | undefined);
 }
 
 /**
@@ -367,7 +361,7 @@ Usage:
   Dataverse URL unless --environment-id is given. run-show exits 0 when the run Succeeded, 1 otherwise.
   flowforger activate --id <workflowid> [--url <dataverseUrl>] [--token <token> | --auth [--config flowforger.config.json]] --state <statecode> --status <statuscode>
   flowforger generate-dsl --in <clientdata.json> --out <flow.ff.ts> [--name <flowName>] [--config <config.json>]
-  flowforger parity --in <clientdata.json> [--name <flowName>] [--config <config.json>] [--ignore-whitespace]
+  flowforger parity --in <clientdata.json> [--name <flowName>] [--config <config.json>]
   flowforger sp-discover --token <graph-token> [--site <site-url>] [--list <list-name>]
   flowforger optimize <input.ff.ts> [--out <output.ff.ts>] [--report <report.json>]
   flowforger init --url <dataverseUrl> --client-id <azureAdClientId> [--tenant-id <id>] [--sp-url <sharepointUrl>] [--out <config.json>]
@@ -395,11 +389,6 @@ Generator Options (for generate-dsl, parity):
   --skip-default-constructor  Omit the constructor when it only contains default boilerplate
                             (standard schema metadata, default $connections/$authentication,
                             empty connection references) that compile re-injects
-
-Parity Options:
-  --ignore-whitespace       Ignore whitespace differences in expressions
-  --ignore-runafter         Ignore empty runAfter differences
-  --ignore-metadata         Ignore metadata field differences (default: true)
 
 Parser Options (for generate-dsl, parity):
   --skip-metadata-fields <fields>        Comma-separated metadata fields to skip (e.g., operationMetadataId)

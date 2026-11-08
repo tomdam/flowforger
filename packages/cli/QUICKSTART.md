@@ -52,12 +52,12 @@ flowforger scopes --all              # every permission any connector can reques
 | Connector | API | Permissions |
 |-----------|-----|-------------|
 | SharePoint | SharePoint (App ID `00000003-0000-0ff1-ce00-000000000000`) | `AllSites.Write` |
-| Office 365 Outlook | Microsoft Graph | `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.Read`, `Calendars.ReadWrite`, `Contacts.Read`, `Contacts.ReadWrite` |
+| Office 365 Outlook | Microsoft Graph | `Mail.Read`, `Mail.ReadWrite`, `Mail.Send`, `Mail.Send.Shared` (shared-mailbox send), `Calendars.Read`, `Calendars.ReadWrite`, `Contacts.Read`, `Contacts.ReadWrite` |
 | Office 365 Users | Microsoft Graph | `User.Read.All`, `User.ReadWrite`, `People.Read`, `Sites.Read.All` |
 | Office 365 Groups | Microsoft Graph | `Group.Read.All`, `Group.ReadWrite.All`, `GroupMember.Read.All`, `GroupMember.ReadWrite.All` |
 | Microsoft Teams | Microsoft Graph | `Team.ReadBasic.All`, `Team.Create`, `TeamMember.ReadWrite.All`, `Channel.ReadBasic.All`, `Channel.Create`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `Chat.Create`, `Chat.Read`, `Chat.ReadWrite`, `ChatMember.Read`, `TeamsActivity.Send`, `TeamworkTag.ReadWrite`, `OnlineMeetings.ReadWrite`, `Calendars.ReadWrite`, `User.Read.All` |
 | Word Online, Excel Online, OneDrive for Business | Microsoft Graph | `Files.ReadWrite` |
-| `listCallbackUrl()` in a flow | Microsoft Flow Service (App ID `7df0a125-d3be-4c96-aa54-591f83ff541c`) | `User` |
+| `listCallbackUrl()` in a flow, and the cloud-run commands `flowforger runs`, `run-show` and `run --replay-run` | Microsoft Flow Service (App ID `7df0a125-d3be-4c96-aa54-591f83ff541c`) | `User` |
 
 Add both the `Read` and the `ReadWrite` variant where both are listed. Entra ID consent is per permission, and a read-only flow requests the narrower one.
 

@@ -44,7 +44,8 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
     "@flowforger/engine": "^0.1.0",

@@ -4,6 +4,9 @@
  * Invokes Dataverse custom actions: bound (operate on a specific record like
  * CalculatePrice / WinOpportunity) and unbound (global like WhoAmI or custom
  * organization-level actions).
+ *
+ * actionName is sent verbatim: a bound action needs the
+ * `Microsoft.Dynamics.CRM.` namespace prefix, an unbound one must not have it.
  */
 
 @Flow('dv-custom-actions')
@@ -21,14 +24,15 @@ class DvCustomActions {
     await ctx.connectors.dataverse.PerformBoundAction('CalculatePriceAction', {
       entityName: 'opportunities',
       recordId: ctx.variables('opportunityId'),
-      actionName: 'CalculatePrice',
+      // Bound actions are namespaced; without the prefix the Web API answers 404.
+      actionName: 'Microsoft.Dynamics.CRM.CalculatePrice',
       DiscountPercentage: 10,
     });
 
     await ctx.connectors.dataverse.PerformBoundAction('WinOpportunityAction', {
       entityName: 'opportunities',
       recordId: ctx.variables('opportunityId'),
-      actionName: 'WinOpportunity',
+      actionName: 'Microsoft.Dynamics.CRM.WinOpportunity',
       Status: 3,
       OpportunityClose: {
         subject: 'Won the deal',

@@ -66,14 +66,14 @@ class HelloFlow {
 - **FlowForger: Restart Language Server** - Restart the LSP server
 - **FlowForger: Compile to IR** - Compile current file to FlowIR JSON
 - **FlowForger: Compile to Logic Apps JSON** - Compile to Power Automate format
+- **FlowForger: Debug Flow** - Run the current `.ff.ts` file under the debugger (breakpoints, stepping, variables)
+- **FlowForger: Connect Data Sources (schema completions)** - Sign in once so table, list and column completions can load their metadata
 
 ## Settings
 
 | Setting | Description | Default |
 |---------|-------------|---------|
 | `flowforger.enable` | Enable language features | `true` |
-| `flowforger.diagnostics.enable` | Enable diagnostic reporting | `true` |
-| `flowforger.diagnostics.showUnusedWarnings` | Show unused action/variable warnings | `true` |
 | `flowforger.trace.server` | Trace LSP communication | `off` |
 
 ## Requirements

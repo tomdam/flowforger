@@ -6,7 +6,15 @@
  */
 
 import type { BaseConnector, RunContext } from '@flowforger/engine';
-import { extractItemFields, HttpError, buildODataQuery, parseStringList } from '@flowforger/connectors-shared';
+import {
+  extractItemFields,
+  HttpError,
+  buildODataQuery,
+  parseStringList,
+  toCloudFileContent,
+  type FileContentEnvelope,
+  type FileContentResult,
+} from '@flowforger/connectors-shared';
 import { readZipEntries } from './zip.js';
 
 export interface SharePointConnectorOptions {
@@ -79,37 +87,9 @@ export function inferFileContentType(fileName: string | undefined): string {
   return (ext && fileName?.includes('.') && MIME_BY_EXTENSION[ext]) || 'application/octet-stream';
 }
 
-/** Base64 envelope Logic Apps uses for non-text bodies (note the cloud key is `$content-type`). */
-export type FileContentEnvelope = { '$content-type': string; $content: string };
-
-/** What "Get file content" hands the next action: parsed JSON, plain text, or the base64 envelope. */
-export type FileContentResult = string | unknown | FileContentEnvelope;
-
-/**
- * Shape downloaded bytes the way Logic Apps content handling does for the
- * given content type: `application/json` is parsed (falls back to text if it
- * is not valid JSON), `text/*` is the UTF-8 text, and everything else stays
- * the base64 envelope. This is why an .xml file shows up as XML source in a
- * Power Automate run (its inferred type is `text/xml`), while a .pdf shows up
- * as `{ "$content-type": "application/pdf", "$content": "..." }`.
- */
-export function toCloudFileContent(base64: string, contentType: string): FileContentResult {
-  const mediaType = contentType.split(';')[0].trim().toLowerCase();
-  const isJson = mediaType === 'application/json';
-  if (!isJson && !mediaType.startsWith('text/')) {
-    return { '$content-type': contentType, $content: base64 };
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const text = new TextDecoder('utf-8').decode(bytes);
-  if (!isJson) return text;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
+// The envelope types and `toCloudFileContent` now live in @flowforger/connectors-shared
+// (OneDrive uses the same rule); re-exported here so existing imports keep working.
+export { toCloudFileContent, type FileContentEnvelope, type FileContentResult };
 
 /**
  * Power Automate cloud operationId → the name this connector implements.
@@ -132,6 +112,9 @@ const OPERATION_ALIASES: Record<string, string> = {
   UnshareItem: 'StopSharing', // Stop sharing (unshare a link)
   DiscardFileCheckOut: 'DiscardCheckOut', // Discard check out
   ExtractFolderV2: 'ExtractFolder', // Extract folder
+  GetTableViews: 'GetListViews', // Get list views
+  SetApprovalStatus: 'SetContentApprovalStatus', // Set content approval status
+  SearchForUser: 'ResolvePerson', // Resolve person
 };
 
 type LogFunction = (entry: Record<string, unknown>) => void;

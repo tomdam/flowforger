@@ -119,9 +119,11 @@ export class DataverseConnector extends BaseHttpClient implements BaseConnector 
       case 'DeleteRecord':
         return this.deleteRow(inputs as Record<string, unknown>, ctx);
       case 'RetrieveRow':
+      case 'RetrieveRecord':
       case 'GetItem':
       case 'GetItemById':
       case 'GetRecord':
+      case 'GetRow':
         return this.retrieveRow(inputs as Record<string, unknown>, ctx);
       case 'AssociateEntities':
       case 'AssociateRecords':

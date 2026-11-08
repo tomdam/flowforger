@@ -8,7 +8,7 @@
  */
 
 import type { BaseConnector, RunContext } from '@flowforger/engine';
-import { BaseHttpClient, HttpError, getParam } from '@flowforger/connectors-shared';
+import { BaseHttpClient, HttpError, getParam, toCloudFileContent } from '@flowforger/connectors-shared';
 
 export interface OneDriveConnectorOptions {
   /** Microsoft Graph API access token */
@@ -150,8 +150,10 @@ export class OneDriveConnector extends BaseHttpClient implements BaseConnector {
   }
 
   /**
-   * GET a raw (binary or text) resource and return it as base64 for binary
-   * content or as a JSON object for JSON responses.
+   * GET a raw resource and shape it the way the cloud connector hands it to the
+   * next action: JSON parsed, `text/*` as text, anything else as the Logic Apps
+   * binary envelope `{ "$content-type": "<mime>", "$content": "<base64>" }`
+   * (`toCloudFileContent`, the same rule as SharePoint's "Get file content").
    */
   private async getRaw(path: string, log?: RunContext['log']): Promise<unknown> {
     const url = this.buildUrl(path);
@@ -185,14 +187,13 @@ export class OneDriveConnector extends BaseHttpClient implements BaseConnector {
       return text ? JSON.parse(text) : null;
     }
 
-    // Return binary as base64
     const buffer = await response.arrayBuffer();
     const bytes = new Uint8Array(buffer);
     let binary = '';
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
     }
-    return btoa(binary);
+    return toCloudFileContent(btoa(binary), contentType || 'application/octet-stream');
   }
 
   /**

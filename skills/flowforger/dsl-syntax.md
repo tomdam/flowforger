@@ -237,19 +237,19 @@ await ctx.terminate('Stop', 'Cancelled', { code: 'SKIP', message: 'Not needed' }
 
 ### Connector Webhook
 
-For long-running connector actions (e.g., Approvals) that use webhook callbacks:
+For long-running connector actions (e.g., Approvals) that use webhook callbacks. The arguments are **positional** — `ctx.connectorWebhook(actionName, connector, operation, params, connectionReferenceName?, authentication?)`; an object form such as `ctx.connectorWebhook('Name', { connector, operation, params })` is not supported:
 
 ```typescript
-await ctx.connectorWebhook('WaitForApproval', {
-  connector: 'approvals',
-  operation: 'StartAndWaitForAnApproval',
-  params: {
-    approvalType: 'Basic',
+await ctx.connectorWebhook('WaitForApproval', 'approvals', 'StartAndWaitForAnApproval', {
+  approvalType: 'Basic',
+  WebhookApprovalCreationInput: {
     title: 'Please approve',
-    assignedTo: 'approver@example.com'
-  },
-  connectionReferenceName: 'shared_approvals'
-});
+    assignedTo: 'approver@example.com',
+    details: 'Please review the request.',
+    enableNotifications: true,
+    enableReassignment: true
+  }
+}, 'shared_approvals');
 ```
 
 ### Child Workflow Call

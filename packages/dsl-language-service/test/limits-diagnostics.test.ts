@@ -104,6 +104,28 @@ describe('DSL043 — JSDoc annotation values', () => {
     ])), []);
   });
 
+  it('retryPolicy inside ctx.http inputs: a numeric or short interval → DSL043 (the cloud wants PT5S to P1D)', () => {
+    const d = only('DSL043')(flowWith([
+      `await ctx.http('Call', { method: 'GET', uri: 'https://x', retryPolicy: { type: 'fixed', count: 3, interval: 5000 } });`,
+      `await ctx.http('Call2', { method: 'GET', uri: 'https://x', retryPolicy: { type: 'exponential', count: 91, interval: 'PT2S' } });`,
+    ]));
+    assert.equal(d.length, 3);
+    assert.match(d[0].message, /interval is 5000, which is not an ISO 8601 duration/);
+    assert.match(d[0].message, /retryPolicy/);
+    assert.equal(d[0].range.start.line, 9, 'reported at the retryPolicy property of the first call');
+    assert.match(d[1].message, /count is 91/);
+    assert.match(d[2].message, /interval is "PT2S"; allowed range is PT5S to P1D/);
+  });
+
+  it('retryPolicy inside ctx.http inputs: valid, none, or non-literal values → nothing', () => {
+    assert.deepEqual(only('DSL043')(flowWith([
+      `await ctx.http('Call', { method: 'GET', uri: 'https://x', retryPolicy: { type: 'fixed', count: 4, interval: 'PT20S' } });`,
+      `await ctx.http('Call2', { method: 'GET', uri: 'https://x', retryPolicy: { type: 'none' } });`,
+      `await ctx.http('Call3', { method: 'GET', uri: 'https://x', retryPolicy: { type: 'fixed', count: ctx.parameters('Retries'), interval: ctx.parameters('Interval') } });`,
+      `await ctx.http('Call4', { method: 'GET', uri: 'https://x' });`,
+    ])), []);
+  });
+
   it('@limit count above 5000 or a non-ISO timeout → DSL043', () => {
     const d = only('DSL043')(flowWith([
       `let done = false;`,

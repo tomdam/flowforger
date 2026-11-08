@@ -85,6 +85,34 @@ describe('breakpoints', () => {
   });
 });
 
+describe('auth', () => {
+  it('resolves auth on every start and merges the new tokens over the earlier ones', async () => {
+    const answers = [{ spToken: 'sp-1' }, { dvToken: 'dv-2', dvUrl: 'https://org.crm.dynamics.com' }, { spToken: 'sp-3' }];
+    let calls = 0;
+    const authed = new SessionManager({
+      connectorOptions: {},
+      cassetteRoot,
+      defaultBudget: 200,
+      resolveAuth: async () => answers[calls++],
+    });
+    try {
+      await authed.start({ file: flowFile, stopOnEntry: false });
+      assert.equal(calls, 1);
+      // A second flow may need a connector the first did not: resolve again, keep what we have.
+      await authed.start({ file: flowFile, stopOnEntry: false });
+      assert.equal(calls, 2, 'resolveAuth runs per start, not once per process');
+      assert.deepEqual((authed as any).authCache, { spToken: 'sp-1', dvToken: 'dv-2', dvUrl: 'https://org.crm.dynamics.com' });
+      // A fresh token for a connector seen before replaces the old one.
+      await authed.start({ file: flowFile, stopOnEntry: false });
+      assert.equal(calls, 3);
+      assert.equal((authed as any).authCache.spToken, 'sp-3');
+      assert.equal((authed as any).authCache.dvToken, 'dv-2');
+    } finally {
+      await authed.stop();
+    }
+  });
+});
+
 describe('resume', () => {
   it('steps one node at a time', async () => {
     const first = await mgr.start({ file: flowFile });

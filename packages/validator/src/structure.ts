@@ -793,9 +793,9 @@ const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * Dataverse "Get a row" (GetItem) whose recordId is a lookup column (`_x_value`) read from
  * another action, with no enclosing `if` whose condition mentions that same column of that same
  * action. An empty lookup makes recordId null and fails the action, so an optional lookup needs
- * the guard (flowforger skill, examples.md Example 12: a Skipped action reads as null, so a later
- * coalesce() picks whichever read ran). Informational: a required lookup is fine without it, and
- * the cloud saves either way.
+ * the guard: wrap the GetItem in an if that checks the lookup column is not empty — a Skipped
+ * action reads as null, so a later coalesce() picks whichever read ran. Informational: a required
+ * lookup is fine without it, and the cloud saves either way.
  */
 function dataverseLookupIssues(m: Model, info: (code: string, message: string, path?: string) => void): void {
   for (const r of m.recs) {
@@ -816,7 +816,7 @@ function dataverseLookupIssues(m: Model, info: (code: string, message: string, p
     info('DV_LOOKUP_UNGUARDED',
       `Action '${r.name}' gets a row by the lookup column '${column}' of '${source}'. When that lookup is empty, recordId is null and the action fails. ` +
       `If the lookup can be empty, run the action inside an if on the same value — if (!empty(body('${source}')?['${column}'])) { … } — ` +
-      `a Skipped action reads as null, so a later coalesce() can fall back (flowforger skill, examples.md Example 12).`,
+      `a Skipped action reads as null, so a later coalesce() can fall back to another value.`,
       r.path);
   }
 }

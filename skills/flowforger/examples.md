@@ -1,6 +1,6 @@
 # FlowForger Examples
 
-> All examples follow the [critical rules](SKILL.md#critical-rules-source-of-truth): unique action names, constructor at bottom, `@action` only for variables/control flow, no return statements.
+> All examples follow the [critical rules](SKILL.md#critical-rules-source-of-truth): unique action names, constructor at bottom, `@action` names control flow (variable steps keep their default names), no return statements.
 
 ## Example 1: SharePoint List Processing (Complete)
 
@@ -14,8 +14,7 @@ class ProcessSharePointItems {
 
   @Action()
   async run(ctx: FlowContext) {
-    /** @action Initialize_processedCount */
-    let processedCount: number = 0;
+    let processedCount: number = 0;   // auto-named Initialize_processedCount
 
     // IMPORTANT: ctx.parameters() name must EXACTLY match the key in ctx.flow.parameters
     await ctx.connectors.sharepoint.GetItems('GetPendingTasks', {
@@ -34,8 +33,7 @@ class ProcessSharePointItems {
         'item/Status/Value': 'Processing'
       }, 'shared_sharepointonline');
 
-      /** @action IncrementProcessedCount */
-      processedCount = processedCount + 1;
+      processedCount += 1;            // auto-named Increment_processedCount
     }
 
     await ctx.response('ReturnResult', 200, { processed: ctx.variables('processedCount') });
@@ -82,8 +80,9 @@ class ProcessSharePointItems {
 
 ```typescript
 async run(ctx: FlowContext) {
-  /** @action Initialize_orderCategory */
   let orderCategory: string = '';
+
+  // The variable is set in both branches, so the two Set steps are named (the defaults would be Set_orderCategory / Set_orderCategory_2)
 
   /** @action EvaluateOrderAmount */
   if (ctx.triggerBody()?.['amount'] > 1000) {
@@ -110,7 +109,6 @@ async run(ctx: FlowContext) {
 
 ```typescript
 async run(ctx: FlowContext) {
-  /** @action Initialize_success */
   let success: boolean = false;
 
   /** @action TryProcess @type scope */
@@ -121,8 +119,7 @@ async run(ctx: FlowContext) {
       body: ctx.triggerBody()
     });
 
-    /** @action MarkSuccess */
-    success = true;
+    success = true;   // Set_success
   }
 
   /** @action HandleFailure @type scope @runAfter TryProcess: Failed */
@@ -436,14 +433,12 @@ This entire pattern collapses to **a single Compose action** using `xpath` to fl
 
 ```typescript
 // ❌ SLOW — nested foreach + AppendToArrayVariable, ~3s for ~30 items even with no I/O
-/** @action Initialize_userEmails */
 let userEmails: string[] = [];
 
 /** @action ProcessRows */
 for (const row of (ctx.outputs('PermissionRows') ?? [])) {
   /** @action ProcessUsers */
   for (const user of (row?.['Permissions'] ?? [])) {
-    /** @action Append_email */
     userEmails.push(user?.['Email']);
   }
 }

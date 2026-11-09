@@ -58,6 +58,24 @@ await ctx.connectors.sharepoint.UpdateItem('ActionName', {
 }, 'shared_sharepointonline');
 ```
 
+`PatchItem` is the same operation under the designer's id; both names work.
+
+##### Column formats for PostItem / UpdateItem
+
+Write every column type the way the designer does (measured in `conformance/flows/sp-write.ff.ts`) — there is no need to fall back to `HttpRequest` + REST for lookups, people or multi-value columns:
+
+| Column | Write it as |
+|---|---|
+| Text, number, yes/no, date | `'item/Title': 'x'`, `'item/Amount': 42.5`, `'item/Approved': true`, `'item/DueDate': '2026-05-01'` |
+| Choice | `'item/Status/Value': 'Done'` |
+| Multi-choice | `'item/Tags': [{ Value: 'a' }, { Value: 'b' }]` |
+| Lookup | `'item/Category/Id': 7` |
+| Multi-lookup | `'item/RelatedCategories': [{ Id: 1 }, { Id: 2 }]` |
+| Person or group | `'item/Owner/Claims': 'anna@contoso.com'` (an email, login or claims string) |
+| Multi-person | `'item/Reviewers': [{ Claims: 'anna@contoso.com' }, { Claims: 'ben@contoso.com' }]` |
+
+An object literal under `item` compiles to the same flat keys, so `item: { Title: 'x', Status: { Value: 'Done' }, Team: [{ Id: 1 }] }` and the `'item/...'` form are interchangeable — pick one per flow. A column whose expression finds nothing is sent as null and **clears** the column; a null sub-value (`item/Status/Value`, `item/Category/Id`, `item/Owner/Claims`) leaves the column unchanged. The response is the item in the `GetItem` shape (a choice as `{ Value }`, a lookup as `{ Id, Value }`, a person as `{ Claims, DisplayName, Email }`), so `ctx.body('Create')?.['ID']` and `?.['Status']?.['Value']` read back directly.
+
 #### DeleteItem
 ```typescript
 await ctx.connectors.sharepoint.DeleteItem('ActionName', {
@@ -288,6 +306,8 @@ await ctx.connectors.sharepoint.HttpRequest('ActionName', {
   'parameters/body': JSON.stringify({ key: 'value' })  // For POST/PATCH
 }, 'shared_sharepointonline');
 ```
+
+A nested `parameters: { method, uri, headers, body }` object compiles to the same `parameters/...` keys — use one form per call, not both. A body built at run time is `ctx.string(ctx.outputs('Body'))`.
 
 What the action returns (measured against the cloud):
 

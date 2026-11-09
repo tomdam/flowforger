@@ -129,10 +129,13 @@ Do NOT add `@action` before `ctx.compose()`, `ctx.http()`, or connector calls - 
 | `x -= n` / `x--` | `Decrement_<var>` |
 | `arr.push(v)` | `Append_to_<var>` |
 | `str += '…'` | `Append_<var>` |
-| `if` / `for…of` / `switch` / `do…while` | `Condition` / `ForEach_<loopVar>` / `Switch` / `DoUntil` |
+| `if` / `for…of` / `switch` / `do…while` | `Condition` (or `Check_<X>`, after the first action or variable a comparison reads) / `ForEach_<loopVar>` / `Switch` / `DoUntil` |
 | `case` | `Case_<value>` |
 
-Collisions get a `_2`, `_3`, … suffix. You should still usually provide a name: the defaults are generic and collide easily (two un-annotated `if`s both become `Condition`, violating [Rule 1](#1-all-action-names-must-be-unique--including-across-switch-cases)), and a descriptive name is what you reference later with `ctx.outputs()`/`ctx.body()`.
+Collisions get a `_2`, `_3`, … suffix. Where to put `@action`:
+
+- **Variable steps: keep the default.** `Initialize_<var>`, `Set_<var>`, `Increment_<var>` and `Append_to_<var>` are the names the Power Automate designer gives these steps too, so `/** @action Initialize_counter */` above `let counter = 0` repeats what the transformer does anyway. Add `@action` to a variable step only when the default would collide or mislead — the same array pushed from two places (`Append_created_row` / `Append_updated_row` instead of `Append_to_rows` / `Append_to_rows_2`), the same variable set in both branches of an `if` — or when a `@runAfter` needs its name.
+- **Control flow: always name it.** The defaults (`Condition`, `Check_<X>`, `ForEach_<loopVar>`, `Switch`, `DoUntil`) are generic, collide at the second `if` (violating [Rule 1](#1-all-action-names-must-be-unique--including-across-switch-cases)), and a loop's name is what `ctx.items('Name')`, the trace and the designer show.
 
 > **Exception:** the `x++` and `x--` forms ignore `@action` entirely — they are ALWAYS auto-named `Increment_<var>` / `Decrement_<var>`. To name those actions, write `x += 1` / `x -= 1` instead, which does honour `@action`. Note that `arr.push()` is **not** an exception: it honours `@action` normally.
 
@@ -144,15 +147,27 @@ await ctx.compose('Get_Data', { value: 1 });
 // ✅ CORRECT - no comment needed:
 await ctx.compose('Get_Data', { value: 1 });
 
-// ✅ CORRECT - @action names a variable/control-flow node (optional; auto-named otherwise, but recommended):
+// ✅ CORRECT - variable steps keep their defaults ("Initialize_counter", "Initialize_rows",
+// "Append_to_rows", "Increment_counter"); control flow is named:
+let counter: number = 0;
+let rows: any[] = [];
+/** @action Check_status */
+if (ctx.triggerBody()?.['status'] === 'active') {
+  rows.push(ctx.triggerBody());
+  counter += 1;
+}
+
+// ❌ REDUNDANT - the JSDoc only repeats the default name:
 /** @action Initialize_counter */
 let counter: number = 0;
-/** @action CheckStatus */
-if (condition) { ... }
+/** @action Append_to_rows */
+rows.push(ctx.triggerBody());
 
-// ✅ ALSO VALID - no @action; auto-named "Initialize_counter" / "Condition":
-let counter: number = 0;
-if (condition) { ... }
+// ✅ CORRECT - @action where the default would collide (two pushes to the same array):
+/** @action Append_created_row */
+rows.push({ action: 'created' });
+/** @action Append_updated_row */
+rows.push({ action: 'updated' });
 ```
 
 ### 4. NEVER use `return` statements
@@ -260,7 +275,7 @@ myArray = ctx.eval(`@union(variables('myArray'), createArray(outputs('Item')))`)
 | `ctx.outputs('ActionName')` | Get action outputs (Compose actions) |
 | `ctx.variables('varName')` | Get variable value |
 | `ctx.parameters('paramName')` | Get flow parameter (name must exactly match key in `ctx.flow.parameters`) |
-| `ctx.eval('@expression')` | Evaluate Power Automate expression (use `@expr` for type-preserving, `@{expr}` only for strings) |
+| `ctx.eval('@expression')` | Raw Power Automate expression — the last resort. Every function has a typed helper (`ctx.trim()`, `ctx.first()`, `ctx.sort()`, `ctx.if()`, `ctx.coalesce()`, `ctx.formatDateTime()`, …) that also takes loop variables and `ctx.item()`; see the [helper inventory](dsl-syntax.md#typed-helpers-first-ctxeval-last). Use `@expr` for type-preserving, `@{expr}` only for strings |
 | `ctx.workflow()` | Get workflow metadata |
 | `await ctx.callWorkflow('Name', ref, body)` | Call a child workflow (ref = child flow name or GUID) |
 
@@ -442,6 +457,7 @@ if (ctx.or(condition1, condition2))                      // ctx.or() as top-leve
 | value is null or empty | `if (ctx.empty(x))` | `"@empty(x)"` |
 | value is not null (empty string counts as set) | `if (x !== null)` | `{"and":[{"not":{"equals":["@x","@null"]}}]}` |
 | equals a literal (a Choice column is a number — see [connectors.md](connectors.md#what-a-dataverse-row-looks-like)) | `if (x === 200000001)` | `{"and":[{"equals":["@x",200000001]}]}` |
+| not equal | `if (a !== b)` (not `!(a === b)`) | `{"and":[{"not":{"equals":["@a","@b"]}}]}` |
 | both | `if (a && b)` | `{"and":[a, b]}` |
 | either | `if (a \|\| b)` | `{"or":[a, b]}` |
 
@@ -452,13 +468,11 @@ if (ctx.or(condition1, condition2))                      // ctx.or() as top-leve
 Power Automate appends to an array variable via the **AppendToArrayVariable** action. In the FlowForger DSL, this maps to `arrayName.push(value)`. The transformer **only** recognizes the `.push()` pattern — array spread-reassignment (`arr = [...arr, item]`) is **not transformed** and will emit raw TypeScript into the flow, producing a broken action.
 
 ```typescript
-// Declare the array variable first:
-/** @action Initialize_userEmails */
+// Declare the array variable first (auto-named "Initialize_userEmails"):
 let userEmails: string[] = [];
 
 // ❌ WRONG — spread-reassignment is NOT supported by the transformer.
 // This emits literal strings like "...userEmails" into the SetVariable value:
-/** @action Append_email */
 userEmails = [...userEmails, user?.['Email']];
 
 // ❌ WRONG — even worse, a quoted spread is a plain string, not a spread at all:
@@ -467,23 +481,20 @@ userEmails = ['...userEmails', user?.['Email']];
 // ❌ WRONG — plain reassignment replaces the whole array (SetVariable, not Append):
 userEmails = userEmails.concat([user?.['Email']]);
 
-// ✅ CORRECT — .push() maps to AppendToArrayVariable:
-/** @action Append_email */
+// ✅ CORRECT — .push() maps to AppendToArrayVariable (auto-named "Append_to_userEmails"):
 userEmails.push(user?.['Email']);
 ```
 
-**The rule:** To add an item to an array variable, call `.push(item)` on the variable. Use a dedicated JSDoc `@action` name on the line. Never rebuild the array via spread, concat, or any assignment form — the transformer does not understand those patterns for array append.
+**The rule:** To add an item to an array variable, call `.push(item)` on the variable. The default name `Append_to_<var>` is fine; add `@action` only when the same array is pushed from more than one place ([Rule 3](#3-jsdoc-action-names-variables-and-control-flow--never-named-action-calls)). Never rebuild the array via spread, concat, or any assignment form — the transformer does not understand those patterns for array append.
 
 **For appending into a loop-scoped accumulator** (merging arrays inside a foreach), use `ctx.union()` with `.push()` one item at a time, or accumulate into a compose and use `ctx.union()` once after the loop:
 
 ```typescript
-/** @action Initialize_userEmails */
 let userEmails: string[] = [];
 
-/** @action ForEachUser */
+/** @action ForEachUser @runtimeConfig {"concurrency":{"repetitions":1}} */
 for (const user of ctx.body('GetUsers')?.['value'] ?? []) {
-  /** @action Append_email */
-  userEmails.push(ctx.items('ForEachUser')?.['Email']);
+  userEmails.push(user?.['Email']);   // Append_to_userEmails; `user` compiles to items('ForEachUser')
 }
 ```
 

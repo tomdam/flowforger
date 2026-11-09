@@ -1,6 +1,6 @@
 # FlowForger DSL Syntax Reference
 
-> **Critical Rules**: See [SKILL.md](SKILL.md#critical-rules-source-of-truth) for the 8 mandatory rules (unique names, no constants, @action only for variables/control flow, no return statements, no `@{...}` for arrays, try/catch finally, use `&&`/`||` not `ctx.and()`/`ctx.or()`, use `.push()` not spread for array append).
+> **Critical Rules**: See [SKILL.md](SKILL.md#critical-rules-source-of-truth) for the 14 mandatory rules (unique names, no constants, `@action` names control flow while variable steps keep their default names, no return statements, no `@{...}` for arrays, try/catch finally, `&&`/`||` not `ctx.and()`/`ctx.or()`, `.push()` not spread, descriptions, action placement, definition limits, sequential loops, the runAfter path, designer-only settings).
 
 ## Basic Structure
 
@@ -87,6 +87,15 @@ trigger() {}
 
 @RecurrenceTrigger({ frequency: 'Hour', interval: 4, startTime: '2024-01-01T09:00:00Z' })
 trigger() {}
+```
+
+The same options may be returned from the method instead — the form `generate-dsl`/`pull` writes, with `timeZone`, `schedule` and `conditions` where the flow has them:
+
+```typescript
+@RecurrenceTrigger()
+trigger(ctx: FlowContext) {
+  return { frequency: 'Day', interval: 1, startTime: '2026-11-10T04:30:00Z', timeZone: 'W. Europe Standard Time' };
+}
 ```
 
 ### Connector Trigger
@@ -273,27 +282,27 @@ Child flow outputs are accessed via `ctx.body('ActionName')`.
 
 ## Variables
 
-Declare as local TypeScript variables. The JSDoc `@action` comment names the resulting
-InitializeVariable/SetVariable action — it is **optional** (the transformer auto-names a
-declaration `Initialize_<varName>`, an assignment `Set_<varName>`, etc.), but **recommended**
-so the names are descriptive and unique. (Only the `x++` and `x--` forms ignore `@action` —
-they are always auto-named `Increment_`/`Decrement_<varName>`; write `x += 1` / `x -= 1` if you
-need to name them. `arr.push()` honours `@action`, and auto-names to `Append_to_<varName>`.)
+Declare as local TypeScript variables. Each statement becomes one variable action with a
+default name — a declaration `Initialize_<varName>`, an assignment `Set_<varName>`, `x += n`
+`Increment_<varName>`, `arr.push()` `Append_to_<varName>` — and those defaults are the names to
+keep: a JSDoc `/** @action Initialize_counter */` above `let counter` only repeats what the
+transformer does anyway. Add `@action` to a variable step when the default would collide (the
+same array pushed from two places, the same variable set in two branches) or when a `@runAfter`
+needs its name. (`x++` and `x--` ignore `@action`; write `x += 1` / `x -= 1` to name those.)
 See the [full table of auto-derived names](SKILL.md#3-jsdoc-action-names-variables-and-control-flow--never-named-action-calls).
 
 ```typescript
-/** @action Initialize_counter */
-let counter: number = 0;
+let counter: number = 0;              // Initialize_counter
+let items: any[] = [];                // Initialize_items
+let name: string = 'default';         // Initialize_name
 
-/** @action Initialize_items */
-let items: any[] = [];
+counter += 1;                         // Increment_counter
+name = ctx.triggerBody()?.['name'];   // Set_name
+items.push({ id: 1 });                // Append_to_items
 
-/** @action Initialize_name */
-let name: string = 'default';
-
-// Update variable (SetVariable)
-/** @action Set_counter */
-counter = counter + 1;
+// A second append to the same array would become Append_to_items_2 — name both instead
+/** @action Append_fallback_item */
+items.push({ id: 0 });
 
 // Read variable
 await ctx.compose('Result', { count: ctx.variables('counter') });
@@ -304,11 +313,9 @@ await ctx.compose('Result', { count: ctx.variables('counter') });
 **Use `.push(value)` — NEVER spread or reassignment.** This maps to the Power Automate `AppendToArrayVariable` action. See [Critical Rule 8](SKILL.md#8-use-push-to-append-to-array-variables--never-spreadreassignment).
 
 ```typescript
-/** @action Initialize_userEmails */
 let userEmails: string[] = [];
 
-// ✅ CORRECT — .push() → AppendToArrayVariable:
-/** @action Append_email */
+// ✅ CORRECT — .push() → AppendToArrayVariable, auto-named "Append_to_userEmails":
 userEmails.push(user?.['Email']);
 
 // ❌ WRONG — spread-reassignment is not transformed, emits raw TypeScript:
@@ -463,6 +470,21 @@ await ctx.connectors.dataverse.ListRecords('AllAccounts', {
 
 The local engine applies it the way the cloud does (measured by `conformance/flows/paging.ff.ts`): whole pages are followed until at least N items are collected (no cut, so N=150 on 100-item pages gives 200), and the output is `{ value: [...] }` without `@odata.nextLink`. Only the SharePoint and Dataverse connectors follow pages locally; on other connectors the setting is kept in the compiled flow but a local run returns the first page. A FetchXml query's paging cookie is never followed, locally or in the cloud.
 
+#### Secure inputs and outputs (`@runtimeConfig`)
+
+An action whose inputs or outputs carry a secret — a bearer token or API key in an HTTP header, a password read from a parameter — shows it in plain text in the run history. The designer's "Secure Inputs" / "Secure Outputs" settings are `secureData`:
+
+```typescript
+/** @runtimeConfig {"secureData":{"properties":["inputs"]}} */
+await ctx.http('Get_positions', {
+  method: 'GET',
+  url: ctx.parameters('API URL'),
+  headers: { Authorization: `Bearer ${ctx.parameters('API Token')}`, 'x-api-key': ctx.parameters('API Key') }
+});
+```
+
+Secured outputs are also what `run-show` and a cloud-run replay cannot download, so secure only what must be hidden (`["inputs"]` when the response itself is harmless).
+
 ### Do-Until Loop
 
 ```typescript
@@ -596,9 +618,40 @@ ctx.workflow()?.['run']?.['name']       // Run ID
 ctx.workflow()?.['tags']?.['environmentName']
 ```
 
+## Typed helpers first, ctx.eval() last
+
+Every Power Automate function has a typed `ctx.` helper, and the helpers compose: `ctx.first(ctx.split(ctx.trim(row?.['name']), ' '))` compiles to `first(split(trim(items('Loop')?['name']), ' '))`. Loop variables, `ctx.item()` (in a Select map or a Filter array condition), `ctx.body()`/`ctx.outputs()`, `??`, `===`/`!==`, `&&`/`||`/`!` and template literals all work inside them, so a `ctx.eval()` string is only for the rare shape the helpers cannot express. Helpers are checked by TypeScript and the diagnostics — a misspelt helper is an error, a misspelt function inside `ctx.eval()` is only the DSL034 warning — and `generate-dsl` writes pulled flows with them.
+
+| Group | Helpers |
+|---|---|
+| Strings | `concat`, `substring`, `slice`, `replace`, `split`, `trim`, `toLower`, `toUpper`, `indexOf`, `lastIndexOf`, `nthIndexOf`, `startsWith`, `endsWith`, `length`, `formatNumber`, `guid` |
+| Collections | `first`, `last`, `skip`, `take`, `length`, `empty`, `contains`, `union`, `intersection`, `createArray`, `range`, `sort`, `reverse`, `chunk`; `arr.join(sep)` on an array value is the `join()` function (`ctx.join('Name', from, sep)` is the Join *action*) |
+| Logic | `equals`, `greater`, `less`, `greaterOrEquals`, `lessOrEquals`, `not`, `and`, `or`, `if`, `coalesce`, `empty`; `null` is a literal (`ctx.if(ctx.empty(x), null, x)`) |
+| Math | `add`, `sub`, `mul`, `div`, `mod`, `min`, `max`, `rand`, `int`, `float`, `decimal`, `isInt`, `isFloat` |
+| Date and time | `utcNow`, `addDays`, `addHours`, `addMinutes`, `addSeconds`, `addToTime`, `subtractFromTime`, `getFutureTime`, `getPastTime`, `formatDateTime`, `parseDateTime`, `convertTimeZone`, `convertFromUtc`, `convertToUtc`, `startOfDay`, `startOfHour`, `startOfMonth`, `dayOfMonth`, `dayOfWeek`, `dayOfYear`, `dateDifference`, `ticks` |
+| Conversion | `string`, `int`, `float`, `bool`, `array`, `json`, `xml`, `xpath`, `base64`, `base64ToString`, `base64ToBinary`, `binary`, `dataUri`, `dataUriToString`, `dataUriToBinary`, `decodeDataUri`, `uriComponent`, `encodeUriComponent`, `decodeUriComponent`, `uriComponentToString`, `uriHost`, `uriPath`, `uriPathAndQuery`, `uriPort`, `uriQuery`, `uriScheme` |
+| Objects | `setProperty`, `addProperty`, `removeProperty` |
+| References | `body`, `outputs`, `actions`, `action`, `result`, `items`, `item`, `iterationIndexes`, `variables`, `parameters`, `trigger`, `triggerBody`, `triggerOutputs`, `workflow`, `listCallbackUrl`, `formDataValue`/`formDataMultiValues`/`multipartBody` and their `trigger…` twins |
+
+```typescript
+// ❌ Works, but every line here has a typed equivalent with fewer quotes and real checks:
+await ctx.compose('First_name', ctx.eval(`@{first(split(trim(items('Each_position')?['assigneeName']), ' '))}`));
+await ctx.filterArray('By_ldap', ctx.outputs('Users'),
+  "@equals(toLower(coalesce(item()?['WindowsId'], '')), toLower(coalesce(items('Each_position')?['assigneeLdap'], '')))");
+await ctx.compose('Cutoff', ctx.eval(`@addDays(utcNow(), mul(-1, parameters('Lookback Days')))`));
+
+// ✅ Same meaning (inside `for (const position of ...)`, named Each_position):
+await ctx.compose('First_name', ctx.first(ctx.split(ctx.trim(position?.['assigneeName']), ' ')));
+await ctx.filterArray('By_ldap', ctx.outputs('Users'),
+  ctx.toLower(ctx.item()?.['WindowsId'] ?? '') === ctx.toLower(position?.['assigneeLdap'] ?? ''));
+await ctx.compose('Cutoff', ctx.addDays(ctx.utcNow(), ctx.mul(-1, ctx.parameters('Lookback Days'))));
+```
+
+**Comparing dates from two sources.** `formatDateTime(x, 'o')` keeps the value's kind — `2026-01-01` gives `2026-01-01T00:00:00.0000000`, `2026-01-01T00:00:00Z` gives `…T00:00:00.0000000Z`, and `+00:00` stays `+00:00` — so two `'o'` strings for the same instant can differ, and an "only update when something changed" comparison then writes every run. Compare `ctx.ticks(a) === ctx.ticks(b)`, or format both sides without the kind (`'yyyy-MM-dd'`, `'yyyy-MM-ddTHH:mm:ss'`).
+
 ## Expressions with ctx.eval()
 
-For Power Automate expressions that cannot be expressed via ctx methods, use `ctx.eval()`.
+For the rare expression no helper expresses, use `ctx.eval()`.
 
 **Critical:** `ctx.eval()` outputs the expression string as-is. Use `@expression` (no braces) when the result must preserve its type (array, object, number). Use `@{expression}` only for string interpolation. See [Critical Rule 5](SKILL.md#5-never-use--wrapping-for-arrayobject-values).
 
